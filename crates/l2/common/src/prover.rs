@@ -468,6 +468,74 @@ mod tests {
     }
 
     #[test]
+    fn empty_supported_programs_roundtrip() {
+        let original = ProofData::batch_request_with_programs(
+            "hash".to_string(),
+            ProverType::Exec,
+            vec![],
+        );
+        let json = serde_json::to_string(&original).expect("serialize");
+        let deserialized: ProofData = serde_json::from_str(&json).expect("deserialize");
+        match deserialized {
+            ProofData::BatchRequest {
+                supported_programs, ..
+            } => {
+                assert!(supported_programs.is_empty());
+            }
+            _ => panic!("expected BatchRequest"),
+        }
+    }
+
+    #[test]
+    fn default_program_id_is_evm_l2() {
+        assert_eq!(default_program_id(), "evm-l2");
+    }
+
+    #[test]
+    fn all_variants_roundtrip() {
+        // Verify every ProofData variant can serialize/deserialize.
+        let proof = BatchProof::ProofCalldata(ProofCalldata {
+            prover_type: ProverType::Exec,
+            calldata: vec![],
+        });
+        let variants: Vec<ProofData> = vec![
+            ProofData::prover_setup(ProverType::SP1, bytes::Bytes::from_static(b"key")),
+            ProofData::prover_setup_ack(),
+            ProofData::batch_request("h".into(), ProverType::RISC0),
+            ProofData::batch_request_with_programs(
+                "h".into(),
+                ProverType::SP1,
+                vec!["evm-l2".into()],
+            ),
+            ProofData::version_mismatch(),
+            ProofData::empty_batch_response(),
+            ProofData::proof_submit(1, proof.clone()),
+            ProofData::proof_submit_with_program(2, proof, "zk-dex".into()),
+            ProofData::proof_submit_ack(3),
+            ProofData::ProverTypeNotNeeded {
+                prover_type: ProverType::TDX,
+            },
+        ];
+        for variant in &variants {
+            let json = serde_json::to_string(variant).expect("serialize");
+            let _: ProofData = serde_json::from_str(&json).expect("deserialize");
+        }
+    }
+
+    #[test]
+    fn extra_json_fields_ignored() {
+        // Verify that extra unknown fields in JSON don't break deserialization.
+        let json = r#"{"BatchRequest":{"commit_hash":"abc","prover_type":"Exec","supported_programs":[],"unknown_field":"value"}}"#;
+        let data: ProofData = serde_json::from_str(json).expect("should ignore extra fields");
+        match data {
+            ProofData::BatchRequest { commit_hash, .. } => {
+                assert_eq!(commit_hash, "abc");
+            }
+            _ => panic!("expected BatchRequest"),
+        }
+    }
+
+    #[test]
     fn empty_batch_response_roundtrips() {
         let original = ProofData::empty_batch_response();
         let json = serde_json::to_string(&original).expect("serialize");

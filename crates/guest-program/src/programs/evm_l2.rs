@@ -1,4 +1,4 @@
-use crate::traits::{GuestProgram, GuestProgramError, backends};
+use crate::traits::{GuestProgram, GuestProgramError, ResourceLimits, backends};
 
 /// The default EVM-L2 guest program.
 ///
@@ -73,6 +73,17 @@ impl GuestProgram for EvmL2GuestProgram {
         // The zkVM's public values are already in the layout expected by
         // OnChainProposer._getPublicInputsFromCommitment(), so pass through.
         Ok(raw_output.to_vec())
+    }
+
+    fn resource_limits(&self) -> ResourceLimits {
+        ResourceLimits {
+            max_input_bytes: Some(256 * 1024 * 1024), // 256 MB
+            max_proving_duration: Some(std::time::Duration::from_secs(3600)), // 1 hour
+        }
+    }
+
+    fn version(&self) -> &str {
+        env!("CARGO_PKG_VERSION")
     }
 }
 

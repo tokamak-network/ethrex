@@ -94,6 +94,8 @@ interface IOnChainProposer {
     /// @param nonPrivilegedTransactions the number of non-privileged transactions in the batch to be committed.
     /// @param commitHash git commit hash that produced the verifier keys for this batch.
     /// @param programTypeId the guest program type (1=EVM-L2, etc.). 0 defaults to EVM-L2.
+    /// @param publicValuesHash keccak256 hash of proof public values for custom programs (programTypeId > 1).
+    ///        Must be bytes32(0) for EVM-L2 (programTypeId == 1).
     /// @param balanceDiffs the balance diffs of the batch to be committed.
     /// @param l2MessageRollingHashes the L2 message rolling hashes of the batch to be committed.
     function commitBatch(
@@ -105,6 +107,7 @@ interface IOnChainProposer {
         uint256 nonPrivilegedTransactions,
         bytes32 commitHash,
         uint8 programTypeId,
+        bytes32 publicValuesHash,
         ICommonBridge.BalanceDiff[] calldata balanceDiffs,
         ICommonBridge.L2MessageRollingHash[] calldata l2MessageRollingHashes
     ) external;
@@ -126,7 +129,9 @@ interface IOnChainProposer {
         //sp1
         bytes memory sp1ProofBytes,
         //tdx
-        bytes memory tdxSignature
+        bytes memory tdxSignature,
+        // Custom program public values (only needed for programTypeId > 1)
+        bytes memory customPublicValues
     ) external;
 
     // TODO: imageid, programvkey and riscvvkey should be constants

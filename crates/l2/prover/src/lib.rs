@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod config;
+pub mod programs_config;
 pub mod prover;
 pub mod registry;
 

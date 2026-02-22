@@ -56,3 +56,52 @@ impl DexProgramOutput {
         buf
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify the 72-byte layout: initial_root(32) + final_root(32) + transfer_count(8 BE).
+    #[test]
+    fn zk_dex_encode_layout() {
+        let output = DexProgramOutput {
+            initial_state_root: [0xAA; 32],
+            final_state_root: [0xBB; 32],
+            transfer_count: 42,
+        };
+        let encoded = output.encode();
+        assert_eq!(encoded.len(), 72);
+        // Field positions.
+        assert_eq!(&encoded[0..32], &[0xAA; 32]);
+        assert_eq!(&encoded[32..64], &[0xBB; 32]);
+        // transfer_count is big-endian u64.
+        assert_eq!(
+            u64::from_be_bytes(encoded[64..72].try_into().unwrap()),
+            42
+        );
+    }
+
+    #[test]
+    fn zk_dex_encode_zero_values() {
+        let output = DexProgramOutput {
+            initial_state_root: [0; 32],
+            final_state_root: [0; 32],
+            transfer_count: 0,
+        };
+        let encoded = output.encode();
+        assert_eq!(encoded.len(), 72);
+        assert!(encoded.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn zk_dex_encode_max_values() {
+        let output = DexProgramOutput {
+            initial_state_root: [0xFF; 32],
+            final_state_root: [0xFF; 32],
+            transfer_count: u64::MAX,
+        };
+        let encoded = output.encode();
+        assert_eq!(encoded.len(), 72);
+        assert!(encoded.iter().all(|&b| b == 0xFF));
+    }
+}

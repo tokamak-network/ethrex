@@ -39,6 +39,8 @@ contract OnChainProposer is
         /// @dev git commit hash that produced the proof/verification key used for this batch
         bytes32 commitHash;
         uint8 programTypeId;
+        /// @dev Hash of the proof's public values for custom programs (programTypeId > 1).
+        bytes32 publicValuesHash;
     }
 
     uint8 internal constant SP1_VERIFIER_ID = 1;
@@ -189,7 +191,8 @@ contract OnChainProposer is
             bytes32(0),
             0,
             commitHash,
-            DEFAULT_PROGRAM_TYPE_ID
+            DEFAULT_PROGRAM_TYPE_ID,
+            bytes32(0)
         );
 
         // Set the SequencerRegistry address
@@ -267,6 +270,7 @@ contract OnChainProposer is
         uint256 nonPrivilegedTransactions,
         bytes32 commitHash,
         uint8 programTypeId,
+        bytes32 publicValuesHash,
         bytes[] calldata //rlpEncodedBlocks
     ) external override onlyLeaderSequencer {
         // TODO: Refactor validation
@@ -325,6 +329,14 @@ contract OnChainProposer is
             "013" // missing verification key for commit hash
         );
 
+        // Custom programs (programTypeId > 1) must provide a publicValuesHash
+        if (effectiveProgramTypeId > 1) {
+            require(
+                publicValuesHash != bytes32(0),
+                "015" // OnChainProposer: custom program requires publicValuesHash
+            );
+        }
+
         // Blob is published in the (EIP-4844) transaction that calls this function.
         bytes32 blobVersionedHash = blobhash(0);
         if (VALIDIUM) {
@@ -347,7 +359,8 @@ contract OnChainProposer is
             lastBlockHash,
             nonPrivilegedTransactions,
             commitHash,
-            effectiveProgramTypeId
+            effectiveProgramTypeId,
+            publicValuesHash
         );
         emit BatchCommitted(batchNumber, newStateRoot);
 
@@ -371,7 +384,9 @@ contract OnChainProposer is
         //sp1
         bytes memory sp1ProofBytes,
         //tdx
-        bytes memory tdxSignature
+        bytes memory tdxSignature,
+        // Custom program public values (only needed for programTypeId > 1)
+        bytes memory customPublicValues
     ) external {
         require(
             !ALIGNED_MODE,
@@ -405,13 +420,30 @@ contract OnChainProposer is
             );
         }
 
-        // Reconstruct public inputs from commitments
-        bytes memory publicInputs = _getPublicInputsFromCommitment(batchNumber);
+        // Determine public inputs based on program type
+        uint8 batchProgramTypeId = batchCommitments[batchNumber].programTypeId;
+        // Backward compatibility: treat 0 as DEFAULT_PROGRAM_TYPE_ID
+        if (batchProgramTypeId == 0) batchProgramTypeId = DEFAULT_PROGRAM_TYPE_ID;
+        bytes32 batchCommitHash = batchCommitments[batchNumber].commitHash;
+
+        bytes memory publicInputs;
+        if (batchProgramTypeId == DEFAULT_PROGRAM_TYPE_ID) {
+            // EVM-L2: reconstruct public inputs from commitment data
+            publicInputs = _getPublicInputsFromCommitment(batchNumber);
+        } else {
+            // Custom programs: verify public values hash matches commitment
+            require(
+                customPublicValues.length > 0,
+                "OnChainProposer: custom program requires customPublicValues"
+            );
+            require(
+                keccak256(customPublicValues) == batchCommitments[batchNumber].publicValuesHash,
+                "OnChainProposer: customPublicValues hash mismatch"
+            );
+            publicInputs = customPublicValues;
+        }
 
         if (REQUIRE_RISC0_PROOF) {
-            bytes32 batchCommitHash = batchCommitments[batchNumber].commitHash;
-            uint8 batchProgramTypeId = batchCommitments[batchNumber].programTypeId;
-            if (batchProgramTypeId == 0) batchProgramTypeId = DEFAULT_PROGRAM_TYPE_ID;
             bytes32 risc0Vk = verificationKeys[batchCommitHash][
                 batchProgramTypeId
             ][RISC0_VERIFIER_ID];
@@ -429,9 +461,6 @@ contract OnChainProposer is
         }
 
         if (REQUIRE_SP1_PROOF) {
-            bytes32 batchCommitHash = batchCommitments[batchNumber].commitHash;
-            uint8 batchProgramTypeId = batchCommitments[batchNumber].programTypeId;
-            if (batchProgramTypeId == 0) batchProgramTypeId = DEFAULT_PROGRAM_TYPE_ID;
             bytes32 sp1Vk = verificationKeys[batchCommitHash][batchProgramTypeId][SP1_VERIFIER_ID];
             try
                 ISP1Verifier(SP1_VERIFIER_ADDRESS).verifyProof(

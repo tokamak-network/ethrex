@@ -59,7 +59,8 @@ interface ITimelock {
         uint256 batchNumber,
         bytes memory risc0BlockProof,
         bytes memory sp1ProofBytes,
-        bytes memory tdxSignature
+        bytes memory tdxSignature,
+        bytes memory customPublicValues
     ) external;
 
     /// @notice Verifies multiple batches through the timelock using aligned proofs.

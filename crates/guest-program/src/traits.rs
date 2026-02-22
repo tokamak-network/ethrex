@@ -28,6 +28,28 @@ pub enum GuestProgramError {
     Internal(String),
 }
 
+/// Resource limits for a guest program execution.
+///
+/// These limits protect the prover from unbounded resource consumption due to
+/// malicious or buggy inputs.  Each guest program can override the defaults to
+/// set program-specific constraints.
+#[derive(Debug, Clone)]
+pub struct ResourceLimits {
+    /// Maximum serialized input size in bytes.  `None` means unlimited.
+    pub max_input_bytes: Option<usize>,
+    /// Maximum wall-clock time allowed for proving.  `None` means unlimited.
+    pub max_proving_duration: Option<std::time::Duration>,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_input_bytes: None,
+            max_proving_duration: None,
+        }
+    }
+}
+
 /// Trait that abstracts a guest program running inside a zkVM.
 ///
 /// Each guest program is a self-contained program compiled to a RISC-V ELF
@@ -95,6 +117,37 @@ pub trait GuestProgram: Send + Sync {
     /// correct when the zkVM output already matches the L1 encoding.
     fn encode_output(&self, raw_output: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
         Ok(raw_output.to_vec())
+    }
+
+    /// Resource limits for this guest program.
+    ///
+    /// The prover checks these limits before and after proving to prevent
+    /// denial-of-service from oversized inputs or runaway executions.
+    /// The default is unlimited (no restrictions).
+    fn resource_limits(&self) -> ResourceLimits {
+        ResourceLimits::default()
+    }
+
+    /// Semantic version string for this guest program.
+    ///
+    /// Used for ELF change tracking and VK cache invalidation.
+    /// The default is `"0.0.0"` (unversioned).
+    fn version(&self) -> &str {
+        "0.0.0"
+    }
+
+    /// SHA-256 hash of the ELF binary for a given backend.
+    ///
+    /// Returns `None` when no ELF is available for the backend.
+    /// This is useful for VK cache invalidation: when the hash changes,
+    /// the verification key must be regenerated.
+    fn elf_hash(&self, backend: &str) -> Option<[u8; 32]> {
+        use sha2::{Digest, Sha256};
+        self.elf(backend).map(|elf| {
+            let mut hasher = Sha256::new();
+            hasher.update(elf);
+            hasher.finalize().into()
+        })
     }
 
     /// Validate that an ELF binary has the correct format for the given backend.
@@ -279,9 +332,89 @@ mod tests {
         assert!(prog.validate_elf(backends::SP1, &bad).is_err());
     }
 
+    // ── Resource limits tests ────────────────────────────────────────
+
+    #[test]
+    fn default_limits_are_unlimited() {
+        let limits = ResourceLimits::default();
+        assert!(limits.max_input_bytes.is_none());
+        assert!(limits.max_proving_duration.is_none());
+    }
+
+    #[test]
+    fn stub_uses_default_limits() {
+        struct StubProgram;
+        impl GuestProgram for StubProgram {
+            fn program_id(&self) -> &str { "stub" }
+            fn elf(&self, _: &str) -> Option<&[u8]> { None }
+            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> { None }
+            fn program_type_id(&self) -> u8 { 99 }
+        }
+        let limits = StubProgram.resource_limits();
+        assert!(limits.max_input_bytes.is_none());
+        assert!(limits.max_proving_duration.is_none());
+    }
+
     // ── Fuzz-style robustness tests ──────────────────────────────────
 
     use crate::programs::{EvmL2GuestProgram, TokammonGuestProgram, ZkDexGuestProgram};
+
+    // ── Versioning tests ───────────────────────────────────────────
+
+    #[test]
+    fn version_default_is_0_0_0() {
+        struct StubV;
+        impl GuestProgram for StubV {
+            fn program_id(&self) -> &str { "stub-v" }
+            fn elf(&self, _: &str) -> Option<&[u8]> { None }
+            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> { None }
+            fn program_type_id(&self) -> u8 { 99 }
+        }
+        assert_eq!(StubV.version(), "0.0.0");
+    }
+
+    #[test]
+    fn evm_l2_version_is_pkg_version() {
+        assert_eq!(EvmL2GuestProgram.version(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn elf_hash_none_for_missing_elf() {
+        struct NoElf;
+        impl GuestProgram for NoElf {
+            fn program_id(&self) -> &str { "no-elf" }
+            fn elf(&self, _: &str) -> Option<&[u8]> { None }
+            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> { None }
+            fn program_type_id(&self) -> u8 { 99 }
+        }
+        assert!(NoElf.elf_hash("sp1").is_none());
+    }
+
+    #[test]
+    fn elf_hash_deterministic() {
+        struct FixedElf;
+        impl GuestProgram for FixedElf {
+            fn program_id(&self) -> &str { "fixed" }
+            fn elf(&self, _: &str) -> Option<&[u8]> { Some(b"deterministic-content") }
+            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> { None }
+            fn program_type_id(&self) -> u8 { 99 }
+        }
+        let h1 = FixedElf.elf_hash("sp1").unwrap();
+        let h2 = FixedElf.elf_hash("sp1").unwrap();
+        assert_eq!(h1, h2);
+        // Hash should not be all zeros.
+        assert_ne!(h1, [0u8; 32]);
+    }
+
+    #[test]
+    fn evm_l2_has_limits() {
+        let limits = EvmL2GuestProgram.resource_limits();
+        assert_eq!(limits.max_input_bytes, Some(256 * 1024 * 1024));
+        assert_eq!(
+            limits.max_proving_duration,
+            Some(std::time::Duration::from_secs(3600))
+        );
+    }
 
     /// Verify that serialize_input and encode_output never panic on
     /// arbitrary byte inputs.  All three programs use pass-through

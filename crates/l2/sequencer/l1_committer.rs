@@ -69,8 +69,8 @@ use spawned_concurrency::tasks::{
 };
 
 const COMMIT_FUNCTION_SIGNATURE_BASED: &str =
-    "commitBatch(uint256,bytes32,bytes32,bytes32,bytes32,uint256,bytes32,uint8,bytes[])";
-const COMMIT_FUNCTION_SIGNATURE: &str = "commitBatch(uint256,bytes32,bytes32,bytes32,bytes32,uint256,bytes32,uint8,(uint256,uint256,(address,address,address,uint256)[],bytes32[])[],(uint256,bytes32)[])";
+    "commitBatch(uint256,bytes32,bytes32,bytes32,bytes32,uint256,bytes32,uint8,bytes32,bytes[])";
+const COMMIT_FUNCTION_SIGNATURE: &str = "commitBatch(uint256,bytes32,bytes32,bytes32,bytes32,uint256,bytes32,uint8,bytes32,(uint256,uint256,(address,address,address,uint256)[],bytes32[])[],(uint256,bytes32)[])";
 /// Default wake up time for the committer to check if it should send a commit tx
 const COMMITTER_DEFAULT_WAKE_TIME_MS: u64 = 60_000;
 
@@ -1206,6 +1206,16 @@ impl L1Committer {
             .unwrap_or_else(|| "evm-l2".to_string());
         let program_type_id: u8 = resolve_program_type_id(&program_id);
 
+        // For custom programs (programTypeId > 1), compute publicValuesHash.
+        // For EVM-L2 (programTypeId == 1), use bytes32(0).
+        let public_values_hash: H256 = if program_type_id > 1 {
+            // TODO: Retrieve proof public values from storage once custom program
+            // proving is fully integrated. For now use zero hash.
+            H256::zero()
+        } else {
+            H256::zero()
+        };
+
         let (commit_function_signature, values) = if self.based {
             let mut encoded_blocks: Vec<Bytes> = Vec::new();
 
@@ -1222,6 +1232,7 @@ impl L1Committer {
 
             calldata_values.push(Value::FixedBytes(commit_hash_bytes.0.to_vec().into()));
             calldata_values.push(Value::Uint(U256::from(program_type_id)));
+            calldata_values.push(Value::FixedBytes(public_values_hash.0.to_vec().into()));
             calldata_values.push(Value::Array(
                 encoded_blocks.into_iter().map(Value::Bytes).collect(),
             ));
@@ -1271,6 +1282,7 @@ impl L1Committer {
 
             calldata_values.push(Value::FixedBytes(commit_hash_bytes.0.to_vec().into()));
             calldata_values.push(Value::Uint(U256::from(program_type_id)));
+            calldata_values.push(Value::FixedBytes(public_values_hash.0.to_vec().into()));
             calldata_values.push(Value::Array(balance_diff_values));
             calldata_values.push(Value::Array(l2_in_message_rolling_hashes_values));
             (COMMIT_FUNCTION_SIGNATURE, calldata_values)

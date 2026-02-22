@@ -74,3 +74,56 @@ impl TokammonProgramOutput {
         buf
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify the 88-byte layout: initial_root(32) + final_root(32) +
+    /// action_count(8) + spots_created(8) + rewards_claimed(8).
+    #[test]
+    fn tokamon_encode_layout() {
+        let output = TokammonProgramOutput {
+            initial_state_root: [0x11; 32],
+            final_state_root: [0x22; 32],
+            action_count: 10,
+            spots_created: 3,
+            rewards_claimed: 7,
+        };
+        let encoded = output.encode();
+        assert_eq!(encoded.len(), 88);
+        assert_eq!(&encoded[0..32], &[0x11; 32]);
+        assert_eq!(&encoded[32..64], &[0x22; 32]);
+        assert_eq!(u64::from_be_bytes(encoded[64..72].try_into().unwrap()), 10);
+        assert_eq!(u64::from_be_bytes(encoded[72..80].try_into().unwrap()), 3);
+        assert_eq!(u64::from_be_bytes(encoded[80..88].try_into().unwrap()), 7);
+    }
+
+    #[test]
+    fn tokamon_encode_zero_values() {
+        let output = TokammonProgramOutput {
+            initial_state_root: [0; 32],
+            final_state_root: [0; 32],
+            action_count: 0,
+            spots_created: 0,
+            rewards_claimed: 0,
+        };
+        let encoded = output.encode();
+        assert_eq!(encoded.len(), 88);
+        assert!(encoded.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn tokamon_encode_max_values() {
+        let output = TokammonProgramOutput {
+            initial_state_root: [0xFF; 32],
+            final_state_root: [0xFF; 32],
+            action_count: u64::MAX,
+            spots_created: u64::MAX,
+            rewards_claimed: u64::MAX,
+        };
+        let encoded = output.encode();
+        assert_eq!(encoded.len(), 88);
+        assert!(encoded.iter().all(|&b| b == 0xFF));
+    }
+}

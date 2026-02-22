@@ -12,6 +12,7 @@ serde_with.workspace = true
 thiserror = "2.0.9"
 rkyv.workspace = true
 bytes.workspace = true
+sha2.workspace = true
 
 ethrex-common = { path = "../common/", default-features = false }
 ethrex-crypto = { path = "../common/crypto", default-features = false }

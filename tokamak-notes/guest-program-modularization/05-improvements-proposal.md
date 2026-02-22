@@ -289,6 +289,52 @@ Phase 2.1-2.4 구현 경험을 바탕으로 한 수정 결과:
     *   `08-developer-guide.md` 작성: Quick Start, Step-by-Step, Dynamic ELF Loading, Trait Reference, Testing, Checklist
     *   스캐폴드 스크립트 사용법, 수동 생성 절차, 빌드 시스템 연동, 프루버 등록 방법 포함
 
+### 프로덕션 안정화 (Production Hardening)
+
+15. ~~**[높음]** Resource Limits (DoS 방지)~~ — **✅ 해결됨**:
+    *   `ResourceLimits` 구조체 추가 (`max_input_bytes`, `max_proving_duration`)
+    *   `GuestProgram::resource_limits()` 디폴트 메서드 추가
+    *   EVM-L2: 256MB / 1시간, ZK-DEX/Tokamon: 64MB / 30분
+    *   `BackendError::ResourceLimitExceeded` 변형 추가
+    *   `prove_batch()`에서 입력 크기 검증 및 proving 시간 검증
+
+16. ~~**[중간]** Cross-language 인코딩 테스트~~ — **✅ 해결됨**:
+    *   L2 output: 고정 필드 레이아웃, balance diffs, l2 message hashes 검증
+    *   ZK-DEX: 72바이트 레이아웃, zero/max 값 검증
+    *   Tokamon: 88바이트 레이아웃, zero/max 값 검증
+    *   L1 output: 160바이트 레이아웃 검증
+
+17. ~~**[중간]** Guest Program 버전 관리~~ — **✅ 해결됨**:
+    *   `GuestProgram::version()` 메서드 추가 (기본값 "0.0.0")
+    *   `GuestProgram::elf_hash()` 메서드 추가 (SHA-256)
+    *   EVM-L2: `env!("CARGO_PKG_VERSION")`, ZK-DEX/Tokamon: "0.1.0"
+
+18. ~~**[중간]** 런타임 설정 파일~~ — **✅ 해결됨**:
+    *   `ProgramsConfig` TOML 파서 추가
+    *   `create_default_registry()` → `create_registry(config_path)` 리팩토링
+    *   `ProverConfig.programs_config_path` 필드 추가
+    *   `programs.example.toml` 예시 파일 추가
+
+19. ~~**[낮음]** ProofData 역호환성 E2E 테스트~~ — **✅ 해결됨**:
+    *   `empty_supported_programs_roundtrip` 추가
+    *   `default_program_id_is_evm_l2` 추가
+    *   `all_variants_roundtrip` 추가 (10개 ProofData 변형)
+    *   `extra_json_fields_ignored` 추가
+
+20. ~~**[낮음]** SP1/RISC0 zkVM 테스트 스캐폴딩~~ — **✅ 해결됨**:
+    *   `tests/zkvm_integration.rs` — `#[ignore]` 테스트 파일 생성
+    *   SP1: evm-l2, zk-dex, tokamon ELF 가용성 + 검증 테스트
+    *   RISC0: evm-l2 ELF + VK 가용성 테스트
+
+21. ~~**[높음]** L1 Public Input 디스패처~~ — **✅ 해결됨**:
+    *   `BatchCommitmentInfo`에 `publicValuesHash` 필드 추가 (non-based + based)
+    *   `commitBatch()`: `publicValuesHash` 파라미터 추가, 커스텀 프로그램(>1) 검증
+    *   `verifyBatch()`: `customPublicValues` 파라미터 추가, programTypeId 기반 디스패치
+    *   EVM-L2(type=1): 기존 `_getPublicInputsFromCommitment()` 사용
+    *   커스텀 프로그램(type>1): `keccak256(customPublicValues) == publicValuesHash` 검증
+    *   Timelock.sol, ITimelock.sol 시그니처 동기화
+    *   l1_committer.rs, l1_proof_sender.rs Rust 호출자 업데이트
+
 ### 남은 후속 작업
 
 (모든 작업 완료)

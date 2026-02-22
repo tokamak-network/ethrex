@@ -16,19 +16,42 @@ use ethrex_l2_common::prover::{BatchProof, ProofData, ProofFormat, ProverType};
 
 use crate::backend::{BackendError, BackendType, ExecBackend, ProverBackend};
 use crate::config::ProverConfig;
+use crate::programs_config::ProgramsConfig;
 use crate::registry::GuestProgramRegistry;
 
-/// Create the default guest program registry with the built-in programs.
-fn create_default_registry() -> GuestProgramRegistry {
-    let mut registry = GuestProgramRegistry::new("evm-l2");
-    registry.register(Arc::new(EvmL2GuestProgram));
-    registry.register(Arc::new(ZkDexGuestProgram));
-    registry.register(Arc::new(TokammonGuestProgram));
+/// Create a guest program registry based on runtime config.
+///
+/// If `config_path` is `None`, all built-in programs are registered.
+/// Otherwise, only the programs listed in the config file are registered.
+fn create_registry(config_path: Option<&str>) -> GuestProgramRegistry {
+    let config = config_path
+        .map(|p| {
+            ProgramsConfig::load(p).unwrap_or_else(|e| {
+                warn!("Failed to load programs config from {p}: {e}, using defaults");
+                ProgramsConfig::default()
+            })
+        })
+        .unwrap_or_default();
+
+    let mut registry = GuestProgramRegistry::new(&config.default_program);
+
+    let all_programs: Vec<(String, Arc<dyn ethrex_guest_program::traits::GuestProgram>)> = vec![
+        ("evm-l2".to_string(), Arc::new(EvmL2GuestProgram)),
+        ("zk-dex".to_string(), Arc::new(ZkDexGuestProgram)),
+        ("tokamon".to_string(), Arc::new(TokammonGuestProgram)),
+    ];
+
+    for (id, program) in all_programs {
+        if config.enabled_programs.contains(&id) {
+            registry.register(program);
+        }
+    }
+
     registry
 }
 
 pub async fn start_prover(config: ProverConfig) {
-    let registry = create_default_registry();
+    let registry = create_registry(config.programs_config_path.as_deref());
     match config.backend {
         BackendType::Exec => {
             let prover = Prover::new(ExecBackend::new(), &config, registry);
@@ -187,10 +210,31 @@ impl<B: ProverBackend> Prover<B> {
                 .serialize_input(input_bytes.as_slice())
                 .map_err(|e| BackendError::serialization(e.to_string()))?;
 
+            // Enforce input size limit.
+            let limits = program.resource_limits();
+            if let Some(max) = limits.max_input_bytes {
+                if serialized.len() > max {
+                    return Err(BackendError::resource_limit(format!(
+                        "input size {} bytes exceeds limit of {} bytes for program '{}'",
+                        serialized.len(),
+                        max,
+                        program_id
+                    )));
+                }
+            }
+
             if self.timed {
                 let (output, elapsed) =
                     self.backend
                         .prove_with_elf_timed(elf, &serialized, format)?;
+                // Enforce proving duration limit.
+                if let Some(max_dur) = limits.max_proving_duration {
+                    if elapsed > max_dur {
+                        return Err(BackendError::resource_limit(format!(
+                            "proving took {elapsed:.2?} which exceeds limit of {max_dur:.2?} for program '{program_id}'"
+                        )));
+                    }
+                }
                 info!(
                     batch = batch_number,
                     proving_time_s = elapsed.as_secs(),
@@ -199,7 +243,17 @@ impl<B: ProverBackend> Prover<B> {
                 );
                 self.backend.to_batch_proof(output, format)
             } else {
+                let start = std::time::Instant::now();
                 let output = self.backend.prove_with_elf(elf, &serialized, format)?;
+                // Enforce proving duration limit even in untimed mode.
+                if let Some(max_dur) = limits.max_proving_duration {
+                    let elapsed = start.elapsed();
+                    if elapsed > max_dur {
+                        return Err(BackendError::resource_limit(format!(
+                            "proving took {elapsed:.2?} which exceeds limit of {max_dur:.2?} for program '{program_id}'"
+                        )));
+                    }
+                }
                 info!(
                     batch = batch_number,
                     "Proved batch {batch_number} (program: {program_id}, elf)"

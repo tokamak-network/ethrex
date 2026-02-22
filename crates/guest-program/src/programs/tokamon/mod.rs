@@ -1,7 +1,7 @@
 pub mod execution;
 pub mod types;
 
-use crate::traits::{GuestProgram, GuestProgramError, backends};
+use crate::traits::{GuestProgram, GuestProgramError, ResourceLimits, backends};
 
 /// Tokamon Guest Program — location-based reward/stamp game.
 ///
@@ -62,6 +62,17 @@ impl GuestProgram for TokammonGuestProgram {
         // The zkVM guest binary calls TokammonProgramOutput::encode()
         // internally and commits the result as public values.
         Ok(raw_output.to_vec())
+    }
+
+    fn resource_limits(&self) -> ResourceLimits {
+        ResourceLimits {
+            max_input_bytes: Some(64 * 1024 * 1024), // 64 MB
+            max_proving_duration: Some(std::time::Duration::from_secs(1800)), // 30 minutes
+        }
+    }
+
+    fn version(&self) -> &str {
+        "0.1.0"
     }
 }
 
