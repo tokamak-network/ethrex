@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use ethrex_guest_program::{input::ProgramInput, traits::backends};
+use ethrex_guest_program::{ZKVM_OPENVM_ZKVM_OPENVM_PROGRAM_ELF, input::ProgramInput, traits::backends};
 use ethrex_l2_common::prover::{BatchProof, ProofFormat, ProverType};
 use openvm_continuations::verifier::internal::types::VmStarkProof;
 use openvm_sdk::{Sdk, StdIn, types::EvmProof};
@@ -8,9 +8,6 @@ use openvm_stark_sdk::config::baby_bear_poseidon2::BabyBearPoseidon2Config;
 use rkyv::rancor::Error;
 
 use crate::backend::{BackendError, ProverBackend};
-
-static PROGRAM_ELF: &[u8] =
-    include_bytes!("../../../../guest-program/bin/openvm/out/riscv32im-openvm-elf");
 
 /// OpenVM-specific proof output.
 pub enum OpenVmProveOutput {
@@ -30,7 +27,7 @@ impl OpenVmBackend {
     /// Execute using already-serialized input.
     fn execute_with_stdin(&self, stdin: StdIn) -> Result<(), BackendError> {
         let sdk = Sdk::standard();
-        sdk.execute(PROGRAM_ELF, stdin)
+        sdk.execute(ZKVM_OPENVM_PROGRAM_ELF, stdin)
             .map_err(BackendError::execution)?;
         Ok(())
     }
@@ -45,13 +42,13 @@ impl OpenVmBackend {
         let proof = match format {
             ProofFormat::Compressed => {
                 let (proof, _) = sdk
-                    .prove(PROGRAM_ELF, stdin)
+                    .prove(ZKVM_OPENVM_PROGRAM_ELF, stdin)
                     .map_err(BackendError::proving)?;
                 OpenVmProveOutput::Compressed(proof)
             }
             ProofFormat::Groth16 => {
                 let proof = sdk
-                    .prove_evm(PROGRAM_ELF, stdin)
+                    .prove_evm(ZKVM_OPENVM_PROGRAM_ELF, stdin)
                     .map_err(BackendError::proving)?;
                 OpenVmProveOutput::Groth16(proof)
             }

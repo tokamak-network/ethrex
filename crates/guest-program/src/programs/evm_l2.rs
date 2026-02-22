@@ -34,9 +34,7 @@ impl GuestProgram for EvmL2GuestProgram {
             backends::SP1 => Self::non_empty(crate::ZKVM_SP1_PROGRAM_ELF),
             backends::RISC0 => Self::non_empty(crate::methods::ETHREX_GUEST_RISC0_ELF),
             backends::ZISK => Self::non_empty(crate::ZKVM_ZISK_PROGRAM_ELF),
-            // OpenVM ELF is loaded locally in the backend, not via a crate
-            // constant.  Support can be added once an `ZKVM_OPENVM_PROGRAM_ELF`
-            // constant is defined in lib.rs.
+            backends::OPENVM => Self::non_empty(crate::ZKVM_OPENVM_PROGRAM_ELF),
             _ => None,
         }
     }
@@ -115,6 +113,18 @@ mod tests {
         let data = b"output bytes";
         let result = gp.encode_output(data).unwrap();
         assert_eq!(result, data);
+    }
+
+    #[test]
+    fn openvm_backend_elf_lookup() {
+        let gp = EvmL2GuestProgram;
+        // Without the "openvm" feature the constant is empty, so elf() returns None.
+        let result = gp.elf(backends::OPENVM);
+        if crate::ZKVM_OPENVM_PROGRAM_ELF.is_empty() {
+            assert!(result.is_none());
+        } else {
+            assert!(result.is_some());
+        }
     }
 
     #[test]
