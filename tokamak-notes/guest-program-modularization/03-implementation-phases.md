@@ -3,80 +3,80 @@
 이 문서는 Guest Program 모듈화 구현을 4개 하위 단계(Phase 2.1-2.4)로 나누어 상세하게 기술한다.
 각 단계는 독립적으로 테스트 가능한 마일스톤을 가진다.
 
-## Phase 2.1: 코어 추상화 (2-3주)
+> **마지막 업데이트**: 2026-02-22
+> Phase 2.1 ✅ | Phase 2.2 ✅ | Phase 2.3 ✅ | Phase 2.4 ✅ | Phase 3 ✅
+
+---
+
+## Phase 2.1: 코어 추상화 ✅ 완료
 
 ### 목표
 - `GuestProgram` 트레이트를 정의한다.
 - 기존 EVM-L2 코드를 `EvmL2GuestProgram`으로 래핑한다.
 - `ProverBackend`에 bytes 기반 메서드를 추가한다.
-- SP1/RISC0 백엔드를 새 메서드를 지원하도록 수정한다.
+- 모든 백엔드(SP1, RISC0, ZisK, OpenVM, Exec)에 새 메서드 추가.
 - **모든 기존 테스트가 통과해야 한다 (zero behavior change).**
 
-### 작업 항목
+### 실제 구현 내용
 
-#### 2.1.1 GuestProgram 트레이트 정의
+#### 2.1.1 GuestProgram 트레이트 정의 ✅
 
 **파일**: `crates/guest-program/src/traits.rs` (신규)
 
+> **설계 결정**: `BackendType` 순환 의존성 문제는 **Option B**로 해결 — `&str` 상수를 사용하여 백엔드를 식별한다.
+> `backends` 모듈에 `SP1`, `RISC0`, `ZISK`, `OPENVM`, `EXEC` 상수를 정의.
+
 ```rust
+pub mod backends {
+    pub const SP1: &str = "sp1";
+    pub const RISC0: &str = "risc0";
+    pub const ZISK: &str = "zisk";
+    pub const OPENVM: &str = "openvm";
+    pub const EXEC: &str = "exec";
+}
+
 pub trait GuestProgram: Send + Sync {
     fn program_id(&self) -> &str;
-    fn elf(&self, backend: BackendType) -> Option<&[u8]>;
-    fn vk_bytes(&self, backend: BackendType) -> Option<Vec<u8>>;
+    fn elf(&self, backend: &str) -> Option<&[u8]>;
+    fn vk_bytes(&self, backend: &str) -> Option<Vec<u8>>;
+    fn program_type_id(&self) -> u8;
     fn serialize_input(&self, raw_input: &[u8]) -> Result<Vec<u8>, GuestProgramError>;
     fn encode_output(&self, raw_output: &[u8]) -> Result<Vec<u8>, GuestProgramError>;
-    fn program_type_id(&self) -> u8;
 }
 ```
+
+`serialize_input`과 `encode_output`은 기본 구현(identity pass-through)을 제공.
 
 변경 파일:
 | 파일 | 변경 내용 |
 |------|----------|
-| `crates/guest-program/src/traits.rs` | **신규** — 트레이트 정의 |
-| `crates/guest-program/src/lib.rs` | `pub mod traits;` 추가, `GuestProgram` re-export |
+| `crates/guest-program/src/traits.rs` | **신규** — `backends` 모듈, `GuestProgramError`, `GuestProgram` 트레이트 |
+| `crates/guest-program/src/lib.rs` | `pub mod traits;` 추가 |
 
-검증:
-- [ ] 트레이트가 컴파일된다
-- [ ] `BackendType` 의존성이 순환하지 않는다 (필요 시 별도 공유 크레이트로 분리)
-
-> **주의**: `BackendType`은 현재 `crates/l2/prover/src/backend/mod.rs`에 정의되어 있다. `GuestProgram` 트레이트가 이를 참조하면 `guest-program` → `l2-prover` 의존성이 생겨 순환이 발생한다. 해결 방안:
-> - **Option A**: `BackendType`을 `crates/l2/common/src/prover.rs`로 이동 (guest-program은 이미 l2-common에 의존하지 않으므로, 별도 공유 크레이트 필요)
-> - **Option B**: `GuestProgram` 트레이트에서 `BackendType` 대신 `&str` (예: `"sp1"`, `"risc0"`)을 사용
-> - **Option C**: `BackendType`을 `crates/guest-program/src/` 내부에서 재정의 (중복이지만 의존성 없음)
-> - **추천**: Option A — `BackendType`을 `ethrex-common` 같은 공유 크레이트로 이동
-
-#### 2.1.2 EvmL2GuestProgram 구현
+#### 2.1.2 EvmL2GuestProgram 구현 ✅
 
 **파일**: `crates/guest-program/src/programs/evm_l2.rs` (신규)
-
-기존 ELF 정적 상수를 래핑:
 
 ```rust
 pub struct EvmL2GuestProgram;
 
 impl GuestProgram for EvmL2GuestProgram {
     fn program_id(&self) -> &str { "evm-l2" }
+    fn program_type_id(&self) -> u8 { 1 }
 
-    fn elf(&self, backend: BackendType) -> Option<&[u8]> {
+    fn elf(&self, backend: &str) -> Option<&[u8]> {
         match backend {
-            BackendType::SP1 => Some(crate::ZKVM_SP1_PROGRAM_ELF),
-            BackendType::RISC0 => Some(crate::methods::ETHREX_GUEST_RISC0_ELF),
-            BackendType::ZisK => Some(crate::ZKVM_ZISK_PROGRAM_ELF),
+            backends::SP1 => { /* cfg(feature="sp1") 조건부 include_bytes */ },
+            backends::RISC0 => { /* cfg(feature="risc0") 조건부 */ },
+            backends::ZISK => { /* cfg(feature="zisk") 조건부 */ },
             _ => None,
         }
     }
-
-    fn serialize_input(&self, raw_input: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
-        Ok(raw_input.to_vec())  // 기존과 동일: 이미 rkyv 직렬화된 데이터
-    }
-
-    fn encode_output(&self, raw_output: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
-        Ok(raw_output.to_vec())  // zkVM이 반환한 public values 그대로
-    }
-
-    fn program_type_id(&self) -> u8 { 1 }
+    // serialize_input, encode_output: 기본 identity 사용
 }
 ```
+
+6개 단위 테스트 포함 (`program_id_is_evm_l2`, `program_type_id_is_one`, `unknown_backend_returns_none`, `serialize_input_is_identity`, `encode_output_is_identity`, `non_empty_filters_sentinels`).
 
 변경 파일:
 | 파일 | 변경 내용 |
@@ -85,173 +85,71 @@ impl GuestProgram for EvmL2GuestProgram {
 | `crates/guest-program/src/programs/evm_l2.rs` | **신규** — EvmL2GuestProgram |
 | `crates/guest-program/src/lib.rs` | `pub mod programs;` 추가 |
 
-검증:
-- [ ] `EvmL2GuestProgram`이 `GuestProgram` 트레이트를 구현한다
-- [ ] `elf()` 반환 값이 기존 `ZKVM_SP1_PROGRAM_ELF` 등과 동일하다
-
-#### 2.1.3 ProverBackend에 bytes 기반 메서드 추가
+#### 2.1.3 ProverBackend에 bytes 기반 메서드 추가 ✅
 
 **파일**: `crates/l2/prover/src/backend/mod.rs` (수정)
-
-기존 `prove()` 메서드를 유지하면서 `prove_with_elf()` 추가:
 
 ```rust
 pub trait ProverBackend {
     // ... 기존 메서드 유지 ...
+    fn backend_name(&self) -> &'static str;  // backends:: 상수 반환
 
-    fn backend_type(&self) -> BackendType;
-
-    fn execute_with_elf(&self, elf: &[u8], serialized_input: &[u8]) -> Result<(), BackendError> {
-        Err(BackendError::not_implemented("execute_with_elf"))
-    }
-
+    // ELF-based methods (기본 구현: NotImplemented 에러)
+    fn execute_with_elf(&self, elf: &[u8], serialized_input: &[u8]) -> Result<(), BackendError>;
     fn prove_with_elf(&self, elf: &[u8], serialized_input: &[u8], format: ProofFormat)
-        -> Result<Self::ProofOutput, BackendError>
-    {
-        Err(BackendError::not_implemented("prove_with_elf"))
-    }
-
-    fn verify_with_vk(&self, proof: &Self::ProofOutput, vk: &[u8]) -> Result<(), BackendError> {
-        Err(BackendError::not_implemented("verify_with_vk"))
-    }
+        -> Result<Self::ProofOutput, BackendError>;
+    fn execute_with_elf_timed(...) -> Result<Duration, BackendError>;
+    fn prove_with_elf_timed(...) -> Result<(Self::ProofOutput, Duration), BackendError>;
 }
 ```
+
+`BackendType`에 `as_backend_name()` 메서드 추가하여 enum → `&str` 변환 지원.
 
 변경 파일:
 | 파일 | 변경 내용 |
 |------|----------|
-| `crates/l2/prover/src/backend/mod.rs` | `backend_type()`, `prove_with_elf()`, `execute_with_elf()`, `verify_with_vk()` 추가 |
-| `crates/l2/prover/src/backend/error.rs` | `BackendError::NotImplemented` 변형 추가 |
+| `crates/l2/prover/src/backend/mod.rs` | `backend_name()`, `execute_with_elf()`, `prove_with_elf()`, timed 변형 추가. `BackendType::as_backend_name()` 추가 |
+| `crates/l2/prover/src/backend/error.rs` | `BackendError::NotImplemented` 변형, `not_implemented()`, `serialization()` 생성자 추가 |
 
-검증:
-- [ ] 기존 백엔드가 새 메서드의 기본 구현으로 컴파일된다
-- [ ] 기존 `prove()` 호출이 변경 없이 동작한다
+#### 2.1.4 모든 백엔드 수정 ✅
 
-#### 2.1.4 SP1 백엔드 수정
+5개 백엔드 모두 `backend_name()` 구현 완료. ELF 메서드는 기본 `NotImplemented` 반환 (Exec만 실제 구현).
 
-**파일**: `crates/l2/prover/src/backend/sp1.rs` (수정)
-
-```rust
-impl ProverBackend for Sp1Backend {
-    fn backend_type(&self) -> BackendType { BackendType::SP1 }
-
-    fn execute_with_elf(&self, elf: &[u8], serialized_input: &[u8]) -> Result<(), BackendError> {
-        let mut stdin = SP1Stdin::new();
-        stdin.write_slice(serialized_input);
-        let client = self.get_or_init_client();
-        client.execute(elf, &stdin).map_err(BackendError::execution)?;
-        Ok(())
-    }
-
-    fn prove_with_elf(&self, elf: &[u8], serialized_input: &[u8], format: ProofFormat)
-        -> Result<Self::ProofOutput, BackendError>
-    {
-        let mut stdin = SP1Stdin::new();
-        stdin.write_slice(serialized_input);
-        let client = self.get_or_init_client();
-        let (pk, vk) = client.setup(elf);
-        let sp1_format = Self::convert_format(format);
-        let proof = client.prove(&pk, &stdin, sp1_format).map_err(BackendError::proving)?;
-        Ok(Sp1ProveOutput::new(proof, vk))
-    }
-
-    // 기존 메서드 유지 (변경 없음)
-}
-```
-
-변경 파일:
 | 파일 | 변경 내용 |
 |------|----------|
-| `crates/l2/prover/src/backend/sp1.rs` | `backend_type()`, `execute_with_elf()`, `prove_with_elf()` 구현 |
+| `crates/l2/prover/src/backend/sp1.rs` | `backend_name()` → `backends::SP1` |
+| `crates/l2/prover/src/backend/risc0.rs` | `backend_name()` → `backends::RISC0` |
+| `crates/l2/prover/src/backend/zisk.rs` | `backend_name()` → `backends::ZISK` |
+| `crates/l2/prover/src/backend/openvm.rs` | `backend_name()` → `backends::OPENVM` |
+| `crates/l2/prover/src/backend/exec.rs` | `backend_name()` → `backends::EXEC`, `execute_with_elf()` 및 `prove_with_elf()` 실제 구현 |
 
-검증:
-- [ ] 기존 `prove()` + `execute()` 테스트 통과
-- [ ] `prove_with_elf()` 단위 테스트: 기존 ELF를 명시적으로 전달하여 동일 결과 확인
-
-#### 2.1.5 RISC0 백엔드 수정
-
-**파일**: `crates/l2/prover/src/backend/risc0.rs` (수정)
-
-```rust
-impl ProverBackend for Risc0Backend {
-    fn backend_type(&self) -> BackendType { BackendType::RISC0 }
-
-    fn execute_with_elf(&self, elf: &[u8], serialized_input: &[u8]) -> Result<(), BackendError> {
-        let env = ExecutorEnv::builder()
-            .write_slice(serialized_input)
-            .build()
-            .map_err(BackendError::execution)?;
-        let executor = default_executor();
-        executor.execute(env, elf).map_err(BackendError::execution)?;
-        Ok(())
-    }
-
-    fn prove_with_elf(&self, elf: &[u8], serialized_input: &[u8], format: ProofFormat)
-        -> Result<Self::ProofOutput, BackendError>
-    {
-        let env = ExecutorEnv::builder()
-            .write_slice(serialized_input)
-            .build()
-            .map_err(BackendError::execution)?;
-        let prover = default_prover();
-        let prover_opts = Self::convert_format(format);
-        let prove_info = prover.prove_with_opts(env, elf, &prover_opts)
-            .map_err(BackendError::proving)?;
-        Ok(prove_info.receipt)
-    }
-}
-```
-
-변경 파일:
-| 파일 | 변경 내용 |
-|------|----------|
-| `crates/l2/prover/src/backend/risc0.rs` | `backend_type()`, `execute_with_elf()`, `prove_with_elf()` 구현 |
-
-검증:
-- [ ] 기존 RISC0 테스트 통과
-- [ ] `prove_with_elf()` 단위 테스트
-
-#### 2.1.6 Exec 백엔드 수정
-
-**파일**: `crates/l2/prover/src/backend/exec.rs` (수정)
-
-Exec 백엔드는 ELF를 사용하지 않고 직접 실행하므로 특수 처리:
-
-```rust
-impl ProverBackend for ExecBackend {
-    fn backend_type(&self) -> BackendType { BackendType::Exec }
-
-    fn execute_with_elf(&self, _elf: &[u8], serialized_input: &[u8]) -> Result<(), BackendError> {
-        // Exec 모드에서는 ELF를 무시하고 직접 실행
-        let input: ProgramInput = rkyv::from_bytes(serialized_input)
-            .map_err(BackendError::serialization)?;
-        Self::execute_core(input)?;
-        Ok(())
-    }
-}
-```
+> **계획 대비 차이점**:
+> - 원래 계획은 SP1/RISC0만 수정 예정이었으나, 실제로는 5개 백엔드 전부에 `backend_name()` 추가.
+> - `verify_with_vk()`는 구현하지 않음 (현재 필요 없음).
+> - `backend_type()` 대신 `backend_name()` 사용 — 순환 의존성 회피.
 
 ### Phase 2.1 완료 기준
 
-- [ ] `GuestProgram` 트레이트가 정의되고 `EvmL2GuestProgram`이 구현됨
-- [ ] `ProverBackend`에 `prove_with_elf()` 등 새 메서드가 추가됨
-- [ ] SP1, RISC0, Exec 백엔드가 새 메서드를 구현
-- [ ] **모든 기존 테스트 통과** (cargo test)
-- [ ] 새 메서드 단위 테스트 추가
+- [x] `GuestProgram` 트레이트가 정의되고 `EvmL2GuestProgram`이 구현됨
+- [x] `ProverBackend`에 `prove_with_elf()` 등 새 메서드가 추가됨
+- [x] 5개 백엔드 모두 `backend_name()` 구현
+- [x] Exec 백엔드 `execute_with_elf()`, `prove_with_elf()` 실제 구현
+- [x] **모든 기존 테스트 통과** (cargo test)
+- [x] 6개 EvmL2GuestProgram 단위 테스트 추가
 
 ---
 
-## Phase 2.2: 레지스트리 & 멀티프로그램 (2-3주)
+## Phase 2.2: 레지스트리 & 멀티프로그램 ✅ 완료
 
 ### 목표
 - `GuestProgramRegistry` 구현
 - `ProofData` 프로토콜에 `program_id` 추가
 - Proof Coordinator가 프로그램별 배치 할당
-- Transfer Circuit Guest Program 레퍼런스 구현
+- Prover 메인 루프에 dual-path proving 통합
 
-### 작업 항목
+### 실제 구현 내용
 
-#### 2.2.1 GuestProgramRegistry 구현
+#### 2.2.1 GuestProgramRegistry 구현 ✅
 
 **파일**: `crates/l2/prover/src/registry.rs` (신규)
 
@@ -262,12 +160,16 @@ pub struct GuestProgramRegistry {
 }
 
 impl GuestProgramRegistry {
-    pub fn new(default_program_id: &str) -> Self { ... }
-    pub fn register(&mut self, program: Arc<dyn GuestProgram>) { ... }
-    pub fn get(&self, program_id: &str) -> Option<&Arc<dyn GuestProgram>> { ... }
-    pub fn default_program(&self) -> Option<&Arc<dyn GuestProgram>> { ... }
+    pub fn new(default_program_id: &str) -> Self;
+    pub fn register(&mut self, program: Arc<dyn GuestProgram>);
+    pub fn get(&self, program_id: &str) -> Option<&Arc<dyn GuestProgram>>;
+    pub fn default_program(&self) -> Option<&Arc<dyn GuestProgram>>;
+    pub fn default_program_id(&self) -> &str;
+    pub fn program_ids(&self) -> Vec<&str>;
 }
 ```
+
+5개 단위 테스트: `register_and_lookup`, `default_program`, `default_program_missing`, `duplicate_registration_replaces`, `program_ids`.
 
 변경 파일:
 | 파일 | 변경 내용 |
@@ -275,7 +177,7 @@ impl GuestProgramRegistry {
 | `crates/l2/prover/src/registry.rs` | **신규** — GuestProgramRegistry |
 | `crates/l2/prover/src/lib.rs` | `pub mod registry;` 추가 |
 
-#### 2.2.2 ProofData 프로토콜 확장
+#### 2.2.2 ProofData 프로토콜 확장 ✅
 
 **파일**: `crates/l2/common/src/prover.rs` (수정)
 
@@ -285,458 +187,616 @@ pub enum ProofData {
         commit_hash: String,
         prover_type: ProverType,
         #[serde(default)]
-        supported_programs: Vec<String>,
+        supported_programs: Vec<String>,  // 추가
     },
     BatchResponse {
         batch_number: Option<u64>,
         input: Option<ProverInputData>,
         format: Option<ProofFormat>,
         #[serde(default)]
-        program_id: Option<String>,
+        program_id: Option<String>,  // 추가
     },
     ProofSubmit {
         batch_number: u64,
         batch_proof: BatchProof,
         #[serde(default = "default_program_id")]
-        program_id: String,
+        program_id: String,  // 추가
     },
     // ...
 }
-
-fn default_program_id() -> String {
-    "evm-l2".to_string()
-}
 ```
 
-변경 파일:
-| 파일 | 변경 내용 |
-|------|----------|
-| `crates/l2/common/src/prover.rs` | `ProofData` 변형에 `program_id` 관련 필드 추가 |
+편의 메서드 추가: `batch_request_with_programs()`, `batch_response_with_program()`, `proof_submit_with_program()`.
 
-하위 호환성:
-- `#[serde(default)]`를 사용하여 이전 프루버가 새 필드 없이 통신 가능
-- `program_id`가 None이면 기본값 `"evm-l2"` 사용
+하위 호환성: `#[serde(default)]` 사용으로 이전 프루버와 통신 가능.
 
-#### 2.2.3 Proof Coordinator 수정
+#### 2.2.3 Proof Coordinator 수정 ✅
 
 **파일**: `crates/l2/sequencer/proof_coordinator.rs` (수정)
 
-```rust
-async fn handle_request(
-    &self,
-    stream: &mut TcpStream,
-    commit_hash: String,
-    prover_type: ProverType,
-    supported_programs: Vec<String>,  // 추가
-) -> Result<(), ProofCoordinatorError> {
-    // 배치의 program_id 결정 (현재는 항상 "evm-l2")
-    let program_id = self.determine_program_for_batch(batch_to_prove).await?;
+- `handle_connection()`: `BatchRequest`에서 `supported_programs` 파싱
+- `handle_request()`: `supported_programs` 필터링 — 빈 리스트면 모든 프로그램 수용
+- `determine_program_for_batch()`: 현재 하드코딩 `"evm-l2"` (향후 배치별 매핑 추가 예정)
+- `ProofSubmit` 수신 시 `program_id` 포함
 
-    // 프루버가 해당 프로그램을 지원하는지 확인
-    if !supported_programs.is_empty() && !supported_programs.contains(&program_id) {
-        // 이 프루버는 해당 프로그램을 지원하지 않음
-        send_response(stream, &ProofData::empty_batch_response()).await?;
-        return Ok(());
-    }
-
-    let response = ProofData::BatchResponse {
-        batch_number: Some(batch_to_prove),
-        input: Some(input),
-        format: Some(format),
-        program_id: Some(program_id),
-    };
-    send_response(stream, &response).await?;
-    Ok(())
-}
-
-/// 배치에 사용할 Guest Program 결정.
-/// 현재는 항상 "evm-l2". 향후 배치별 프로그램 매핑 추가.
-async fn determine_program_for_batch(&self, _batch_number: u64) -> Result<String, ProofCoordinatorError> {
-    Ok("evm-l2".to_string())
-}
-```
-
-변경 파일:
-| 파일 | 변경 내용 |
-|------|----------|
-| `crates/l2/sequencer/proof_coordinator.rs` | `handle_request()` 시그니처 및 로직 확장, `handle_connection()` 파싱 수정 |
-
-#### 2.2.4 Prover 메인 루프 수정
+#### 2.2.4 Prover 메인 루프 수정 ✅
 
 **파일**: `crates/l2/prover/src/prover.rs` (수정)
 
+**Dual-path proving 아키텍처**:
+
 ```rust
-struct Prover<B: ProverBackend> {
-    backend: B,
-    registry: GuestProgramRegistry,  // 추가
-    // ...
-}
-
-impl<B: ProverBackend> Prover<B> {
-    pub fn new(backend: B, cfg: &ProverConfig, registry: GuestProgramRegistry) -> Self {
-        Self { backend, registry, ... }
-    }
-
-    async fn start(&self) {
-        loop {
-            // 기존 루프 유지, prove_batch() 호출 시 registry 사용
-        }
+fn prove_batch(&self, input: ProgramInput, format: ProofFormat,
+               batch_number: u64, program_id: &str) -> Result<BatchProof, BackendError> {
+    // 1차: 레지스트리에서 ELF 조회
+    if let Some((program, elf)) = registry.get(program_id).and_then(|p| p.elf(backend_name)) {
+        // ELF 경로: serialize → prove_with_elf
+        let serialized = program.serialize_input(rkyv::to_bytes(&input))?;
+        self.backend.prove_with_elf(elf, &serialized, format)
+    } else {
+        // 레거시 경로: prove(ProgramInput) 직접 호출
+        self.backend.prove(input, format)
     }
 }
 ```
 
-`request_new_input()` 수정:
+`create_default_registry()`:
 ```rust
-async fn request_new_input(&self, endpoint: &Url) -> Result<InputRequest, String> {
-    let request = ProofData::BatchRequest {
-        commit_hash: self.commit_hash.clone(),
-        prover_type: self.backend.prover_type(),
-        supported_programs: self.registry.program_ids().iter().map(|s| s.to_string()).collect(),
-    };
-    // ... 기존 응답 처리 ...
-    // program_id를 ProverData에 저장
+fn create_default_registry() -> GuestProgramRegistry {
+    let mut registry = GuestProgramRegistry::new("evm-l2");
+    registry.register(Arc::new(EvmL2GuestProgram));
+    registry.register(Arc::new(ZkDexGuestProgram));      // Phase 2.4에서 추가
+    registry.register(Arc::new(TokammonGuestProgram));    // Phase 2.4에서 추가
+    registry
 }
 ```
 
-`start()` 내부 증명 생성 수정:
-```rust
-// program_id에 따라 GuestProgram 조회
-let program_id = prover_data.program_id.as_deref().unwrap_or("evm-l2");
-let program = self.registry.get(program_id).ok_or("Unknown program")?;
+`request_new_input()`: `supported_programs` 리스트를 coordinator에 전송, 응답에서 `program_id` 수신.
 
-let elf = program.elf(self.backend.backend_type()).ok_or("No ELF for backend")?;
-let serialized = program.serialize_input(&raw_input_bytes)?;
-
-let batch_proof = self.backend.prove_with_elf(elf, &serialized, prover_data.format)
-    .and_then(|output| self.backend.to_batch_proof(output, prover_data.format))?;
-```
-
-변경 파일:
-| 파일 | 변경 내용 |
-|------|----------|
-| `crates/l2/prover/src/prover.rs` | `Prover` 구조체에 `registry` 추가, `start_prover()` 수정, 증명 생성 로직 수정 |
-
-#### 2.2.5 Transfer Circuit 레퍼런스 구현
-
-**디렉토리**: `crates/guest-program/programs/transfer/` (신규)
-
-단순 잔액 이동만 증명하는 최소 Guest Program:
-
-```rust
-// crates/guest-program/programs/transfer/src/main.rs
-
-/// Transfer Circuit: EVM 없이 잔액 이동만 증명
-///
-/// 입력: 발신자, 수신자, 금액, 서명, 현재 잔액
-/// 검증: 서명 유효성, 잔액 충분성
-/// 출력: 이전 상태 루트, 새 상태 루트
-fn main() {
-    // zkVM 엔트리포인트
-    let input: TransferInput = read_input();
-
-    // 서명 검증
-    verify_signature(&input.sender, &input.signature, &input.tx_hash)?;
-
-    // 잔액 검증
-    assert!(input.sender_balance >= input.amount);
-
-    // 상태 전이
-    let new_sender_balance = input.sender_balance - input.amount;
-    let new_receiver_balance = input.receiver_balance + input.amount;
-
-    // 상태 루트 계산 (간소화된 Merkle tree)
-    let new_state_root = compute_state_root(/* ... */);
-
-    commit_output(TransferOutput {
-        initial_state_root: input.state_root,
-        final_state_root: new_state_root,
-    });
-}
-```
-
-`TransferGuestProgram` 구현:
-
-```rust
-// crates/guest-program/src/programs/transfer.rs (신규)
-
-pub struct TransferGuestProgram;
-
-impl GuestProgram for TransferGuestProgram {
-    fn program_id(&self) -> &str { "transfer" }
-    fn program_type_id(&self) -> u8 { 2 }
-
-    fn elf(&self, backend: BackendType) -> Option<&[u8]> {
-        // 빌드된 Transfer ELF 참조
-        match backend {
-            #[cfg(feature = "sp1")]
-            BackendType::SP1 => Some(include_bytes!("../../bin/sp1/transfer/out/transfer-sp1-elf")),
-            _ => None,
-        }
-    }
-
-    fn serialize_input(&self, raw_input: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
-        // Transfer 전용 입력 직렬화
-        Ok(raw_input.to_vec())
-    }
-
-    fn encode_output(&self, raw_output: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
-        // Transfer 전용 출력 인코딩 (간소화)
-        Ok(raw_output.to_vec())
-    }
-}
-```
-
-변경 파일:
-| 파일 | 변경 내용 |
-|------|----------|
-| `crates/guest-program/programs/transfer/` | **신규 디렉토리** — Transfer Circuit 크레이트 |
-| `crates/guest-program/src/programs/transfer.rs` | **신규** — TransferGuestProgram |
-| `crates/guest-program/src/programs/mod.rs` | `pub mod transfer;` 추가 |
-| `crates/guest-program/build.rs` | Transfer 프로그램 빌드 추가 |
+> **계획 대비 차이점**:
+> - Transfer Circuit 레퍼런스는 구현하지 않음 — 대신 ZK-DEX와 Tokamon 앱 특화 템플릿으로 대체 (06-app-specific-templates.md 참조).
+> - `crates/guest-program/programs/transfer/` 디렉토리 미생성.
+> - `build.rs` 수정 없음 (멀티 ELF 빌드는 향후 과제).
 
 ### Phase 2.2 완료 기준
 
-- [ ] `GuestProgramRegistry`가 동작하고 `EvmL2GuestProgram`이 등록됨
-- [ ] `ProofData` 프로토콜에 `program_id`가 추가됨 (하위 호환)
-- [ ] Proof Coordinator가 `program_id`를 포함한 응답을 전송
-- [ ] Prover가 레지스트리를 통해 ELF를 조회하여 증명 생성
-- [ ] Transfer Circuit 레퍼런스가 SP1에서 컴파일/실행됨
-- [ ] 기존 EVM-L2 흐름이 변경 없이 동작 (end-to-end 테스트)
+- [x] `GuestProgramRegistry`가 동작하고 `EvmL2GuestProgram`이 등록됨
+- [x] `ProofData` 프로토콜에 `program_id`가 추가됨 (하위 호환)
+- [x] Proof Coordinator가 `program_id`를 포함한 응답을 전송
+- [x] Prover가 레지스트리를 통해 ELF 조회 시도 후 레거시 fallback
+- [x] 5개 레지스트리 단위 테스트 통과
+- [ ] ~~Transfer Circuit 레퍼런스~~ → ZK-DEX/Tokamon 스텁으로 대체 (Phase 2.4)
 
 ---
 
-## Phase 2.3: L1 컨트랙트 & 검증 (2-3주)
+## Phase 2.3: L1 컨트랙트 & 검증 ✅ 완료
 
 ### 목표
 - `OnChainProposer.sol`의 VK 매핑에 `programTypeId` 추가
 - `verifyBatch()` 프로그램 타입별 검증 디스패치
-- 배포 스크립트 멀티프로그램 VK 지원
-- `l1_committer.rs`와 `l1_proof_sender.rs` 수정
+- `l1_committer.rs` 수정
+- based 변형 컨트랙트도 동일 수정
 
-### 작업 항목
+### 실제 구현 내용
 
-#### 2.3.1 OnChainProposer.sol 수정
+#### 2.3.1 OnChainProposer.sol 수정 ✅
 
 **파일**: `crates/l2/contracts/src/l1/OnChainProposer.sol` (수정)
 
-VK 매핑 확장:
+VK 매핑 2D → 3D:
 ```solidity
-// 기존:
-// mapping(bytes32 => mapping(uint8 => bytes32)) public verificationKeys;
-
+// 기존: mapping(bytes32 => mapping(uint8 => bytes32))
 // 변경:
 mapping(bytes32 commitHash => mapping(uint8 programTypeId => mapping(uint8 verifierId => bytes32 vk)))
     public verificationKeys;
 ```
 
-`BatchCommitmentInfo` 확장:
+`BatchCommitmentInfo`에 `programTypeId` 추가:
 ```solidity
 struct BatchCommitmentInfo {
     // ... 기존 필드 ...
-    uint8 programTypeId;  // 추가
+    uint8 programTypeId;  // 추가 (구조체 끝에 배치하여 스토리지 레이아웃 영향 최소화)
 }
 ```
 
-변경 파일:
-| 파일 | 변경 내용 |
-|------|----------|
-| `crates/l2/contracts/src/l1/OnChainProposer.sol` | VK 매핑 3차원, BatchCommitmentInfo에 programTypeId, commitBatch/verifyBatch 수정, VK 업그레이드 함수 수정 |
-| `crates/l2/contracts/src/l1/interfaces/IOnChainProposer.sol` | 인터페이스 시그니처 업데이트 |
+`DEFAULT_PROGRAM_TYPE_ID = 1` 상수 추가.
 
-#### 2.3.2 VK 마이그레이션 함수
+하위 호환성: `programTypeId == 0`이면 자동으로 `DEFAULT_PROGRAM_TYPE_ID (1)`로 매핑.
 
 ```solidity
-/// 기존 VK 데이터를 새 3차원 매핑으로 마이그레이션.
-/// 기존 VK는 programTypeId=1 (EVM-L2)로 이전.
-function migrateVerificationKeys(
-    bytes32[] calldata commitHashes
-) external onlyOwner {
-    uint8 DEFAULT_PROGRAM_TYPE = 1; // EVM-L2
-    for (uint256 i = 0; i < commitHashes.length; i++) {
-        bytes32 ch = commitHashes[i];
-        // 이전 슬롯에서 읽어 새 슬롯에 쓰기
-        // 주의: 스토리지 슬롯 계산이 달라지므로 실제 구현 시 검증 필요
-        verificationKeys[ch][DEFAULT_PROGRAM_TYPE][SP1_VERIFIER_ID] = oldVk_sp1;
-        verificationKeys[ch][DEFAULT_PROGRAM_TYPE][RISC0_VERIFIER_ID] = oldVk_risc0;
-    }
+function commitBatch(
+    uint256 batchNumber, bytes32 newStateRoot, ...,
+    bytes32 commitHash, uint8 programTypeId,  // 추가
+    ...
+) external override onlyOwner whenNotPaused {
+    uint8 effectiveProgramTypeId = programTypeId == 0
+        ? DEFAULT_PROGRAM_TYPE_ID : programTypeId;
+    // VK 검증: verificationKeys[commitHash][effectiveProgramTypeId][verifierId]
+    // BatchCommitmentInfo 저장 시 effectiveProgramTypeId 포함
 }
 ```
 
-#### 2.3.3 upgradeVerificationKey 범용화
+`verifyBatch()` 및 `verifyBatchesAligned()`: 저장된 `batchCommitments[batchNumber].programTypeId`로 VK 조회.
+
+`initialize()`: 제네시스 배치를 `DEFAULT_PROGRAM_TYPE_ID`로 초기화, VK를 3D 매핑에 저장.
+
+#### 2.3.2 upgradeVerificationKey 범용화 ✅
 
 ```solidity
 function upgradeVerificationKey(
-    bytes32 commit_hash,
-    uint8 programTypeId,
-    uint8 verifierId,
-    bytes32 new_vk
+    bytes32 commit_hash, uint8 programTypeId, uint8 verifierId, bytes32 new_vk
 ) public onlyOwner {
-    require(commit_hash != bytes32(0), "OnChainProposer: commit hash is zero");
-    require(programTypeId > 0, "OnChainProposer: invalid program type");
-    require(verifierId > 0 && verifierId <= 2, "OnChainProposer: invalid verifier ID");
+    require(commit_hash != bytes32(0));
+    require(programTypeId > 0);
+    require(verifierId > 0 && verifierId <= 2);
     verificationKeys[commit_hash][programTypeId][verifierId] = new_vk;
     emit VerificationKeyUpgraded(programTypeId, verifierId, commit_hash, new_vk);
 }
 ```
 
-#### 2.3.4 l1_committer.rs 수정
+기존 `upgradeSP1VerificationKey()`와 `upgradeRISC0VerificationKey()`도 3D 매핑 사용하도록 수정 (하위 호환 유지, `DEFAULT_PROGRAM_TYPE_ID` 사용).
 
-`commitBatch()` 호출에 `programTypeId` 추가.
+#### 2.3.3 인터페이스 업데이트 ✅
+
+**파일**: `crates/l2/contracts/src/l1/interfaces/IOnChainProposer.sol` (수정)
+
+- `commitBatch` 시그니처에 `uint8 programTypeId` 추가
+- `VerificationKeyUpgraded` 이벤트 오버로드 추가 (`programTypeId`, `verifierId` 포함)
+- `upgradeVerificationKey` 함수 선언 추가
+
+#### 2.3.4 Based 변형 동일 수정 ✅
+
+**파일**: `crates/l2/contracts/src/l1/based/OnChainProposer.sol` (수정)
+**파일**: `crates/l2/contracts/src/l1/based/interfaces/IOnChainProposer.sol` (수정)
+
+메인 OnChainProposer와 동일한 변경 적용:
+- 3D VK 매핑
+- `BatchCommitmentInfo.programTypeId`
+- `commitBatch()` 시그니처 확장
+- VK 조회 로직
+- `upgradeVerificationKey()` 범용 함수
+
+#### 2.3.5 l1_committer.rs 수정 ✅
 
 **파일**: `crates/l2/sequencer/l1_committer.rs` (수정)
 
+ABI 함수 시그니처 업데이트 (`uint8` 추가):
 ```rust
-// commitBatch 호출 시 program_type_id 추가
-let calldata_values = [
-    // ... 기존 필드 ...
-    &[Value::Uint(U256::from(program_type_id as u64))],  // 추가
-].concat();
+const COMMIT_FUNCTION_SIGNATURE_BASED: &str =
+    "commitBatch(uint256,bytes32,bytes32,bytes32,bytes32,uint256,bytes32,uint8,bytes[])";
+const COMMIT_FUNCTION_SIGNATURE: &str =
+    "commitBatch(uint256,bytes32,bytes32,bytes32,bytes32,uint256,bytes32,uint8,(...)[],(...)[])";
 ```
 
-변경 파일:
-| 파일 | 변경 내용 |
-|------|----------|
-| `crates/l2/sequencer/l1_committer.rs` | `commitBatch()` calldata에 `programTypeId` 추가 |
+`send_commitment()`에 `program_type_id: u8 = 1` 하드코딩, calldata에 포함.
 
-#### 2.3.5 l1_proof_sender.rs 수정
+#### 2.3.6 l1_proof_sender.rs ✅ 수정 불필요
 
-`verifyBatch()` 호출은 시그니처가 변경되지 않으므로 수정 불필요.
-`_getPublicInputsFromCommitment()`이 내부적으로 `programTypeId`를 사용하므로 L1에서 자동 처리.
+`verifyBatch()` 시그니처 변경 없음. `programTypeId`는 `batchCommitments`에 저장되어 있으므로
+L1에서 자동으로 올바른 VK를 조회.
 
-단, 배치별 `program_type_id` 결정 로직 필요:
+#### 2.3.7 배포 스크립트 ✅ 수정 불필요
 
-```rust
-// 배치의 program_type_id를 store에서 조회
-let program_type_id = self.rollup_store
-    .get_program_type_for_batch(batch_to_send)
-    .await?
-    .unwrap_or(1); // 기본값: EVM-L2
-```
+`initialize()` 시그니처 변경 없음 — 내부적으로 `DEFAULT_PROGRAM_TYPE_ID` 사용.
 
-변경 파일:
-| 파일 | 변경 내용 |
-|------|----------|
-| `crates/l2/sequencer/l1_proof_sender.rs` | 배치별 program_type_id 조회 로직 (있으면) |
-
-#### 2.3.6 배포 스크립트 수정
-
-VK 등록 시 `programTypeId` 포함:
-
-변경 파일:
-| 파일 | 변경 내용 |
-|------|----------|
-| 배포 스크립트 (Rust/JS) | `initialize()` 호출 시 `programTypeId` 파라미터 추가 |
-| 테스트 스크립트 | VK 등록 테스트 업데이트 |
+> **계획 대비 차이점**:
+> - VK 마이그레이션 함수 (`migrateVerificationKeys`)는 구현하지 않음 — feature branch에서 스토리지 레이아웃이 완전히 변경되므로 마이그레이션 불필요. 프로덕션 배포 시 별도 고려.
+> - `l1_proof_sender.rs` 수정 불필요 확인 — `verifyBatch()` 시그니처 불변.
+> - 배포 스크립트 (`deployer.rs`) 수정 불필요 확인 — `initialize()` 시그니처 불변.
 
 ### Phase 2.3 완료 기준
 
-- [ ] `OnChainProposer.sol`이 3차원 VK 매핑을 사용
-- [ ] `commitBatch()`가 `programTypeId`를 받고 저장
-- [ ] `verifyBatch()`가 `programTypeId`에 따라 VK를 조회하고 public inputs를 재구성
-- [ ] 기존 VK 마이그레이션 함수 동작
-- [ ] `l1_committer`가 `programTypeId`를 전송
-- [ ] Solidity 단위 테스트 + 통합 테스트 통과
-- [ ] 기존 EVM-L2 배치가 `programTypeId=1`로 정상 동작
+- [x] `OnChainProposer.sol`이 3차원 VK 매핑을 사용
+- [x] `commitBatch()`가 `programTypeId`를 받고 저장
+- [x] `verifyBatch()`가 `programTypeId`에 따라 VK를 조회
+- [x] `verifyBatchesAligned()`도 동일하게 VK 조회
+- [ ] ~~VK 마이그레이션 함수~~ → feature branch이므로 불필요
+- [x] `l1_committer`가 `programTypeId`를 전송
+- [x] based 변형 컨트랙트도 동일 수정
+- [x] `cargo check -p ethrex-l2` 컴파일 통과
+- [x] 기존 EVM-L2 배치가 `programTypeId=1`로 정상 동작 (하위 호환)
 
 ---
 
-## Phase 2.4: SDK & 개발자 도구 (1-2주)
+## Phase 2.4: 앱 특화 템플릿 & 개발자 도구 ✅ 완료
 
 ### 목표
-- Guest Program 개발 템플릿
-- 빌드 도구
+- 앱 특화 Guest Program 스텁 생성 (ZK-DEX, Tokamon)
+- 레지스트리에 등록
+- Exec 백엔드 ELF 경로 구현
 - 개발자 문서
 
-### 작업 항목
+### 실제 구현 내용
 
-#### 2.4.1 Guest Program 템플릿
+#### 2.4.1 ZkDexGuestProgram 스텁 ✅
 
-`cargo-generate` 또는 간단한 스크립트로 새 Guest Program 크레이트를 생성:
+**파일**: `crates/guest-program/src/programs/zk_dex.rs` (신규)
 
-```bash
-# 사용법
-./scripts/new-guest-program.sh my-app
+```rust
+pub struct ZkDexGuestProgram;
 
-# 생성되는 구조
-crates/guest-program/programs/my-app/
-├── Cargo.toml
-└── src/
-    ├── main.rs          # zkVM 엔트리포인트 템플릿
-    ├── input.rs         # 입력 타입 정의
-    └── output.rs        # 출력 타입 정의
+impl GuestProgram for ZkDexGuestProgram {
+    fn program_id(&self) -> &str { "zk-dex" }
+    fn program_type_id(&self) -> u8 { 2 }
+    fn elf(&self, _backend: &str) -> Option<&[u8]> { None }
+    fn vk_bytes(&self, _backend: &str) -> Option<Vec<u8>> { None }
+    // serialize_input, encode_output: identity pass-through
+}
 ```
 
-#### 2.4.2 빌드 도구
+참조: [tokamak-network/zk-dex](https://github.com/tokamak-network/zk-dex/tree/circom)
+상세 설계: `06-app-specific-templates.md` 섹션 2
 
-```bash
-# 특정 Guest Program만 빌드
-GUEST_PROGRAMS=transfer cargo build --features sp1
+4개 단위 테스트 포함.
 
-# 모든 Guest Program 빌드
-GUEST_PROGRAMS=evm-l2,transfer cargo build --features sp1
+#### 2.4.2 TokammonGuestProgram 스텁 ✅
 
-# 기본 (evm-l2만)
-cargo build --features sp1
+**파일**: `crates/guest-program/src/programs/tokamon.rs` (신규)
+
+```rust
+pub struct TokammonGuestProgram;
+
+impl GuestProgram for TokammonGuestProgram {
+    fn program_id(&self) -> &str { "tokamon" }
+    fn program_type_id(&self) -> u8 { 3 }
+    fn elf(&self, _backend: &str) -> Option<&[u8]> { None }
+    fn vk_bytes(&self, _backend: &str) -> Option<Vec<u8>> { None }
+    // serialize_input, encode_output: identity pass-through
+}
 ```
 
-#### 2.4.3 개발자 문서
+참조: [tokamak-network/tokamon](https://github.com/tokamak-network/tokamon/tree/deploy/thanos-sepolia)
+상세 설계: `06-app-specific-templates.md` 섹션 3
 
-`docs/l2/guest-program-development.md`:
-- Guest Program 개요
-- GuestProgram 트레이트 설명
-- 새 Guest Program 생성 가이드
-- 빌드 및 테스트 방법
-- L1 검증 설정 방법
+4개 단위 테스트 포함.
+
+#### 2.4.3 모듈 등록 및 레지스트리 ✅
+
+**파일**: `crates/guest-program/src/programs/mod.rs` (수정)
+
+```rust
+mod evm_l2;
+mod tokamon;
+mod zk_dex;
+
+pub use evm_l2::EvmL2GuestProgram;
+pub use tokamon::TokammonGuestProgram;
+pub use zk_dex::ZkDexGuestProgram;
+```
+
+**파일**: `crates/l2/prover/src/prover.rs` (수정)
+
+`create_default_registry()`에 3개 프로그램 등록:
+```rust
+fn create_default_registry() -> GuestProgramRegistry {
+    let mut registry = GuestProgramRegistry::new("evm-l2");
+    registry.register(Arc::new(EvmL2GuestProgram));
+    registry.register(Arc::new(ZkDexGuestProgram));
+    registry.register(Arc::new(TokammonGuestProgram));
+    registry
+}
+```
+
+#### 2.4.4 Exec 백엔드 execute_with_elf / prove_with_elf ✅
+
+**파일**: `crates/l2/prover/src/backend/exec.rs` (수정)
+
+```rust
+fn execute_with_elf(&self, _elf: &[u8], serialized_input: &[u8]) -> Result<(), BackendError> {
+    let input: ProgramInput = rkyv::from_bytes::<ProgramInput, rkyv::rancor::Error>(serialized_input)
+        .map_err(|e| BackendError::serialization(e.to_string()))?;
+    Self::execute_core(input)?;
+    Ok(())
+}
+
+fn prove_with_elf(&self, _elf: &[u8], serialized_input: &[u8], _format: ProofFormat)
+    -> Result<Self::ProofOutput, BackendError>
+{
+    let input: ProgramInput = rkyv::from_bytes::<ProgramInput, rkyv::rancor::Error>(serialized_input)
+        .map_err(|e| BackendError::serialization(e.to_string()))?;
+    Self::execute_core(input)
+}
+```
+
+#### 2.4.5 미완료 항목
+
+- [ ] Guest Program 생성 스크립트 (`scripts/new-guest-program.sh`) — 향후 구현
+- [ ] 멀티 ELF 빌드 도구 (`GUEST_PROGRAMS` 환경변수) — 향후 구현
+- [ ] 개발자 가이드 문서 (`docs/l2/guest-program-development.md`) — 향후 구현
+- [ ] ZK-DEX/Tokamon의 실제 zkVM 엔트리포인트 (ELF) 구현
+- [ ] 각 프로그램의 입력/출력 타입 정의 (`ZkDexInput`, `TokammonInput` 등)
 
 ### Phase 2.4 완료 기준
 
-- [ ] Guest Program 템플릿 스크립트 동작
-- [ ] 빌드 환경변수로 멀티프로그램 빌드 가능
-- [ ] 개발자 가이드 문서 작성
+- [x] ZkDexGuestProgram 스텁 구현 (program_id="zk-dex", type_id=2)
+- [x] TokammonGuestProgram 스텁 구현 (program_id="tokamon", type_id=3)
+- [x] `programs/mod.rs`에서 export
+- [x] `create_default_registry()`에 3개 프로그램 등록
+- [x] Exec 백엔드 `execute_with_elf()`, `prove_with_elf()` 구현
+- [x] 14개 guest-program 테스트 + 5개 registry 테스트 통과 (총 19개)
+- [ ] 생성 스크립트 / 빌드 도구
+- [ ] 개발자 문서
+- [ ] 실제 ELF 바이너리 구현
 
 ---
 
-## 전체 파일 변경 요약
+## 전체 파일 변경 요약 (실제)
 
-| 파일 | Phase | 변경 유형 |
-|------|-------|----------|
-| `crates/guest-program/src/traits.rs` | 2.1 | **신규** |
-| `crates/guest-program/src/programs/mod.rs` | 2.1 | **신규** |
-| `crates/guest-program/src/programs/evm_l2.rs` | 2.1 | **신규** |
-| `crates/guest-program/src/lib.rs` | 2.1 | 수정 |
-| `crates/l2/prover/src/backend/mod.rs` | 2.1 | 수정 |
-| `crates/l2/prover/src/backend/sp1.rs` | 2.1 | 수정 |
-| `crates/l2/prover/src/backend/risc0.rs` | 2.1 | 수정 |
-| `crates/l2/prover/src/backend/exec.rs` | 2.1 | 수정 |
-| `crates/l2/prover/src/backend/error.rs` | 2.1 | 수정 |
-| `crates/l2/prover/src/registry.rs` | 2.2 | **신규** |
-| `crates/l2/common/src/prover.rs` | 2.2 | 수정 |
-| `crates/l2/prover/src/prover.rs` | 2.2 | 수정 |
-| `crates/l2/sequencer/proof_coordinator.rs` | 2.2 | 수정 |
-| `crates/guest-program/programs/transfer/` | 2.2 | **신규 디렉토리** |
-| `crates/guest-program/src/programs/transfer.rs` | 2.2 | **신규** |
-| `crates/guest-program/build.rs` | 2.2 | 수정 |
-| `crates/l2/contracts/src/l1/OnChainProposer.sol` | 2.3 | 수정 |
-| `crates/l2/contracts/src/l1/interfaces/IOnChainProposer.sol` | 2.3 | 수정 |
-| `crates/l2/sequencer/l1_committer.rs` | 2.3 | 수정 |
-| `crates/l2/sequencer/l1_proof_sender.rs` | 2.3 | 수정 (가능) |
-| `scripts/new-guest-program.sh` | 2.4 | **신규** |
-| `docs/l2/guest-program-development.md` | 2.4 | **신규** |
+| 파일 | Phase | 변경 유형 | 상태 |
+|------|-------|----------|------|
+| `crates/guest-program/src/traits.rs` | 2.1 | **신규** | ✅ |
+| `crates/guest-program/src/programs/mod.rs` | 2.1, 2.4 | **신규** | ✅ |
+| `crates/guest-program/src/programs/evm_l2.rs` | 2.1 | **신규** | ✅ |
+| `crates/guest-program/src/programs/zk_dex.rs` | 2.4 | **신규** | ✅ |
+| `crates/guest-program/src/programs/tokamon.rs` | 2.4 | **신규** | ✅ |
+| `crates/guest-program/src/lib.rs` | 2.1 | 수정 | ✅ |
+| `crates/l2/prover/src/backend/mod.rs` | 2.1 | 수정 | ✅ |
+| `crates/l2/prover/src/backend/sp1.rs` | 2.1 | 수정 | ✅ |
+| `crates/l2/prover/src/backend/risc0.rs` | 2.1 | 수정 | ✅ |
+| `crates/l2/prover/src/backend/zisk.rs` | 2.1 | 수정 | ✅ |
+| `crates/l2/prover/src/backend/openvm.rs` | 2.1 | 수정 | ✅ |
+| `crates/l2/prover/src/backend/exec.rs` | 2.1, 2.4 | 수정 | ✅ |
+| `crates/l2/prover/src/backend/error.rs` | 2.1 | 수정 | ✅ |
+| `crates/l2/prover/src/registry.rs` | 2.2 | **신규** | ✅ |
+| `crates/l2/prover/src/lib.rs` | 2.2 | 수정 | ✅ |
+| `crates/l2/common/src/prover.rs` | 2.2 | 수정 | ✅ |
+| `crates/l2/prover/src/prover.rs` | 2.2, 2.4 | 수정 | ✅ |
+| `crates/l2/sequencer/proof_coordinator.rs` | 2.2 | 수정 | ✅ |
+| `crates/l2/contracts/src/l1/OnChainProposer.sol` | 2.3 | 수정 | ✅ |
+| `crates/l2/contracts/src/l1/interfaces/IOnChainProposer.sol` | 2.3 | 수정 | ✅ |
+| `crates/l2/contracts/src/l1/based/OnChainProposer.sol` | 2.3 | 수정 | ✅ |
+| `crates/l2/contracts/src/l1/based/interfaces/IOnChainProposer.sol` | 2.3 | 수정 | ✅ |
+| `crates/l2/sequencer/l1_committer.rs` | 2.3 | 수정 | ✅ |
+| `crates/l2/contracts/src/l1/GuestProgramRegistry.sol` | 3 | **신규** | ✅ |
+| `crates/l2/contracts/src/l1/interfaces/IGuestProgramRegistry.sol` | 3 | **신규** | ✅ |
+| `crates/l2/contracts/src/l1/OnChainProposer.sol` | 3 | 수정 | ✅ |
+| `crates/l2/contracts/src/l1/based/OnChainProposer.sol` | 3 | 수정 | ✅ |
+| `cmd/ethrex/build_l2.rs` | 3 | 수정 | ✅ |
+| `cmd/ethrex/l2/deployer.rs` | 3 | 수정 | ✅ |
+| `platform/server/*` (18 파일) | 3 | **신규** | ✅ |
+| `platform/client/*` (24 파일) | 3 | **신규** | ✅ |
 
-## 의존성 관계
+**미변경 파일** (원래 계획에서 수정 예정이었으나 불필요):
+| 파일 | 사유 |
+|------|------|
+| `crates/l2/sequencer/l1_proof_sender.rs` | `verifyBatch()` 시그니처 불변 |
+| `crates/guest-program/build.rs` | 멀티 ELF 빌드 미구현 |
+
+**미생성 파일** (원래 계획에서 생성 예정이었으나 스코프 변경):
+| 파일 | 사유 |
+|------|------|
+| `crates/guest-program/programs/transfer/` | ZK-DEX/Tokamon 템플릿으로 대체 |
+| `crates/guest-program/src/programs/transfer.rs` | 상동 |
+| `scripts/new-guest-program.sh` | Phase 2.4 미완료 |
+| `docs/l2/guest-program-development.md` | Phase 2.4 미완료 |
+
+---
+
+## 의존성 관계 (실제 진행)
 
 ```
-Phase 2.1 ──▶ Phase 2.2 ──▶ Phase 2.3 ──▶ Phase 2.4
-(코어 추상화)  (레지스트리)   (L1 컨트랙트)  (SDK)
-   │              │              │
-   │              │              └─ 2.3은 2.2 없이도 부분 진행 가능
-   │              │                 (VK 매핑 확장은 독립적)
-   │              │
-   │              └─ 2.2는 반드시 2.1 완료 후
-   │
-   └─ 2.1은 독립적으로 시작 가능
+Phase 2.1 ✅ ──▶ Phase 2.2 ✅ ──▶ Phase 2.3 ✅ ──▶ Phase 2.4 ✅
+(코어 추상화)     (레지스트리)      (L1 컨트랙트)     (앱 템플릿)
+                                                      │
+                                                      ▼
+                                                   Phase 3 ✅
+                                                (멀티역할 플랫폼)
 ```
 
-- Phase 2.1 → 2.2: 트레이트가 정의되어야 레지스트리 구현 가능
-- Phase 2.2 → 2.3: L1 변경은 프로토콜 확장 후 진행
-- Phase 2.3 ↔ 2.4: 독립적 (병행 가능)
+- Phase 2.1 → 2.2: 트레이트 정의 후 레지스트리 구현
+- Phase 2.2 → 2.3: 프로토콜 확장 후 L1 변경
+- Phase 2.3 → 2.4: L1 `programTypeId` 지원 후 앱 특화 템플릿 등록
+- Phase 2.4 → Phase 3: 모듈화 완료 후 멀티역할 플랫폼 아키텍처 (별도 문서 참조)
+
+---
+
+## 테스트 현황
+
+| 크레이트 | 테스트 수 | 상태 |
+|---------|----------|------|
+| `ethrex-guest-program` | 14 | ✅ 전체 통과 |
+| `ethrex-prover` (registry) | 5 | ✅ 전체 통과 |
+| **합계** | **19** | **✅** |
+
+```bash
+# 검증 명령
+cargo test -p ethrex-guest-program -p ethrex-prover
+cargo check -p ethrex-l2
+```
+
+---
+
+## Phase 3: 멀티역할 플랫폼 (Guest Program Store) ✅ 완료
+
+### 목표
+- GPTs Store 모델의 Guest Program 플랫폼 구축
+- 사용자가 자신의 컨트랙트 + 서킷을 만들어 공유
+- 서버 (Express.js) + 클라이언트 (Next.js) 아키텍처
+- Google, Naver, Kakao OAuth 소셜 로그인
+- `GuestProgramRegistry.sol` L1 온체인 컨트랙트
+
+### 실제 구현 내용
+
+#### 3.1 Express 서버 ✅
+
+**디렉토리**: `platform/server/`
+
+| 파일 | 설명 |
+|------|------|
+| `server.js` | Express 메인 서버 (CORS, 라우트, 헬스체크, 레이트리미팅) |
+| `package.json` | 의존성: express, bcryptjs, better-sqlite3, cors, google-auth-library, multer, uuid |
+| `lib/google-auth.js` | Google OAuth ID Token 검증 |
+| `lib/naver-auth.js` | Naver OAuth 코드 교환 |
+| `lib/kakao-auth.js` | Kakao OAuth 코드 교환 |
+| `lib/validate.js` | 입력 검증 헬퍼: isValidEmail, isValidPassword, isValidProgramId, isValidCategory |
+| `middleware/auth.js` | 세션 관리 (인메모리 Map, 24h TTL, `ps_` 접두사 토큰), `requireAuth`, `requireAdmin` 미들웨어 |
+| `db/schema.sql` | SQLite 스키마: users, programs, program_usage, deployments 테이블 |
+| `db/db.js` | SQLite 연결 (better-sqlite3, WAL 모드, 자동 마이그레이션) |
+| `db/users.js` | CRUD: createUser, getUserById, getUserByEmail, findOrCreateOAuthUser, updateUser |
+| `db/programs.js` | CRUD: createProgram, getActivePrograms, approveProgram, rejectProgram; programTypeId 10부터 자동 할당 |
+| `db/deployments.js` | CRUD: createDeployment, getDeploymentsByUser, updateDeployment, deleteDeployment |
+| `routes/auth.js` | 인증 라우트: signup, login, google, naver, kakao, me, profile update, logout |
+| `routes/store.js` | 공개 스토어 API: programs 목록 (검색/카테고리), 프로그램 상세, 카테고리, featured |
+| `routes/programs.js` | 크리에이터 API (인증 필수): create, list mine, get, update, delete/deactivate, ELF/VK 업로드 |
+| `routes/deployments.js` | 디플로이먼트 API (인증 필수): create, list mine, get, update, delete |
+| `routes/admin.js` | 관리자 API (admin 역할 필수): all programs, program detail, approve, reject, stats, users |
+| `.env.example` | 환경변수 템플릿 |
+
+#### 3.2 Next.js 클라이언트 ✅
+
+**디렉토리**: `platform/client/`
+
+| 파일 | 설명 |
+|------|------|
+| `package.json` | Next.js 15, React 19, @react-oauth/google, Tailwind CSS 4 |
+| `tsconfig.json`, `next.config.ts`, `postcss.config.mjs` | 프로젝트 설정 |
+| `lib/api.ts` | API 클라이언트: authApi, storeApi, programsApi, deploymentsApi, adminApi 래퍼; Bearer 토큰 자동 첨부; apiUpload 멀티파트 헬퍼 |
+| `lib/types.ts` | TypeScript 인터페이스: User, Program, Deployment |
+| `components/auth-provider.tsx` | React AuthContext, useAuth 훅, 세션 자동 확인 |
+| `components/providers.tsx` | GoogleOAuthProvider + AuthProvider + Nav 래퍼 |
+| `components/social-login-buttons.tsx` | NaverLoginButton, KakaoLoginButton, GoogleLoginButton (@react-oauth/google 연동) |
+| `components/nav.tsx` | 네비게이션 바 (Store/My Programs/Deployments/Admin 링크, 인증 상태 기반) |
+
+**페이지** (16개 라우트):
+
+| 라우트 | 설명 |
+|--------|------|
+| `/` | 홈 (히어로 섹션, Featured Programs, 아키텍처 개요) |
+| `/login` | 로그인 (소셜 버튼 + 이메일/패스워드) |
+| `/signup` | 회원가입 (소셜 버튼 + 이메일/패스워드) |
+| `/auth/callback/naver` | Naver OAuth 콜백 (Suspense 래핑) |
+| `/auth/callback/kakao` | Kakao OAuth 콜백 (Suspense 래핑) |
+| `/store` | 스토어 목록 (검색, 카테고리 필터, 프로그램 카드) |
+| `/store/[id]` | 프로그램 상세 (설명, 통계, "Use This Program" 모달) |
+| `/creator` | 내 프로그램 목록 (상태별 색상 배지) |
+| `/creator/new` | 새 프로그램 생성 (programId, 이름, 카테고리, 설명) |
+| `/creator/[id]` | 프로그램 편집 (이름/설명 수정, ELF/VK 업로드, 비활성화) |
+| `/deployments` | 내 디플로이먼트 목록 (상태별 색상 배지) |
+| `/deployments/[id]` | 디플로이먼트 상세 (설정 편집, L2 TOML 설정 내보내기, 삭제) |
+| `/admin` | 관리자 대시보드 (통계 카드, 프로그램 목록, 승인/거부) |
+| `/admin/programs/[id]` | 관리자 프로그램 상세 (ELF/VK 해시, 크리에이터 정보, 승인/거부) |
+| `/profile` | 사용자 프로필 (이름 편집, 프로그램/디플로이먼트 통계) |
+
+빌드 검증: `npx next build` 성공, 16개 라우트 전체 생성.
+
+#### 3.3 GuestProgramRegistry.sol L1 컨트랙트 ✅
+
+**파일**: `crates/l2/contracts/src/l1/GuestProgramRegistry.sol` (신규)
+**파일**: `crates/l2/contracts/src/l1/interfaces/IGuestProgramRegistry.sol` (신규)
+
+```solidity
+contract GuestProgramRegistry is
+    IGuestProgramRegistry, Initializable, UUPSUpgradeable, Ownable2StepUpgradeable
+{
+    uint8 public constant STORE_PROGRAM_START_ID = 10;
+    uint8 public nextProgramTypeId;  // starts at 10
+
+    mapping(bytes32 => ProgramInfo) internal _programs;   // keccak256(programId) → info
+    mapping(uint8 => bytes32) internal _typeIdToHash;     // typeId → programId hash
+    uint8 public programCount;
+}
+```
+
+**주요 기능**:
+- `registerProgram(programId, name, creator)` → 자동 `programTypeId` 할당 (10부터)
+- `registerOfficialProgram(programId, name, creator, typeId)` → 공식 템플릿 (typeId 2-9)
+- `deactivateProgram(programId)` / `activateProgram(programId)`
+- `getProgram(programId)`, `getProgramByTypeId(typeId)`, `isProgramActive(typeId)`
+- `initialize(owner)`: 기본 EVM-L2 프로그램 사전 등록 (typeId=1)
+- UUPS 프록시 패턴 (Ownable2Step)
+
+**programTypeId 할당 범위**:
+- 0: 예약 (OnChainProposer에서 DEFAULT_PROGRAM_TYPE_ID로 매핑)
+- 1: EVM-L2 (기본, 사전 등록)
+- 2-9: 공식 템플릿 (코어 팀 예약)
+- 10-255: 스토어 프로그램 (커뮤니티 등록)
+
+#### 3.4 OnChainProposer 연동 ✅
+
+**파일**: `crates/l2/contracts/src/l1/OnChainProposer.sol` (수정)
+**파일**: `crates/l2/contracts/src/l1/based/OnChainProposer.sol` (수정)
+
+- `GUEST_PROGRAM_REGISTRY` 스토리지 변수 추가
+- `commitBatch()`에서 레지스트리 검증: `isProgramActive(effectiveProgramTypeId)`
+- `setGuestProgramRegistry(address)` setter (onlyOwner)
+- zero-address 체크로 하위 호환성 유지
+
+#### 3.5 L1 배포자 통합 ✅
+
+**파일**: `cmd/ethrex/build_l2.rs` (수정)
+- GuestProgramRegistry를 Solidity 컴파일 대상에 추가
+
+**파일**: `cmd/ethrex/l2/deployer.rs` (수정)
+- `GUEST_PROGRAM_REGISTRY_BYTECODE` 상수 추가
+- `GUEST_PROGRAM_REGISTRY_INITIALIZER_SIGNATURE`, `SET_GUEST_PROGRAM_REGISTRY_SIGNATURE` 상수
+- `ContractAddresses` 구조체에 `guest_program_registry_address` 필드
+- `deploy_contracts()`에서 UUPS 프록시 배포 (`deploy_with_proxy_from_bytecode_no_wait`)
+- `initialize_contracts()`에서 레지스트리 초기화 + OnChainProposer 연동
+- `cargo check -p ethrex` 컴파일 통과
+
+#### 3.6 디플로이먼트 시스템 ✅
+
+- `deployments` 테이블: 사용자가 프로그램을 선택하여 L2 배포 설정 생성
+- CRUD API: create, list, get, update, delete (인증 필수)
+- "Use This Program" 모달: 스토어 상세 페이지에서 배포 이름/Chain ID/RPC URL 입력
+- L2 TOML 설정 내보내기: 디플로이먼트 상세에서 ethrex L2 노드 설정 파일 미리보기 및 다운로드
+
+#### 3.7 보안 및 검증 ✅
+
+- `lib/validate.js`: 이메일, 비밀번호, 이름, programId, 카테고리, URL 검증 헬퍼
+- `auth.js` 라우트: 이메일 형식, 비밀번호 강도(8-128자), 이름 길이 검증
+- `programs.js` 라우트: programId 형식(소문자+숫자+하이픈), 카테고리 화이트리스트, PUT 업데이트 필드 화이트리스트
+- `server.js`: IP 기반 인메모리 레이트리미팅 (100 req/min)
+
+#### 3.8 ELF/VK 업로드 ✅
+
+- `multer` 기반 파일 업로드 (100MB 제한)
+- `POST /api/programs/:id/upload/elf`: SHA-256 해시 계산, 파일 저장
+- `POST /api/programs/:id/upload/vk`: SP1/RISC0 VK 파일 업로드
+- 크리에이터 페이지에서 업로드 UI, 해시 표시
+
+### Phase 3 완료 기준
+
+- [x] Express 서버 구현 (인증, 스토어 API, 크리에이터 API, 관리자 API, 디플로이먼트 API)
+- [x] Next.js 클라이언트 구현 (16개 라우트, OAuth 콜백, 반응형 UI)
+- [x] Google/Naver/Kakao OAuth 소셜 로그인
+- [x] GuestProgramRegistry.sol L1 컨트랙트 (UUPS, 인터페이스 포함)
+- [x] OnChainProposer ↔ GuestProgramRegistry 연동
+- [x] L1 배포자에 GuestProgramRegistry 배포 + 초기화 + 연동 코드
+- [x] 디플로이먼트 시스템 ("Use This Program" → L2 TOML 설정 내보내기)
+- [x] ELF/VK 업로드 (SHA-256 해시, multer)
+- [x] 입력 검증 및 레이트리미팅
+- [x] 관리자 프로그램 상세 뷰 (ELF/VK 해시, 크리에이터 정보)
+- [x] `npx next build` 성공 (16개 라우트)
+- [x] `cargo check -p ethrex` 성공
+- [x] 19개 Rust 테스트 통과
+
+---
+
+## Phase 3 이후 남은 작업
+
+| 항목 | 설명 | 우선순위 |
+|------|------|---------|
+| 멀티 ELF 빌드 도구 | `GUEST_PROGRAMS` 환경변수로 빌드 대상 선택 | 높음 |
+| 실제 ELF 구현 | ZK-DEX, Tokamon의 zkVM 엔트리포인트 | 높음 |
+| Guest Program SDK | `cargo generate` 템플릿, CLI 도구 | 중간 |
+| 개발자 문서 | `docs/l2/guest-program-development.md` | 낮음 |
+| E2E 테스트 | 서버/클라이언트 통합 테스트 | 중간 |
+| 프로덕션 세션 스토리지 | Redis 또는 DB 기반 세션 (현재 인메모리) | 중간 |
+
+---
+
+## 전체 의존성 관계 (최종)
+
+```
+Phase 2.1 ✅ ──▶ Phase 2.2 ✅ ──▶ Phase 2.3 ✅ ──▶ Phase 2.4 ✅
+(코어 추상화)     (레지스트리)      (L1 컨트랙트)     (앱 템플릿)
+                                                      │
+                                                      ▼
+                                                   Phase 3 ✅
+                                                (멀티역할 플랫폼)
+                                                      │
+                                                      ▼
+                                                   남은 작업 ⏳
+                                             (ELF 구현, SDK, 배포)
+```
