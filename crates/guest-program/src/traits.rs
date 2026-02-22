@@ -21,6 +21,9 @@ pub enum GuestProgramError {
     #[error("Unsupported backend: {0}")]
     UnsupportedBackend(String),
 
+    #[error("Invalid ELF: {0}")]
+    InvalidElf(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -92,5 +95,280 @@ pub trait GuestProgram: Send + Sync {
     /// correct when the zkVM output already matches the L1 encoding.
     fn encode_output(&self, raw_output: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
         Ok(raw_output.to_vec())
+    }
+
+    /// Validate that an ELF binary has the correct format for the given backend.
+    ///
+    /// Checks the ELF magic number, class (32 or 64-bit), and machine type
+    /// (RISC-V).  This catches architecture mismatches early, before the
+    /// backend attempts to load or prove the ELF.
+    ///
+    /// The default implementation performs generic ELF header validation.
+    /// Override this to add backend- or program-specific checks.
+    fn validate_elf(&self, backend: &str, elf: &[u8]) -> Result<(), GuestProgramError> {
+        validate_elf_header(backend, elf)
+    }
+}
+
+// ── ELF header constants ─────────────────────────────────────────────
+
+const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+const ELFCLASS32: u8 = 1;
+const ELFCLASS64: u8 = 2;
+const EM_RISCV: u16 = 243;
+
+/// Minimum ELF header size (e_ident[16] + e_type[2] + e_machine[2] = 20 bytes).
+const ELF_HEADER_MIN: usize = 20;
+
+/// Validate basic ELF header structure for a zkVM guest binary.
+///
+/// Checks:
+/// 1. ELF magic number (`\x7fELF`)
+/// 2. ELF class matches backend expectations (32-bit or 64-bit)
+/// 3. Machine type is RISC-V (`EM_RISCV = 243`)
+pub fn validate_elf_header(backend: &str, elf: &[u8]) -> Result<(), GuestProgramError> {
+    if elf.len() < ELF_HEADER_MIN {
+        return Err(GuestProgramError::InvalidElf(format!(
+            "ELF too short: {} bytes (minimum {})",
+            elf.len(),
+            ELF_HEADER_MIN
+        )));
+    }
+
+    // Check magic number (e_ident[0..4]).
+    if elf[0..4] != ELF_MAGIC {
+        return Err(GuestProgramError::InvalidElf(
+            "invalid ELF magic number".to_string(),
+        ));
+    }
+
+    // Check ELF class (e_ident[4]).
+    let elf_class = elf[4];
+    let expected_class = match backend {
+        // ZisK uses 64-bit RISC-V.
+        backends::ZISK => ELFCLASS64,
+        // SP1, RISC0, OpenVM use 32-bit RISC-V.
+        backends::SP1 | backends::RISC0 | backends::OPENVM => ELFCLASS32,
+        // Unknown backends: accept any class.
+        _ => elf_class,
+    };
+    if elf_class != expected_class {
+        let class_name = |c: u8| match c {
+            1 => "32-bit",
+            2 => "64-bit",
+            _ => "unknown",
+        };
+        return Err(GuestProgramError::InvalidElf(format!(
+            "ELF class mismatch for {}: expected {} ({}), got {} ({})",
+            backend,
+            expected_class,
+            class_name(expected_class),
+            elf_class,
+            class_name(elf_class),
+        )));
+    }
+
+    // Check machine type (e_machine at offset 18, little-endian u16).
+    let e_machine = u16::from_le_bytes([elf[18], elf[19]]);
+    if e_machine != EM_RISCV {
+        return Err(GuestProgramError::InvalidElf(format!(
+            "ELF machine type is {} (expected RISC-V = {})",
+            e_machine, EM_RISCV
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal valid RISC-V ELF header.
+    fn make_elf(class: u8, machine: u16) -> Vec<u8> {
+        let mut buf = vec![0u8; 20];
+        // Magic.
+        buf[0..4].copy_from_slice(&ELF_MAGIC);
+        // EI_CLASS.
+        buf[4] = class;
+        // e_machine at offset 18 (little-endian).
+        buf[18..20].copy_from_slice(&machine.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn valid_riscv32_elf_for_sp1() {
+        let elf = make_elf(ELFCLASS32, EM_RISCV);
+        assert!(validate_elf_header(backends::SP1, &elf).is_ok());
+    }
+
+    #[test]
+    fn valid_riscv64_elf_for_zisk() {
+        let elf = make_elf(ELFCLASS64, EM_RISCV);
+        assert!(validate_elf_header(backends::ZISK, &elf).is_ok());
+    }
+
+    #[test]
+    fn rejects_too_short_elf() {
+        let elf = vec![0x7f, b'E', b'L', b'F'];
+        let err = validate_elf_header(backends::SP1, &elf).unwrap_err();
+        assert!(matches!(err, GuestProgramError::InvalidElf(_)));
+    }
+
+    #[test]
+    fn rejects_bad_magic() {
+        let mut elf = make_elf(ELFCLASS32, EM_RISCV);
+        elf[0] = 0x00; // corrupt magic
+        let err = validate_elf_header(backends::SP1, &elf).unwrap_err();
+        assert!(
+            format!("{err}").contains("magic"),
+            "error should mention magic: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_class_for_sp1() {
+        // SP1 expects 32-bit, give it 64-bit.
+        let elf = make_elf(ELFCLASS64, EM_RISCV);
+        let err = validate_elf_header(backends::SP1, &elf).unwrap_err();
+        assert!(
+            format!("{err}").contains("class mismatch"),
+            "error should mention class mismatch: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_class_for_zisk() {
+        // ZisK expects 64-bit, give it 32-bit.
+        let elf = make_elf(ELFCLASS32, EM_RISCV);
+        let err = validate_elf_header(backends::ZISK, &elf).unwrap_err();
+        assert!(format!("{err}").contains("class mismatch"));
+    }
+
+    #[test]
+    fn rejects_wrong_machine_type() {
+        // Machine type 0x03 = EM_386 (x86).
+        let elf = make_elf(ELFCLASS32, 0x03);
+        let err = validate_elf_header(backends::SP1, &elf).unwrap_err();
+        assert!(format!("{err}").contains("machine type"));
+    }
+
+    #[test]
+    fn unknown_backend_accepts_any_class() {
+        let elf32 = make_elf(ELFCLASS32, EM_RISCV);
+        let elf64 = make_elf(ELFCLASS64, EM_RISCV);
+        assert!(validate_elf_header("custom", &elf32).is_ok());
+        assert!(validate_elf_header("custom", &elf64).is_ok());
+    }
+
+    #[test]
+    fn validate_elf_via_trait_default() {
+        struct TestProgram;
+        impl GuestProgram for TestProgram {
+            fn program_id(&self) -> &str { "test" }
+            fn elf(&self, _: &str) -> Option<&[u8]> { None }
+            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> { None }
+            fn program_type_id(&self) -> u8 { 99 }
+        }
+
+        let prog = TestProgram;
+        let elf = make_elf(ELFCLASS32, EM_RISCV);
+        assert!(prog.validate_elf(backends::SP1, &elf).is_ok());
+
+        let bad = vec![0u8; 4];
+        assert!(prog.validate_elf(backends::SP1, &bad).is_err());
+    }
+
+    // ── Fuzz-style robustness tests ──────────────────────────────────
+
+    use crate::programs::{EvmL2GuestProgram, TokammonGuestProgram, ZkDexGuestProgram};
+
+    /// Verify that serialize_input and encode_output never panic on
+    /// arbitrary byte inputs.  All three programs use pass-through
+    /// implementations, so we expect Ok for any input.
+    #[test]
+    fn serialize_input_never_panics_on_arbitrary_bytes() {
+        let programs: Vec<Box<dyn GuestProgram>> = vec![
+            Box::new(EvmL2GuestProgram),
+            Box::new(ZkDexGuestProgram),
+            Box::new(TokammonGuestProgram),
+        ];
+
+        // Test with various edge-case inputs.
+        let all_bytes: Vec<u8> = (0..=255).collect();
+        let inputs: Vec<&[u8]> = vec![
+            b"",                          // empty
+            b"\x00",                      // null byte
+            b"\xff\xff\xff\xff",          // all-ones
+            &[0u8; 1024],                 // large zero-filled
+            b"\x7fELF",                   // ELF magic (wrong context)
+            b"hello world",              // ASCII
+            &all_bytes,                   // all byte values
+        ];
+
+        for prog in &programs {
+            for input in &inputs {
+                // Must not panic; result is always Ok for pass-through.
+                let result = prog.serialize_input(input);
+                assert!(result.is_ok(), "{}: serialize_input panicked", prog.program_id());
+                assert_eq!(result.unwrap(), *input);
+            }
+        }
+    }
+
+    #[test]
+    fn encode_output_never_panics_on_arbitrary_bytes() {
+        let programs: Vec<Box<dyn GuestProgram>> = vec![
+            Box::new(EvmL2GuestProgram),
+            Box::new(ZkDexGuestProgram),
+            Box::new(TokammonGuestProgram),
+        ];
+
+        let inputs: Vec<&[u8]> = vec![
+            b"",
+            b"\x00\x00\x00\x00",
+            &[0xffu8; 256],
+            b"not valid output",
+        ];
+
+        for prog in &programs {
+            for input in &inputs {
+                let result = prog.encode_output(input);
+                assert!(result.is_ok(), "{}: encode_output panicked", prog.program_id());
+                assert_eq!(result.unwrap(), *input);
+            }
+        }
+    }
+
+    #[test]
+    fn validate_elf_never_panics_on_arbitrary_bytes() {
+        let test_backends = [
+            backends::SP1,
+            backends::RISC0,
+            backends::ZISK,
+            backends::OPENVM,
+            backends::EXEC,
+            "unknown",
+        ];
+
+        // Assorted byte patterns that should never cause a panic.
+        let inputs: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![0],
+            vec![0x7f, b'E', b'L', b'F'], // valid magic but too short
+            vec![0; 20],                   // right length, wrong magic
+            vec![0xff; 100],               // garbage
+            make_elf(0, EM_RISCV),         // invalid class 0
+            make_elf(3, EM_RISCV),         // invalid class 3
+            make_elf(ELFCLASS32, 0),       // machine 0
+            make_elf(ELFCLASS32, 0xffff),  // machine 0xffff
+        ];
+
+        for backend in &test_backends {
+            for input in &inputs {
+                // Must not panic; may return Ok or Err.
+                let _ = validate_elf_header(backend, input);
+            }
+        }
     }
 }
