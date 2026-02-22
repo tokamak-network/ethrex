@@ -131,3 +131,36 @@
 > - [ ] CLI 중심 설계 유지 (GUI/웹 제외)
 
 ```
+
+## 8. MVP 범위 고정 (Scope Lock)
+
+MVP에서는 아래 범위를 고정한다.
+- 단일 노드/단일 데이터 디렉토리 마이그레이션만 지원
+- 오프라인 변환 + 검증 + 롤백
+- dry-run 모드 필수 제공
+- 결과 리포트(JSON + 텍스트) 생성
+
+MVP에서 제외:
+- 멀티노드 오케스트레이션
+- 실시간 동기 마이그레이션
+- GUI/웹 인터페이스
+
+## 9. 운영 수용 기준 (Production Readiness Gates)
+
+릴리즈 전 아래 항목을 모두 통과해야 한다.
+- Build: `cargo build --release` 또는 선택 언어 빌드 스크립트 성공
+- Tests: 단위/통합 테스트 전체 통과, 핵심 경로 커버리지 80%+
+- Dry-run: 손상 시나리오 포함 3회 연속 성공
+- Rollback Drill: 실패 주입 후 원복 100% 성공
+- Report Integrity: 결과 리포트에 누락 필드 0건
+
+## 10. 사용자 실행 플로우 (CLI UX)
+
+1) 사전 점검: `ethrex-migrate preflight --source ... --target ...`
+2) 계획 출력: `ethrex-migrate plan --source ... --target ...`
+3) 드라이런: `ethrex-migrate run --dry-run ...`
+4) 실제 실행: `ethrex-migrate run ...`
+5) 검증: `ethrex-migrate verify ...`
+6) 실패 시 롤백: `ethrex-migrate rollback --checkpoint <id>`
+
+모든 단계는 `--json` 옵션으로 머신리더블 출력 지원.
