@@ -7,6 +7,7 @@
 ```
 tokamak-notes/
 ├── branching-strategy.md          # 브랜치 전략
+├── zk-optimization-plan.md        # ZK Prover 최적화 + 병렬 실행 계획
 └── analysis-doc-kr/               # ethrex 코드 분석 (한국어)
     ├── 00-개요.md
     ├── 01-아키텍처.md
@@ -24,8 +25,11 @@ tokamak-notes/
 
 ## 문서 목록
 
-### 브랜치 전략
+### 프로젝트 관리
 - [branching-strategy.md](./branching-strategy.md) — upstream 동기화 및 Tokamak 특화 브랜치 관리 규칙
+
+### 개발 계획
+- [zk-optimization-plan.md](./zk-optimization-plan.md) — ZK Prover 최적화, 병렬 블록 실행(#6209), 병렬 상태 루트(#6210), 시뇨리지 마이닝
 
 ### ethrex 코드 분석
 
