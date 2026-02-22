@@ -4,6 +4,7 @@ use clap::{Parser as ClapParser, Subcommand as ClapSubcommand};
 use ethrex_blockchain::{Blockchain, BlockchainOptions, BlockchainType, L2Config};
 use ethrex_common::types::Block;
 use eyre::{ContextCompat, Result, WrapErr};
+use serde::Serialize;
 
 use crate::utils::{migrate_block_body, migrate_block_header};
 
@@ -39,9 +40,13 @@ pub enum Subcommand {
         #[arg(long = "dry-run", default_value_t = false)]
         /// Validate source/target stores and print migration plan without writing blocks
         dry_run: bool,
+        #[arg(long = "json", default_value_t = false)]
+        /// Emit machine-readable JSON output
+        json: bool,
     },
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
 struct MigrationPlan {
     start_block: u64,
     end_block: u64,
@@ -53,6 +58,50 @@ impl MigrationPlan {
     }
 }
 
+#[derive(Serialize)]
+struct MigrationReport {
+    status: &'static str,
+    source_head: u64,
+    target_head: u64,
+    plan: Option<MigrationPlan>,
+    dry_run: bool,
+    imported_blocks: u64,
+}
+
+fn emit_report(report: &MigrationReport, json: bool) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(report).wrap_err("Cannot serialize migration report")?
+        );
+        return Ok(());
+    }
+
+    match report.plan {
+        Some(plan) => println!(
+            "Migration plan: {} block(s), from #{}, to #{}",
+            plan.block_count(),
+            plan.start_block,
+            plan.end_block
+        ),
+        None => println!(
+            "Rocksdb store is already up to date (target head: {}, source head: {})",
+            report.target_head, report.source_head
+        ),
+    }
+
+    if report.dry_run {
+        println!("Dry-run complete: no data was written.");
+    } else if report.imported_blocks > 0 {
+        println!(
+            "Migration completed successfully: imported {} block(s).",
+            report.imported_blocks
+        );
+    }
+
+    Ok(())
+}
+
 impl Subcommand {
     pub async fn run(&self) -> Result<()> {
         match self {
@@ -61,9 +110,16 @@ impl Subcommand {
                 old_storage_path,
                 new_storage_path,
                 dry_run,
+                json,
             } => {
-                migrate_libmdbx_to_rocksdb(genesis_path, old_storage_path, new_storage_path, *dry_run)
-                    .await
+                migrate_libmdbx_to_rocksdb(
+                    genesis_path,
+                    old_storage_path,
+                    new_storage_path,
+                    *dry_run,
+                    *json,
+                )
+                .await
             }
         }
     }
@@ -74,12 +130,14 @@ async fn migrate_libmdbx_to_rocksdb(
     old_storage_path: &Path,
     new_storage_path: &Path,
     dry_run: bool,
+    json: bool,
 ) -> Result<()> {
     let old_path = old_storage_path
         .to_str()
         .wrap_err("Invalid UTF-8 in old storage path")?;
-    let old_store = ethrex_storage_libmdbx::Store::new(old_path, ethrex_storage_libmdbx::EngineType::Libmdbx)
-        .wrap_err_with(|| format!("Cannot open libmdbx store at {old_storage_path:?}"))?;
+    let old_store =
+        ethrex_storage_libmdbx::Store::new(old_path, ethrex_storage_libmdbx::EngineType::Libmdbx)
+            .wrap_err_with(|| format!("Cannot open libmdbx store at {old_storage_path:?}"))?;
     old_store
         .load_initial_state()
         .await
@@ -106,23 +164,42 @@ async fn migrate_libmdbx_to_rocksdb(
         .wrap_err("Cannot get latest block from rocksdb store")?;
 
     let Some(plan) = build_migration_plan(last_known_block, last_block_number) else {
-        println!(
-            "Rocksdb store is already up to date (target head: {last_known_block}, source head: {last_block_number})"
-        );
+        let report = MigrationReport {
+            status: "up_to_date",
+            source_head: last_block_number,
+            target_head: last_known_block,
+            plan: None,
+            dry_run,
+            imported_blocks: 0,
+        };
+        emit_report(&report, json)?;
         return Ok(());
     };
 
-    println!(
-        "Migration plan: {} block(s), from #{}, to #{}",
-        plan.block_count(),
-        plan.start_block,
-        plan.end_block
-    );
-
     if dry_run {
-        println!("Dry-run complete: no data was written.");
+        let report = MigrationReport {
+            status: "planned",
+            source_head: last_block_number,
+            target_head: last_known_block,
+            plan: Some(plan),
+            dry_run: true,
+            imported_blocks: 0,
+        };
+        emit_report(&report, json)?;
         return Ok(());
     }
+
+    emit_report(
+        &MigrationReport {
+            status: "in_progress",
+            source_head: last_block_number,
+            target_head: last_known_block,
+            plan: Some(plan),
+            dry_run: false,
+            imported_blocks: 0,
+        },
+        json,
+    )?;
 
     let blockchain_opts = BlockchainOptions {
         // TODO: we may want to migrate using a specified fee config
@@ -173,10 +250,15 @@ async fn migrate_libmdbx_to_rocksdb(
         .await
         .wrap_err("Cannot apply forkchoice update")?;
 
-    println!(
-        "Migration completed successfully: imported {} block(s).",
-        plan.block_count()
-    );
+    let report = MigrationReport {
+        status: "completed",
+        source_head: last_block_number,
+        target_head: plan.end_block,
+        plan: Some(plan),
+        dry_run: false,
+        imported_blocks: plan.block_count(),
+    };
+    emit_report(&report, json)?;
 
     Ok(())
 }
@@ -190,7 +272,7 @@ fn build_migration_plan(last_known_block: u64, last_source_block: u64) -> Option
 
 #[cfg(test)]
 mod tests {
-    use super::build_migration_plan;
+    use super::{MigrationPlan, MigrationReport, build_migration_plan};
 
     #[test]
     fn no_plan_when_target_is_up_to_date() {
@@ -210,5 +292,25 @@ mod tests {
         assert_eq!(plan.start_block, 13);
         assert_eq!(plan.end_block, 20);
         assert_eq!(plan.block_count(), 8);
+    }
+
+    #[test]
+    fn serializes_migration_report() {
+        let report = MigrationReport {
+            status: "planned",
+            source_head: 42,
+            target_head: 40,
+            plan: Some(MigrationPlan {
+                start_block: 41,
+                end_block: 42,
+            }),
+            dry_run: true,
+            imported_blocks: 0,
+        };
+
+        let encoded = serde_json::to_string(&report).expect("report should serialize");
+        assert!(encoded.contains("\"status\":\"planned\""));
+        assert!(encoded.contains("\"dry_run\":true"));
+        assert!(encoded.contains("\"start_block\":41"));
     }
 }

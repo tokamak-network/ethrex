@@ -5728,6 +5728,8 @@ dependencies = [
  "ethrex-storage 1.0.0",
  "ethrex-storage 9.0.0",
  "eyre",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
