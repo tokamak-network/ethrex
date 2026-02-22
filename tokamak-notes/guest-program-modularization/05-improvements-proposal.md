@@ -265,9 +265,19 @@ Phase 2.1-2.4 구현 경험을 바탕으로 한 수정 결과:
     *   `server.js` — 1시간 주기 만료 세션 정리 (`setInterval`)
     *   서버 재시작 시 세션 유지, ON DELETE CASCADE로 사용자 삭제 시 세션 자동 정리
 
+11. ~~**[낮음]** ELF 아키텍처 검증~~ — **✅ 해결됨**:
+    *   `GuestProgramError::InvalidElf` 변형 추가
+    *   `validate_elf_header()` 함수: ELF magic, class (32/64-bit), machine (RISC-V) 검증
+    *   `GuestProgram::validate_elf()` 트레이트 메서드 (기본 구현 제공, 오버라이드 가능)
+    *   백엔드별 클래스 기대값: SP1/RISC0/OpenVM → 32-bit, ZisK → 64-bit
+    *   9개 단위 테스트 추가
+12. ~~**[낮음]** Fuzzing 테스트~~ — **✅ 해결됨**:
+    *   3개 fuzz-style 프로퍼티 테스트 추가
+    *   `serialize_input_never_panics_on_arbitrary_bytes` — 3개 프로그램 × 7개 에지케이스
+    *   `encode_output_never_panics_on_arbitrary_bytes` — 3개 프로그램 × 4개 에지케이스
+    *   `validate_elf_never_panics_on_arbitrary_bytes` — 6개 백엔드 × 9개 에지케이스
+
 ### 남은 후속 작업
 
 1. **[낮음]** 개발자 가이드 문서
 2. **[낮음]** 동적 ELF 로딩 — 파일시스템/원격에서 ELF 로드
-3. **[낮음]** ELF 아키텍처 검증 — `validate_elf()` ELF 헤더 확인
-4. **[낮음]** Fuzzing 테스트 — `serialize_input`/`encode_output` 안정성 검증
