@@ -293,6 +293,9 @@ impl ProofCoordinator {
             self.rollup_store
                 .store_proof_by_batch_and_type(batch_number, prover_type, batch_proof)
                 .await?;
+            self.rollup_store
+                .store_program_id_by_batch(batch_number, program_id)
+                .await?;
         }
         let response = ProofData::proof_submit_ack(batch_number);
         send_response(stream, &response).await?;

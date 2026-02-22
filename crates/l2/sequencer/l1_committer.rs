@@ -1197,9 +1197,14 @@ impl L1Committer {
             Value::Uint(U256::from(batch.non_privileged_transactions)),
         ];
 
-        // programTypeId: 1 = EVM-L2 (default guest program).
-        // Future: resolve from batch metadata when multi-program support is active.
-        let program_type_id: u8 = 1;
+        let program_id = self
+            .rollup_store
+            .get_program_id_by_batch(batch.number)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "evm-l2".to_string());
+        let program_type_id: u8 = resolve_program_type_id(&program_id);
 
         let (commit_function_signature, values) = if self.based {
             let mut encoded_blocks: Vec<Bytes> = Vec::new();
@@ -1544,6 +1549,15 @@ pub fn generate_blobs_bundle(
             .map_err(CommitterError::from)?,
         blob_size,
     ))
+}
+
+fn resolve_program_type_id(program_id: &str) -> u8 {
+    match program_id {
+        "evm-l2" => 1,
+        "zk-dex" => 2,
+        "tokamon" => 3,
+        _ => 1,
+    }
 }
 
 fn get_last_block_hash(
