@@ -181,9 +181,8 @@ impl<B: ProverBackend> Prover<B> {
             });
 
         if let Some((program, elf)) = elf_and_program {
-            // Registry-based path: serialize input to bytes, then prove_with_elf.
-            let input_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&input)
-                .map_err(BackendError::serialization)?;
+            // Registry-based path: serialize input to raw bytes, then prove_with_elf.
+            let input_bytes = self.backend.serialize_raw(&input)?;
             let serialized = program
                 .serialize_input(input_bytes.as_slice())
                 .map_err(|e| BackendError::serialization(e.to_string()))?;

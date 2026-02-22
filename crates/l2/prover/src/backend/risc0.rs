@@ -12,8 +12,6 @@ use ethrex_l2_common::{
 use risc0_zkvm::{
     ExecutorEnv, InnerReceipt, ProverOpts, Receipt, default_executor, default_prover,
 };
-use rkyv::rancor::Error as RkyvError;
-
 use crate::backend::{BackendError, ProverBackend};
 
 /// RISC0 prover backend.
@@ -99,9 +97,9 @@ impl ProverBackend for Risc0Backend {
     }
 
     fn serialize_input(&self, input: &ProgramInput) -> Result<Self::SerializedInput, BackendError> {
-        let bytes = rkyv::to_bytes::<RkyvError>(input).map_err(BackendError::serialization)?;
+        let bytes = self.serialize_raw(input)?;
         ExecutorEnv::builder()
-            .write_slice(bytes.as_slice())
+            .write_slice(&bytes)
             .build()
             .map_err(BackendError::execution)
     }

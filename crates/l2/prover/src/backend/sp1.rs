@@ -3,7 +3,6 @@ use ethrex_l2_common::{
     calldata::Value,
     prover::{BatchProof, ProofBytes, ProofCalldata, ProofFormat, ProverType},
 };
-use rkyv::rancor::Error;
 use sha2::{Digest, Sha256};
 use sp1_prover::components::CpuProverComponents;
 #[cfg(not(feature = "gpu"))]
@@ -176,8 +175,8 @@ impl ProverBackend for Sp1Backend {
 
     fn serialize_input(&self, input: &ProgramInput) -> Result<Self::SerializedInput, BackendError> {
         let mut stdin = SP1Stdin::new();
-        let bytes = rkyv::to_bytes::<Error>(input).map_err(BackendError::serialization)?;
-        stdin.write_slice(bytes.as_slice());
+        let bytes = self.serialize_raw(input)?;
+        stdin.write_slice(&bytes);
         Ok(stdin)
     }
 

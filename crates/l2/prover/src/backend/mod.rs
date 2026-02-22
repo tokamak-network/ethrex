@@ -5,6 +5,7 @@ use clap::ValueEnum;
 use ethrex_guest_program::input::ProgramInput;
 use ethrex_guest_program::traits::backends;
 use ethrex_l2_common::prover::{BatchProof, ProofFormat, ProverType};
+use rkyv::rancor::Error as RkyvError;
 use serde::{Deserialize, Serialize};
 
 pub mod error;
@@ -140,6 +141,19 @@ pub trait ProverBackend {
         let start = Instant::now();
         let serialized = self.serialize_input(input)?;
         Ok((serialized, start.elapsed()))
+    }
+
+    /// Serialize the program input into raw bytes (rkyv format).
+    ///
+    /// Returns the backend-agnostic byte representation of `ProgramInput`.
+    /// These bytes are then passed through `GuestProgram::serialize_input()`
+    /// and fed to `*_with_elf` methods.
+    ///
+    /// The default implementation uses rkyv.  Backends can override if they
+    /// need a different wire format.
+    fn serialize_raw(&self, input: &ProgramInput) -> Result<Vec<u8>, BackendError> {
+        let bytes = rkyv::to_bytes::<RkyvError>(input).map_err(BackendError::serialization)?;
+        Ok(bytes.to_vec())
     }
 
     /// Execute the program without generating a proof (for testing/debugging).

@@ -1,12 +1,10 @@
 use std::time::{Duration, Instant};
 
-use ethrex_guest_program::{ZKVM_OPENVM_ZKVM_OPENVM_PROGRAM_ELF, input::ProgramInput, traits::backends};
+use ethrex_guest_program::{ZKVM_OPENVM_PROGRAM_ELF, input::ProgramInput, traits::backends};
 use ethrex_l2_common::prover::{BatchProof, ProofFormat, ProverType};
 use openvm_continuations::verifier::internal::types::VmStarkProof;
 use openvm_sdk::{Sdk, StdIn, types::EvmProof};
 use openvm_stark_sdk::config::baby_bear_poseidon2::BabyBearPoseidon2Config;
-use rkyv::rancor::Error;
-
 use crate::backend::{BackendError, ProverBackend};
 
 /// OpenVM-specific proof output.
@@ -71,8 +69,8 @@ impl ProverBackend for OpenVmBackend {
 
     fn serialize_input(&self, input: &ProgramInput) -> Result<Self::SerializedInput, BackendError> {
         let mut stdin = StdIn::default();
-        let bytes = rkyv::to_bytes::<Error>(input).map_err(BackendError::serialization)?;
-        stdin.write_bytes(bytes.as_slice());
+        let bytes = self.serialize_raw(input)?;
+        stdin.write_bytes(&bytes);
         Ok(stdin)
     }
 

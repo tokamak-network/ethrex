@@ -122,9 +122,8 @@ impl ProverBackend for ZiskBackend {
     }
 
     fn serialize_input(&self, input: &ProgramInput) -> Result<Self::SerializedInput, BackendError> {
-        let input_bytes =
-            rkyv::to_bytes::<rkyv::rancor::Error>(input).map_err(BackendError::serialization)?;
-        std::fs::write(INPUT_PATH, input_bytes.as_slice()).map_err(BackendError::serialization)?;
+        let input_bytes = self.serialize_raw(input)?;
+        std::fs::write(INPUT_PATH, &input_bytes).map_err(BackendError::serialization)?;
         Ok(())
     }
 

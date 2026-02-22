@@ -165,4 +165,30 @@ mod tests {
         let result = backend.prove_with_elf(&[], &[], ProofFormat::Compressed);
         assert!(matches!(result, Err(_)));
     }
+
+    #[test]
+    fn serialize_raw_produces_deserializable_bytes() {
+        use ethrex_common::types::block_execution_witness::ExecutionWitness;
+
+        let backend = ExecBackend::new();
+        let input = ProgramInput {
+            blocks: vec![],
+            execution_witness: ExecutionWitness::default(),
+            elasticity_multiplier: 0,
+            fee_configs: vec![],
+            blob_commitment: [0u8; 48],
+            blob_proof: [0u8; 48],
+        };
+
+        // serialize_raw should produce valid rkyv bytes.
+        let bytes = backend.serialize_raw(&input).expect("serialize_raw should succeed");
+        assert!(!bytes.is_empty(), "serialized bytes should not be empty");
+
+        // The bytes should be deserializable back to ProgramInput.
+        let roundtripped: ProgramInput =
+            rkyv::from_bytes::<ProgramInput, rkyv::rancor::Error>(&bytes)
+                .expect("rkyv deserialization should succeed");
+        assert_eq!(roundtripped.blocks.len(), 0);
+        assert_eq!(roundtripped.elasticity_multiplier, 0);
+    }
 }
