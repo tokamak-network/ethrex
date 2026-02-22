@@ -6,7 +6,9 @@
 > - Phase 2.1 (코어 추상화): **완료** — `GuestProgram` 트레이트, `EvmL2GuestProgram`, `ProverBackend` ELF 메서드, 5개 백엔드 업데이트
 > - Phase 2.2 (레지스트리 & 프로토콜): **완료** — `GuestProgramRegistry`, `ProofData` 프로토콜 확장, Proof Coordinator/Prover 통합, `supported_programs` 필터링 구현
 > - Phase 2.3 (L1 컨트랙트 & 검증): **완료** — OnChainProposer 3D VK 매핑, `programTypeId`, `commitBatch` 시그니처 확장, based 변형 동일 수정, l1_committer 수정
-> - Phase 2.4 (앱 템플릿 & 도구): **진행 중** — ZkDex/Tokamon 스텁 구현 및 레지스트리 등록 완료, Exec 백엔드 ELF 경로 구현 완료
+> - Phase 2.4 (앱 템플릿 & 도구): **완료** — ZkDex/Tokamon 스텁 구현 및 레지스트리 등록, Exec 백엔드 ELF 경로 구현
+> - Phase 3 (멀티역할 플랫폼): **완료** — Guest Program Store (Express+Next.js), GuestProgramRegistry.sol, L1 배포자 통합
+> - **안정화 태스크** (4개): **완료** — SP1 Setup 캐싱, prove_with_elf 통합 테스트, OpenVM ELF 레지스트리 통합, 동적 programTypeId
 
 ---
 
@@ -36,13 +38,12 @@
     *   모든 백엔드가 ELF 경로를 지원하게 되었다 (SP1/RISC0는 기본 `NotImplemented`, Exec는 실제 구현).
 *   **잔여 과제**: 장기적으로 레거시 `prove(ProgramInput)` 경로를 deprecate하고 `prove_with_elf` 경로로 통합한다.
 
-### 1.4 [신규] SP1 ProverSetup 캐싱과 멀티프로그램 비효율
-*   **문제점**: SP1 백엔드의 `prove_with_elf()`는 매 호출 시 `setup.client.setup(elf)`를 실행하여 proving key / verifying key를 생성한다. 이 setup 연산은 비용이 크다.
-*   **현재 상태**: `PROVER_SETUP`은 `OnceLock`으로 하드코딩된 ELF에 대해서만 캐싱된다. `prove_with_elf()`로 전달되는 ELF는 매번 새로 setup된다.
-*   **리스크**: 멀티프로그램 환경에서 동일 ELF에 대해 반복적으로 setup이 호출되어 성능이 크게 저하될 수 있다.
-*   **개선 제안**:
-    *   ELF 해시를 키로 사용하는 `HashMap<[u8; 32], (SP1ProvingKey, SP1VerifyingKey)>` 캐시를 SP1 백엔드에 추가한다.
-    *   `Mutex<HashMap>` 또는 `DashMap`을 사용하여 thread-safe하게 구현한다.
+### 1.4 [해결됨] ~~SP1 ProverSetup 캐싱과 멀티프로그램 비효율~~
+*   **[해결됨]** SHA-256 기반 ELF 키 캐싱이 SP1 백엔드에 구현되었다.
+    *   `ELF_KEY_CACHE: OnceLock<Mutex<HashMap<[u8;32], (SP1ProvingKey, SP1VerifyingKey)>>>` 정적 변수 추가
+    *   `get_or_setup_keys(&self, elf: &[u8])` 헬퍼: SHA-256(elf) 해시로 캐시 키 생성, cache hit → 클론 반환, cache miss → `client.setup(elf)` 실행 후 캐시 저장
+    *   `prove_with_elf()`에서 직접 `setup()` 대신 캐시된 키 사용
+    *   `sha2` 크레이트 의존성 추가 (workspace에 이미 존재)
     *   RISC0는 `default_prover()`가 내부 캐싱을 처리하므로 추가 작업 불필요.
 
 ---
@@ -79,13 +80,12 @@
     *   레거시 `serialize_input`은 내부적으로 `serialize_raw`를 호출하여 바이트를 생성한 후 백엔드별 컨테이너로 래핑하도록 리팩토링한다.
     *   이렇게 하면 ELF 경로와 레거시 경로가 동일한 직렬화 로직을 공유한다.
 
-### 2.4 [신규] OpenVM ELF가 레지스트리에서 누락
-*   **문제점**: OpenVM 백엔드는 `include_bytes!("../../../../guest-program/bin/openvm/out/riscv32im-openvm-elf")`로 ELF를 로컬에서 직접 로드한다. `lib.rs`의 크레이트 루트 상수(`ZKVM_OPENVM_PROGRAM_ELF`)가 없다.
-*   **현재 상태**: `EvmL2GuestProgram::elf("openvm")`은 `None`을 반환. OpenVM은 항상 레거시 경로를 사용한다.
-*   **개선 제안**:
-    *   `lib.rs`에 `ZKVM_OPENVM_PROGRAM_ELF` 상수를 추가한다 (SP1/ZisK와 동일한 패턴).
-    *   `EvmL2GuestProgram::elf()`에 `backends::OPENVM` 분기를 추가한다.
-    *   OpenVM 백엔드의 로컬 `PROGRAM_ELF`를 제거하고 크레이트 상수를 사용하도록 전환한다.
+### 2.4 [해결됨] ~~OpenVM ELF가 레지스트리에서 누락~~
+*   **[해결됨]** OpenVM ELF가 중앙 레지스트리에 통합되었다.
+    *   `lib.rs`에 `ZKVM_OPENVM_PROGRAM_ELF` 상수 추가 (`#[cfg(feature = "openvm")]` 게이팅, SP1/ZisK와 동일 패턴)
+    *   `EvmL2GuestProgram::elf()`에 `backends::OPENVM` 분기 추가
+    *   OpenVM 백엔드의 로컬 `static PROGRAM_ELF` 제거 → `ZKVM_OPENVM_PROGRAM_ELF` 임포트로 교체
+    *   `openvm_backend_elf_lookup` 테스트 추가
 
 ---
 
@@ -131,9 +131,14 @@
     *   `OnChainProposer.sol`: 3D VK 매핑 `verificationKeys[commitHash][programTypeId][verifierId]`
     *   `commitBatch()`: `uint8 programTypeId` 매개변수 추가, `BatchCommitmentInfo`에 저장
     *   `verifyBatch()`: 저장된 `programTypeId`로 올바른 VK 조회
-    *   `l1_committer.rs`: `program_type_id = 1` (EVM-L2) 하드코딩하여 calldata에 포함
+    *   `l1_committer.rs`: storage에서 `program_id`를 조회하여 `resolve_program_type_id()`로 동적 변환
     *   하위 호환성: `programTypeId == 0`은 자동으로 `DEFAULT_PROGRAM_TYPE_ID (1)`로 매핑
-*   **잔여 과제**: `l1_committer.rs`의 `program_type_id`가 하드코딩 `1`이다. 멀티프로그램 운영 시 배치별 프로그램 타입을 동적으로 결정해야 한다.
+*   **[잔여 과제도 해결됨]** `l1_committer.rs`의 하드코딩 `program_type_id = 1` 제거 완료.
+    *   Storage API에 `store_program_id_by_batch` / `get_program_id_by_batch` 추가 (in-memory + SQL)
+    *   Proof Coordinator가 proof 저장 시 `program_id`도 함께 저장
+    *   `l1_committer`의 `send_commitment()`에서 storage 조회 → `resolve_program_type_id()` 변환
+    *   `resolve_program_type_id()`: `"evm-l2"→1`, `"zk-dex"→2`, `"tokamon"→3`, 기본값 1
+    *   조회 실패 시 `"evm-l2"` 기본값으로 하위 호환성 유지
 
 ---
 
@@ -180,11 +185,14 @@
     *   `prove_batch()`에서 ELF 사용 전 검증을 수행한다.
     *   ELF 헤더 검증 유틸리티: `e_ident[EI_CLASS]`로 32/64비트 확인, `e_machine`으로 RISC-V 확인.
 
-### 5.3 [신규] `prove_with_elf` 통합 테스트 부재
-*   **문제점**: SP1과 RISC0의 `execute_with_elf()`, `prove_with_elf()` 구현은 컴파일 검증만 되었고, 실제 zkVM 환경에서의 동작 테스트가 없다.
-*   **리스크**: ELF 경로와 레거시 경로의 증명 결과가 다를 수 있다.
-*   **개선 제안**:
-    *   CI에 SP1/RISC0 `prove_with_elf` 통합 테스트를 추가한다:
+### 5.3 [부분 해결] `prove_with_elf` 통합 테스트
+*   **[부분 해결]** Exec 백엔드에 대한 `prove_with_elf` 통합 테스트가 추가되었다.
+    *   `backend_name_is_exec` — 백엔드 이름 확인
+    *   `execute_with_elf_invalid_input_returns_serialization_error` — 잘못된 rkyv 바이트 → `Serialization` 에러
+    *   `prove_with_elf_invalid_input_returns_serialization_error` — 동일 검증
+    *   `execute_with_elf_empty_input_returns_error` — 빈 입력 에러 처리
+    *   `prove_with_elf_empty_input_returns_error` — 빈 입력 에러 처리
+*   **잔여 과제**: SP1/RISC0의 실제 zkVM 환경에서의 `prove_with_elf` 테스트 (CI에 zkVM 환경 필요):
         ```rust
         #[test]
         fn prove_with_elf_matches_legacy() {
@@ -215,13 +223,26 @@ Phase 2.1-2.4 구현 경험을 바탕으로 한 수정 결과:
 | Phase 2.2 | 레지스트리 + 프로토콜 + Transfer Circuit | 레지스트리/프로토콜/필터링 완료. Transfer Circuit은 ZK-DEX/Tokamon으로 대체 | **✅ 완료** |
 | Phase 2.2b | `supported_programs` 필터링 | Phase 2.2에 통합 완료 | **✅ 완료** |
 | Phase 2.3 | L1 컨트랙트 수정 | 3D VK 매핑, commitBatch 시그니처 확장, based 변형 동일 수정 | **✅ 완료** |
-| Phase 2.4 | SDK & 개발자 도구 | ZK-DEX/Tokamon 스텁, 레지스트리 등록, Exec ELF 경로 구현 | **🔧 진행 중** |
-| Phase 3 | — | [신규] 멀티역할 플랫폼 아키텍처 (플랫폼 매니저, 앱 등록자, L2 사용자) | ⏳ 미착수 |
+| Phase 2.4 | SDK & 개발자 도구 | ZK-DEX/Tokamon 스텁, 레지스트리 등록, Exec ELF 경로 구현 | **✅ 완료** |
+| Phase 3 | — | 멀티역할 플랫폼 아키텍처 (Guest Program Store, GuestProgramRegistry.sol, L1 배포) | **✅ 완료** |
+| 안정화 | — | SP1 캐싱, prove_with_elf 테스트, OpenVM ELF 통합, 동적 programTypeId | **✅ 완료** |
 
-### 우선순위 높은 후속 작업
+### 완료된 후속 작업
 
-1. **[중요]** SP1 setup 캐싱 (§1.4) — 성능 병목 방지
-2. **[중요]** `prove_with_elf` 통합 테스트 (§5.3) — ELF 경로 신뢰성 확보
-3. **[권장]** OpenVM ELF 레지스트리 통합 (§2.4) — 전체 백엔드 통합 완성
-4. **[권장]** `l1_committer.rs` 동적 `program_type_id` 결정 (§3.3 잔여) — 배치별 프로그램 타입 매핑
-5. **[향후]** Phase 3 멀티역할 플랫폼 아키텍처 설계 및 구현
+1. ~~**[중요]** SP1 setup 캐싱 (§1.4)~~ — **✅ 해결됨**: SHA-256 기반 ELF 키 캐시 구현
+2. ~~**[중요]** `prove_with_elf` 통합 테스트 (§5.3)~~ — **✅ 부분 해결**: Exec 백엔드 5개 테스트 추가
+3. ~~**[권장]** OpenVM ELF 레지스트리 통합 (§2.4)~~ — **✅ 해결됨**: 중앙 상수 + 백엔드 교체
+4. ~~**[권장]** `l1_committer.rs` 동적 `program_type_id` 결정 (§3.3 잔여)~~ — **✅ 해결됨**: Storage API + 동적 조회
+
+### 남은 후속 작업
+
+1. **[높음]** 멀티 ELF 빌드 도구 — `GUEST_PROGRAMS` 환경변수로 빌드 대상 ELF 선택
+2. **[높음]** ZK-DEX / Tokamon 실제 ELF 구현 — 실제 zkVM 엔트리포인트 + 입력/출력 타입 정의
+3. **[중간]** Guest Program SDK — `cargo generate` 템플릿 + CLI 도구
+4. **[중간]** E2E 테스트 — 서버/클라이언트 통합 테스트, SP1/RISC0 prove_with_elf zkVM 테스트
+5. **[중간]** 프로덕션 세션 스토리지 — 플랫폼 서버 세션 인메모리 → Redis/DB 전환
+6. **[중간]** `serialize_raw()` 표준화 (§2.3) — ELF 경로와 레거시 경로 직렬화 통합
+7. **[낮음]** 개발자 가이드 문서
+8. **[낮음]** 동적 ELF 로딩 — 파일시스템/원격에서 ELF 로드
+9. **[낮음]** ELF 아키텍처 검증 — `validate_elf()` ELF 헤더 확인
+10. **[낮음]** Fuzzing 테스트 — `serialize_input`/`encode_output` 안정성 검증

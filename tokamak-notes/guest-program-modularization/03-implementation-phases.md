@@ -555,6 +555,18 @@ fn prove_with_elf(&self, _elf: &[u8], serialized_input: &[u8], _format: ProofFor
 | `cmd/ethrex/l2/deployer.rs` | 3 | 수정 | ✅ |
 | `platform/server/*` (18 파일) | 3 | **신규** | ✅ |
 | `platform/client/*` (24 파일) | 3 | **신규** | ✅ |
+| `crates/guest-program/src/lib.rs` | S1 | 수정 | ✅ |
+| `crates/guest-program/src/programs/evm_l2.rs` | S1 | 수정 | ✅ |
+| `crates/l2/prover/src/backend/openvm.rs` | S1 | 수정 | ✅ |
+| `crates/l2/prover/Cargo.toml` | S2 | 수정 | ✅ |
+| `crates/l2/prover/src/backend/sp1.rs` | S2 | 수정 | ✅ |
+| `crates/l2/prover/src/backend/exec.rs` | S3 | 수정 | ✅ |
+| `crates/l2/storage/src/api.rs` | S4 | 수정 | ✅ |
+| `crates/l2/storage/src/store.rs` | S4 | 수정 | ✅ |
+| `crates/l2/storage/src/store_db/in_memory.rs` | S4 | 수정 | ✅ |
+| `crates/l2/storage/src/store_db/sql.rs` | S4 | 수정 | ✅ |
+| `crates/l2/sequencer/proof_coordinator.rs` | S4 | 수정 | ✅ |
+| `crates/l2/sequencer/l1_committer.rs` | S4 | 수정 | ✅ |
 
 **미변경 파일** (원래 계획에서 수정 예정이었으나 불필요):
 | 파일 | 사유 |
@@ -594,14 +606,19 @@ Phase 2.1 ✅ ──▶ Phase 2.2 ✅ ──▶ Phase 2.3 ✅ ──▶ Phase 2.
 
 | 크레이트 | 테스트 수 | 상태 |
 |---------|----------|------|
-| `ethrex-guest-program` | 14 | ✅ 전체 통과 |
-| `ethrex-prover` (registry) | 5 | ✅ 전체 통과 |
-| **합계** | **19** | **✅** |
+| `ethrex-guest-program` | 15 | ✅ 전체 통과 |
+| `ethrex-prover` (registry + exec 백엔드) | 10 | ✅ 전체 통과 |
+| **합계** | **25** | **✅** |
+
+> 안정화 태스크로 추가된 테스트:
+> - `ethrex-guest-program`: `openvm_backend_elf_lookup` (+1)
+> - `ethrex-prover`: `backend_name_is_exec`, `execute_with_elf_invalid_input_returns_serialization_error`, `prove_with_elf_invalid_input_returns_serialization_error`, `execute_with_elf_empty_input_returns_error`, `prove_with_elf_empty_input_returns_error` (+5)
 
 ```bash
 # 검증 명령
 cargo test -p ethrex-guest-program -p ethrex-prover
 cargo check -p ethrex-l2
+cargo check -p ethrex-storage-rollup --features sql
 ```
 
 ---
@@ -773,16 +790,82 @@ contract GuestProgramRegistry is
 
 ---
 
+## 안정화 태스크 (Post-Phase 3) ✅ 완료
+
+Phase 2.1-2.4 + Phase 3 구현 완료 후, 4가지 핵심 안정화 작업을 수행했다.
+
+### S1. OpenVM ELF 레지스트리 통합 ✅
+
+OpenVM 백엔드의 로컬 `include_bytes!`를 제거하고 중앙 레지스트리로 통합.
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `crates/guest-program/src/lib.rs` | `ZKVM_OPENVM_PROGRAM_ELF` 상수 추가 (`#[cfg(feature = "openvm")]`) |
+| `crates/guest-program/src/programs/evm_l2.rs` | `elf()` 메서드에 `backends::OPENVM` 분기 추가, `openvm_backend_elf_lookup` 테스트 |
+| `crates/l2/prover/src/backend/openvm.rs` | 로컬 `static PROGRAM_ELF` 제거 → `ZKVM_OPENVM_PROGRAM_ELF` 임포트 |
+
+### S2. SP1 Setup 캐싱 (ELF 해시 기반) ✅
+
+`prove_with_elf()` 호출 시 매번 `client.setup(elf)` 재실행하던 성능 병목 해결.
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `crates/l2/prover/Cargo.toml` | `sha2` 의존성 추가 |
+| `crates/l2/prover/src/backend/sp1.rs` | `ELF_KEY_CACHE` 정적 변수, `get_or_setup_keys()` 헬퍼, `prove_with_elf()` 캐시 사용 |
+
+설계 결정:
+- `Mutex<HashMap>` 사용 (cache miss는 warm-up 이후 거의 없음, `RwLock` 불필요)
+- 캐시 eviction 없음 (운영에서 ELF 수 1-3개)
+- `execute_with_elf()`는 pk/vk 불필요하므로 캐싱 불필요
+
+### S3. prove_with_elf 통합 테스트 ✅
+
+Exec 백엔드에 ELF 경로 에러 처리 테스트 5개 추가.
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `crates/l2/prover/src/backend/exec.rs` | 테스트 모듈: `backend_name_is_exec`, invalid/empty input 에러 테스트 |
+
+### S4. 동적 programTypeId ✅
+
+하드코딩된 `program_type_id = 1`을 storage 기반 동적 조회로 교체.
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `crates/l2/storage/src/api.rs` | `store_program_id_by_batch`, `get_program_id_by_batch` 트레이트 메서드 |
+| `crates/l2/storage/src/store_db/in_memory.rs` | `program_id_by_batch` 필드 및 구현 |
+| `crates/l2/storage/src/store_db/sql.rs` | `batch_program_id` 테이블, `read_from_row_text` 헬퍼, UPSERT/SELECT |
+| `crates/l2/storage/src/store.rs` | 위임 메서드 2개 |
+| `crates/l2/sequencer/proof_coordinator.rs` | proof 저장 시 `program_id` 함께 저장 |
+| `crates/l2/sequencer/l1_committer.rs` | `resolve_program_type_id()` 함수, storage 조회 후 동적 변환 |
+
+데이터 흐름:
+```
+proof_coordinator → handle_submit()
+  → store_proof_by_batch_and_type()
+  → store_program_id_by_batch()       ← 신규
+
+l1_committer → send_commitment()
+  → get_program_id_by_batch()          ← 신규
+  → resolve_program_type_id()          ← 신규: "evm-l2"→1, "zk-dex"→2, "tokamon"→3
+```
+
+---
+
 ## Phase 3 이후 남은 작업
 
 | 항목 | 설명 | 우선순위 |
 |------|------|---------|
 | 멀티 ELF 빌드 도구 | `GUEST_PROGRAMS` 환경변수로 빌드 대상 선택 | 높음 |
-| 실제 ELF 구현 | ZK-DEX, Tokamon의 zkVM 엔트리포인트 | 높음 |
+| 실제 ELF 구현 | ZK-DEX, Tokamon의 zkVM 엔트리포인트 + 입력/출력 타입 정의 | 높음 |
 | Guest Program SDK | `cargo generate` 템플릿, CLI 도구 | 중간 |
-| 개발자 문서 | `docs/l2/guest-program-development.md` | 낮음 |
-| E2E 테스트 | 서버/클라이언트 통합 테스트 | 중간 |
+| E2E 테스트 | 서버/클라이언트 통합 테스트, SP1/RISC0 prove_with_elf zkVM 테스트 | 중간 |
 | 프로덕션 세션 스토리지 | Redis 또는 DB 기반 세션 (현재 인메모리) | 중간 |
+| `serialize_raw()` 표준화 | ELF 경로와 레거시 경로 직렬화 로직 통합 | 중간 |
+| 개발자 문서 | `docs/l2/guest-program-development.md` | 낮음 |
+| 동적 ELF 로딩 | 파일시스템/원격에서 ELF 로드 (재컴파일 없이 교체) | 낮음 |
+| ELF 아키텍처 검증 | `validate_elf()` ELF 헤더로 riscv32/64 확인 | 낮음 |
+| Fuzzing 테스트 | `serialize_input`/`encode_output` 안정성 검증 | 낮음 |
 
 ---
 
@@ -797,6 +880,10 @@ Phase 2.1 ✅ ──▶ Phase 2.2 ✅ ──▶ Phase 2.3 ✅ ──▶ Phase 2.
                                                 (멀티역할 플랫폼)
                                                       │
                                                       ▼
+                                                  안정화 S1-S4 ✅
+                                          (캐싱, 테스트, ELF 통합, 동적 typeId)
+                                                      │
+                                                      ▼
                                                    남은 작업 ⏳
-                                             (ELF 구현, SDK, 배포)
+                                             (ELF 구현, SDK, 빌드 도구)
 ```
