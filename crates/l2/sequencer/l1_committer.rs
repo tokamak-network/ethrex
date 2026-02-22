@@ -69,8 +69,8 @@ use spawned_concurrency::tasks::{
 };
 
 const COMMIT_FUNCTION_SIGNATURE_BASED: &str =
-    "commitBatch(uint256,bytes32,bytes32,bytes32,bytes32,uint256,bytes32,bytes[])";
-const COMMIT_FUNCTION_SIGNATURE: &str = "commitBatch(uint256,bytes32,bytes32,bytes32,bytes32,uint256,bytes32,(uint256,uint256,(address,address,address,uint256)[],bytes32[])[],(uint256,bytes32)[])";
+    "commitBatch(uint256,bytes32,bytes32,bytes32,bytes32,uint256,bytes32,uint8,bytes[])";
+const COMMIT_FUNCTION_SIGNATURE: &str = "commitBatch(uint256,bytes32,bytes32,bytes32,bytes32,uint256,bytes32,uint8,(uint256,uint256,(address,address,address,uint256)[],bytes32[])[],(uint256,bytes32)[])";
 /// Default wake up time for the committer to check if it should send a commit tx
 const COMMITTER_DEFAULT_WAKE_TIME_MS: u64 = 60_000;
 
@@ -1197,6 +1197,10 @@ impl L1Committer {
             Value::Uint(U256::from(batch.non_privileged_transactions)),
         ];
 
+        // programTypeId: 1 = EVM-L2 (default guest program).
+        // Future: resolve from batch metadata when multi-program support is active.
+        let program_type_id: u8 = 1;
+
         let (commit_function_signature, values) = if self.based {
             let mut encoded_blocks: Vec<Bytes> = Vec::new();
 
@@ -1212,6 +1216,7 @@ impl L1Committer {
             }
 
             calldata_values.push(Value::FixedBytes(commit_hash_bytes.0.to_vec().into()));
+            calldata_values.push(Value::Uint(U256::from(program_type_id)));
             calldata_values.push(Value::Array(
                 encoded_blocks.into_iter().map(Value::Bytes).collect(),
             ));
@@ -1260,6 +1265,7 @@ impl L1Committer {
                 .collect();
 
             calldata_values.push(Value::FixedBytes(commit_hash_bytes.0.to_vec().into()));
+            calldata_values.push(Value::Uint(U256::from(program_type_id)));
             calldata_values.push(Value::Array(balance_diff_values));
             calldata_values.push(Value::Array(l2_in_message_rolling_hashes_values));
             (COMMIT_FUNCTION_SIGNATURE, calldata_values)

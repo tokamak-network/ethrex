@@ -11,6 +11,7 @@ import {ICommonBridge} from "./interfaces/ICommonBridge.sol";
 import {IRiscZeroVerifier} from "./interfaces/IRiscZeroVerifier.sol";
 import {ISP1Verifier} from "./interfaces/ISP1Verifier.sol";
 import {ITDXVerifier} from "./interfaces/ITDXVerifier.sol";
+import {IGuestProgramRegistry} from "./interfaces/IGuestProgramRegistry.sol";
 import "../l2/interfaces/ICommonBridgeL2.sol";
 
 /// @title OnChainProposer contract.
@@ -41,10 +42,14 @@ contract OnChainProposer is
         ICommonBridge.BalanceDiff[] balanceDiffs;
         bytes32 commitHash;
         ICommonBridge.L2MessageRollingHash[] l2InMessageRollingHashes;
+        uint8 programTypeId;
     }
 
     uint8 internal constant SP1_VERIFIER_ID = 1;
     uint8 internal constant RISC0_VERIFIER_ID = 2;
+
+    /// @notice Program type ID for the default EVM-L2 guest program.
+    uint8 internal constant DEFAULT_PROGRAM_TYPE_ID = 1;
 
     /// @notice Aligned Layer proving system ID for SP1 in isProofVerified calls.
     /// @dev Currently only SP1 is supported by Aligned in aggregation mode.
@@ -110,8 +115,16 @@ contract OnChainProposer is
     /// @notice True if verification is done through Aligned Layer instead of smart contract verifiers.
     bool public ALIGNED_MODE;
 
-    /// @notice Verification keys keyed by git commit hash (keccak of the commit SHA string) and verifier type.
-    mapping(bytes32 commitHash => mapping(uint8 verifierId => bytes32 vk))
+    /// @notice Address of the GuestProgramRegistry contract.
+    /// @dev When set (non-zero), commitBatch validates that programTypeId is registered and active.
+    /// When zero, no registry validation is performed (backward compatible).
+    address public GUEST_PROGRAM_REGISTRY;
+
+    /// @notice Verification keys keyed by git commit hash, program type, and verifier type.
+    /// @dev 3D mapping: commitHash → programTypeId → verifierId → vk.
+    /// programTypeId identifies the guest program (1=EVM-L2, etc.).
+    /// verifierId identifies the zkVM backend (1=SP1, 2=RISC0).
+    mapping(bytes32 commitHash => mapping(uint8 programTypeId => mapping(uint8 verifierId => bytes32 vk)))
         public verificationKeys;
 
     /// @notice Initializes the contract.
@@ -190,8 +203,8 @@ contract OnChainProposer is
             !REQUIRE_RISC0_PROOF || risc0Vk != bytes32(0),
             "OnChainProposer: missing RISC0 verification key"
         );
-        verificationKeys[commitHash][SP1_VERIFIER_ID] = sp1Vk;
-        verificationKeys[commitHash][RISC0_VERIFIER_ID] = risc0Vk;
+        verificationKeys[commitHash][DEFAULT_PROGRAM_TYPE_ID][SP1_VERIFIER_ID] = sp1Vk;
+        verificationKeys[commitHash][DEFAULT_PROGRAM_TYPE_ID][RISC0_VERIFIER_ID] = risc0Vk;
 
         BatchCommitmentInfo storage commitment = batchCommitments[0];
         commitment.newStateRoot = genesisStateRoot;
@@ -206,6 +219,7 @@ contract OnChainProposer is
             .l2InMessageRollingHashes = new ICommonBridge.L2MessageRollingHash[](
             0
         );
+        commitment.programTypeId = DEFAULT_PROGRAM_TYPE_ID;
 
         CHAIN_ID = chainId;
 
@@ -233,7 +247,7 @@ contract OnChainProposer is
         );
         // we don't want to restrict setting the vk to zero
         // as we may want to disable the version
-        verificationKeys[commit_hash][SP1_VERIFIER_ID] = new_vk;
+        verificationKeys[commit_hash][DEFAULT_PROGRAM_TYPE_ID][SP1_VERIFIER_ID] = new_vk;
         emit VerificationKeyUpgraded("SP1", commit_hash, new_vk);
     }
 
@@ -248,8 +262,39 @@ contract OnChainProposer is
         );
         // we don't want to restrict setting the vk to zero
         // as we may want to disable the version
-        verificationKeys[commit_hash][RISC0_VERIFIER_ID] = new_vk;
+        verificationKeys[commit_hash][DEFAULT_PROGRAM_TYPE_ID][RISC0_VERIFIER_ID] = new_vk;
         emit VerificationKeyUpgraded("RISC0", commit_hash, new_vk);
+    }
+
+    /// @inheritdoc IOnChainProposer
+    function upgradeVerificationKey(
+        bytes32 commit_hash,
+        uint8 programTypeId,
+        uint8 verifierId,
+        bytes32 new_vk
+    ) public onlyOwner {
+        require(
+            commit_hash != bytes32(0),
+            "OnChainProposer: commit hash is zero"
+        );
+        require(
+            programTypeId > 0,
+            "OnChainProposer: invalid program type"
+        );
+        require(
+            verifierId > 0,
+            "OnChainProposer: invalid verifier ID"
+        );
+        verificationKeys[commit_hash][programTypeId][verifierId] = new_vk;
+        emit VerificationKeyUpgraded(programTypeId, verifierId, commit_hash, new_vk);
+    }
+
+    /// @notice Set or update the GuestProgramRegistry address.
+    /// @dev When set to non-zero, commitBatch validates programTypeId against the registry.
+    /// Set to address(0) to disable registry validation.
+    /// @param registry The address of the GuestProgramRegistry contract.
+    function setGuestProgramRegistry(address registry) public onlyOwner {
+        GUEST_PROGRAM_REGISTRY = registry;
     }
 
     /// @inheritdoc IOnChainProposer
@@ -261,6 +306,7 @@ contract OnChainProposer is
         bytes32 lastBlockHash,
         uint256 nonPrivilegedTransactions,
         bytes32 commitHash,
+        uint8 programTypeId,
         ICommonBridge.BalanceDiff[] calldata balanceDiffs,
         ICommonBridge.L2MessageRollingHash[] calldata l2MessageRollingHashes
     ) external override onlyOwner whenNotPaused {
@@ -326,14 +372,25 @@ contract OnChainProposer is
 
         // Validate commit hash and corresponding verification keys are valid
         require(commitHash != bytes32(0), "012");
+        // Default to EVM-L2 if programTypeId is 0 (backward compatibility)
+        uint8 effectiveProgramTypeId = programTypeId == 0
+            ? DEFAULT_PROGRAM_TYPE_ID
+            : programTypeId;
+        // If GuestProgramRegistry is configured, validate the program is registered and active
+        if (GUEST_PROGRAM_REGISTRY != address(0)) {
+            require(
+                IGuestProgramRegistry(GUEST_PROGRAM_REGISTRY).isProgramActive(effectiveProgramTypeId),
+                "014" // OnChainProposer: program type not registered or inactive
+            );
+        }
         if (
             REQUIRE_SP1_PROOF &&
-            verificationKeys[commitHash][SP1_VERIFIER_ID] == bytes32(0)
+            verificationKeys[commitHash][effectiveProgramTypeId][SP1_VERIFIER_ID] == bytes32(0)
         ) {
             revert("013"); // missing verification key for commit hash
         } else if (
             REQUIRE_RISC0_PROOF &&
-            verificationKeys[commitHash][RISC0_VERIFIER_ID] == bytes32(0)
+            verificationKeys[commitHash][effectiveProgramTypeId][RISC0_VERIFIER_ID] == bytes32(0)
         ) {
             revert("013"); // missing verification key for commit hash
         }
@@ -347,7 +404,8 @@ contract OnChainProposer is
             nonPrivilegedTransactions,
             balanceDiffs,
             commitHash,
-            l2MessageRollingHashes
+            l2MessageRollingHashes,
+            effectiveProgramTypeId
         );
         emit BatchCommitted(newStateRoot);
 
@@ -421,9 +479,12 @@ contract OnChainProposer is
 
         if (REQUIRE_RISC0_PROOF) {
             bytes32 batchCommitHash = batchCommitments[batchNumber].commitHash;
+            uint8 batchProgramTypeId = batchCommitments[batchNumber].programTypeId;
+            // Backward compatibility: treat 0 as DEFAULT_PROGRAM_TYPE_ID
+            if (batchProgramTypeId == 0) batchProgramTypeId = DEFAULT_PROGRAM_TYPE_ID;
             bytes32 risc0Vk = verificationKeys[batchCommitHash][
-                RISC0_VERIFIER_ID
-            ];
+                batchProgramTypeId
+            ][RISC0_VERIFIER_ID];
             try
                 IRiscZeroVerifier(RISC0_VERIFIER_ADDRESS).verify(
                     risc0BlockProof,
@@ -440,7 +501,9 @@ contract OnChainProposer is
 
         if (REQUIRE_SP1_PROOF) {
             bytes32 batchCommitHash = batchCommitments[batchNumber].commitHash;
-            bytes32 sp1Vk = verificationKeys[batchCommitHash][SP1_VERIFIER_ID];
+            uint8 batchProgramTypeId = batchCommitments[batchNumber].programTypeId;
+            if (batchProgramTypeId == 0) batchProgramTypeId = DEFAULT_PROGRAM_TYPE_ID;
+            bytes32 sp1Vk = verificationKeys[batchCommitHash][batchProgramTypeId][SP1_VERIFIER_ID];
             try
                 ISP1Verifier(SP1_VERIFIER_ADDRESS).verifyProof(
                     sp1Vk,
@@ -554,12 +617,14 @@ contract OnChainProposer is
             );
 
             if (REQUIRE_SP1_PROOF) {
+                uint8 batchProgramType = batchCommitments[batchNumber].programTypeId;
+                if (batchProgramType == 0) batchProgramType = DEFAULT_PROGRAM_TYPE_ID;
                 _verifyProofInclusionAligned(
                     sp1MerkleProofsList[i],
                     ALIGNED_SP1_PROVING_SYSTEM_ID,
                     verificationKeys[batchCommitments[batchNumber].commitHash][
-                        SP1_VERIFIER_ID
-                    ],
+                        batchProgramType
+                    ][SP1_VERIFIER_ID],
                     publicInputs
                 );
             }
@@ -568,12 +633,14 @@ contract OnChainProposer is
             // aligned mode with RISC0 enabled. It is kept for future compatibility when
             // Aligned re-enables RISC0 support - at that point, update the proving system ID.
             if (REQUIRE_RISC0_PROOF) {
+                uint8 batchProgramType = batchCommitments[batchNumber].programTypeId;
+                if (batchProgramType == 0) batchProgramType = DEFAULT_PROGRAM_TYPE_ID;
                 _verifyProofInclusionAligned(
                     risc0MerkleProofsList[i],
                     0, // Placeholder - RISC0 proving system ID TBD
                     verificationKeys[batchCommitments[batchNumber].commitHash][
-                        RISC0_VERIFIER_ID
-                    ],
+                        batchProgramType
+                    ][RISC0_VERIFIER_ID],
                     publicInputs
                 );
             }

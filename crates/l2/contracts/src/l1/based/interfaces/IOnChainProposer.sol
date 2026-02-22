@@ -62,6 +62,7 @@ interface IOnChainProposer {
     /// @param lastBlockHash the hash of the last block of the batch to be committed.
     /// @param nonPrivilegedTransactions the number of non-privileged transactions in the batch.
     /// @param commitHash git commit hash that produced the verifier keys for this batch.
+    /// @param programTypeId the guest program type (1=EVM-L2, etc.). 0 defaults to EVM-L2.
     /// @param _rlpEncodedBlocks the list of RLP-encoded blocks in the batch.
     function commitBatch(
         uint256 batchNumber,
@@ -71,6 +72,7 @@ interface IOnChainProposer {
         bytes32 lastBlockHash,
         uint256 nonPrivilegedTransactions,
         bytes32 commitHash,
+        uint8 programTypeId,
         bytes[] calldata _rlpEncodedBlocks
     ) external;
 
