@@ -69,16 +69,13 @@
         *   `guest_std::crypto` — 서명 검증 (secp256k1)
         *   `guest_std::encoding` — RLP/ABI 인코딩
 
-### 2.3 [신규] `SerializedInput` 연관 타입과 `prove_with_elf` 바이트 인터페이스 불일치
-*   **문제점**: `ProverBackend` 트레이트는 두 가지 직렬화 패턴을 가진다:
-    1. `serialize_input(&ProgramInput) -> SerializedInput` — 백엔드별 컨테이너 타입 (`SP1Stdin`, `ExecutorEnv` 등)
-    2. `prove_with_elf(elf: &[u8], serialized_input: &[u8])` — 원시 바이트
-*   **현재 상태**: 두 패턴이 독립적으로 존재. ELF 경로는 원시 바이트만 사용하고, 레거시 경로는 `SerializedInput`을 사용한다.
-*   **리스크**: 동일한 입력에 대해 두 직렬화 경로가 다른 바이트를 생성할 경우 증명 결과가 달라질 수 있다.
-*   **개선 제안**:
-    *   `ProverBackend`에 `serialize_raw(&ProgramInput) -> Result<Vec<u8>, BackendError>` 메서드를 추가하여, 원시 바이트 직렬화를 표준화한다. 기본 구현은 `rkyv::to_bytes`.
-    *   레거시 `serialize_input`은 내부적으로 `serialize_raw`를 호출하여 바이트를 생성한 후 백엔드별 컨테이너로 래핑하도록 리팩토링한다.
-    *   이렇게 하면 ELF 경로와 레거시 경로가 동일한 직렬화 로직을 공유한다.
+### 2.3 [해결됨] ~~`SerializedInput` 연관 타입과 `prove_with_elf` 바이트 인터페이스 불일치~~
+*   **[해결됨]** `ProverBackend`에 `serialize_raw()` 메서드가 추가되어 직렬화가 표준화되었다.
+    *   `serialize_raw(&ProgramInput) -> Result<Vec<u8>, BackendError>` — 기본 구현은 `rkyv::to_bytes`
+    *   모든 백엔드의 `serialize_input()`이 내부적으로 `serialize_raw()`를 호출하도록 리팩토링
+    *   `prover.rs`의 `prove_batch()`에서 인라인 `rkyv::to_bytes` 제거 → `backend.serialize_raw()` 사용
+    *   SP1, RISC0, OpenVM, ZisK 백엔드 모두 직접 rkyv 의존성 제거
+    *   ELF 경로와 레거시 경로가 동일한 직렬화 로직을 공유하게 됨
 
 ### 2.4 [해결됨] ~~OpenVM ELF가 레지스트리에서 누락~~
 *   **[해결됨]** OpenVM ELF가 중앙 레지스트리에 통합되었다.
@@ -234,15 +231,18 @@ Phase 2.1-2.4 구현 경험을 바탕으로 한 수정 결과:
 3. ~~**[권장]** OpenVM ELF 레지스트리 통합 (§2.4)~~ — **✅ 해결됨**: 중앙 상수 + 백엔드 교체
 4. ~~**[권장]** `l1_committer.rs` 동적 `program_type_id` 결정 (§3.3 잔여)~~ — **✅ 해결됨**: Storage API + 동적 조회
 
+### 완료된 추가 작업
+
+5. ~~**[높음]** 멀티 ELF 빌드 도구~~ — **✅ 이미 구현됨**: `GUEST_PROGRAMS` 환경변수, `build.rs`, `Makefile`, scaffold 스크립트
+6. ~~**[중간]** `serialize_raw()` 표준화 (§2.3)~~ — **✅ 해결됨**: ELF/레거시 직렬화 통합, 모든 백엔드 리팩토링
+
 ### 남은 후속 작업
 
-1. **[높음]** 멀티 ELF 빌드 도구 — `GUEST_PROGRAMS` 환경변수로 빌드 대상 ELF 선택
-2. **[높음]** ZK-DEX / Tokamon 실제 ELF 구현 — 실제 zkVM 엔트리포인트 + 입력/출력 타입 정의
-3. **[중간]** Guest Program SDK — `cargo generate` 템플릿 + CLI 도구
-4. **[중간]** E2E 테스트 — 서버/클라이언트 통합 테스트, SP1/RISC0 prove_with_elf zkVM 테스트
-5. **[중간]** 프로덕션 세션 스토리지 — 플랫폼 서버 세션 인메모리 → Redis/DB 전환
-6. **[중간]** `serialize_raw()` 표준화 (§2.3) — ELF 경로와 레거시 경로 직렬화 통합
-7. **[낮음]** 개발자 가이드 문서
-8. **[낮음]** 동적 ELF 로딩 — 파일시스템/원격에서 ELF 로드
-9. **[낮음]** ELF 아키텍처 검증 — `validate_elf()` ELF 헤더 확인
-10. **[낮음]** Fuzzing 테스트 — `serialize_input`/`encode_output` 안정성 검증
+1. **[높음]** ZK-DEX / Tokamon 실제 ELF 구현 — 실제 zkVM 엔트리포인트 + 입력/출력 타입 정의
+2. **[중간]** Guest Program SDK — `cargo generate` 템플릿 + CLI 도구
+3. **[중간]** E2E 테스트 — 서버/클라이언트 통합 테스트, SP1/RISC0 prove_with_elf zkVM 테스트
+4. **[중간]** 프로덕션 세션 스토리지 — 플랫폼 서버 세션 인메모리 → Redis/DB 전환
+5. **[낮음]** 개발자 가이드 문서
+6. **[낮음]** 동적 ELF 로딩 — 파일시스템/원격에서 ELF 로드
+7. **[낮음]** ELF 아키텍처 검증 — `validate_elf()` ELF 헤더 확인
+8. **[낮음]** Fuzzing 테스트 — `serialize_input`/`encode_output` 안정성 검증
