@@ -1,7 +1,7 @@
 pub mod execution;
 pub mod types;
 
-use crate::traits::{GuestProgram, GuestProgramError};
+use crate::traits::{GuestProgram, GuestProgramError, backends};
 
 /// ZK-DEX Guest Program — privacy-preserving decentralized exchange.
 ///
@@ -22,15 +22,26 @@ use crate::traits::{GuestProgram, GuestProgramError};
 /// the guest binary calls [`types::DexProgramOutput::encode`] internally.
 pub struct ZkDexGuestProgram;
 
+impl ZkDexGuestProgram {
+    fn non_empty(elf: &[u8]) -> Option<&[u8]> {
+        if elf.is_empty() || elf == [0] {
+            None
+        } else {
+            Some(elf)
+        }
+    }
+}
+
 impl GuestProgram for ZkDexGuestProgram {
     fn program_id(&self) -> &str {
         "zk-dex"
     }
 
-    fn elf(&self, _backend: &str) -> Option<&[u8]> {
-        // ELF binaries will be compiled separately for each zkVM backend
-        // and uploaded via the Guest Program Store.
-        None
+    fn elf(&self, backend: &str) -> Option<&[u8]> {
+        match backend {
+            backends::SP1 => Self::non_empty(crate::ZKVM_SP1_ZK_DEX_ELF),
+            _ => None,
+        }
     }
 
     fn vk_bytes(&self, _backend: &str) -> Option<Vec<u8>> {
@@ -73,10 +84,22 @@ mod tests {
     }
 
     #[test]
-    fn elf_returns_none() {
+    fn sp1_elf_lookup() {
         let gp = ZkDexGuestProgram;
-        assert!(gp.elf("sp1").is_none());
+        // Without the "sp1" feature + built ELF, the constant is empty.
+        let result = gp.elf(crate::traits::backends::SP1);
+        if crate::ZKVM_SP1_ZK_DEX_ELF.is_empty() {
+            assert!(result.is_none());
+        } else {
+            assert!(result.is_some());
+        }
+    }
+
+    #[test]
+    fn unsupported_backend_returns_none() {
+        let gp = ZkDexGuestProgram;
         assert!(gp.elf("risc0").is_none());
+        assert!(gp.elf("nonexistent").is_none());
     }
 
     #[test]
