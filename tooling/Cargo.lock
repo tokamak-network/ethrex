@@ -5727,6 +5727,7 @@ dependencies = [
  "ethrex-common 9.0.0",
  "ethrex-storage 1.0.0",
  "ethrex-storage 9.0.0",
+ "eyre",
  "tokio",
 ]
 

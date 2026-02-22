@@ -8,5 +8,8 @@ use clap::Parser;
 async fn main() {
     let CLI { command } = CLI::parse();
 
-    command.run().await;
+    if let Err(error) = command.run().await {
+        eprintln!("Migration failed: {error:?}");
+        std::process::exit(1);
+    }
 }

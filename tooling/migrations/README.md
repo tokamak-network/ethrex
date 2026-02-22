@@ -21,11 +21,14 @@ Finally restart your ethrex node pointing `--datadir` to the path of the migrate
 ```
 Migrate a libmdbx database to rocksdb
 
-Usage: migrations libmdbx2rocksdb --genesis <GENESIS_PATH> --store.old <OLD_STORAGE_PATH> --store.new <NEW_STORAGE_PATH>
+Usage: migrations libmdbx2rocksdb --genesis <GENESIS_PATH> --store.old <OLD_STORAGE_PATH> --store.new <NEW_STORAGE_PATH> [--dry-run]
 
 Options:
       --genesis <GENESIS_PATH>        Path to the genesis file for the genesis block of store.old
       --store.old <OLD_STORAGE_PATH>  Path to the target database to migrate
       --store.new <NEW_STORAGE_PATH>  Path to use for the migrated database
+      --dry-run                       Validate source/target stores and print migration plan without writing blocks
   -h, --help                          Print help
 ```
+
+`--dry-run` can be used in automation to verify source and target DB readability and to preview how many blocks would be imported before doing a real migration run.

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser as ClapParser, Subcommand as ClapSubcommand};
 use ethrex_blockchain::{Blockchain, BlockchainOptions, BlockchainType, L2Config};
 use ethrex_common::types::Block;
+use eyre::{ContextCompat, Result, WrapErr};
 
 use crate::utils::{migrate_block_body, migrate_block_header};
 
@@ -35,17 +36,35 @@ pub enum Subcommand {
         #[arg(long = "store.new")]
         /// Path for the new RocksDB database
         new_storage_path: PathBuf,
+        #[arg(long = "dry-run", default_value_t = false)]
+        /// Validate source/target stores and print migration plan without writing blocks
+        dry_run: bool,
     },
 }
 
+struct MigrationPlan {
+    start_block: u64,
+    end_block: u64,
+}
+
+impl MigrationPlan {
+    fn block_count(&self) -> u64 {
+        self.end_block - self.start_block + 1
+    }
+}
+
 impl Subcommand {
-    pub async fn run(&self) {
+    pub async fn run(&self) -> Result<()> {
         match self {
             Self::Libmdbx2Rocksdb {
                 genesis_path,
                 old_storage_path,
                 new_storage_path,
-            } => migrate_libmdbx_to_rocksdb(genesis_path, old_storage_path, new_storage_path).await,
+                dry_run,
+            } => {
+                migrate_libmdbx_to_rocksdb(genesis_path, old_storage_path, new_storage_path, *dry_run)
+                    .await
+            }
         }
     }
 }
@@ -54,42 +73,56 @@ async fn migrate_libmdbx_to_rocksdb(
     genesis_path: &Path,
     old_storage_path: &Path,
     new_storage_path: &Path,
-) {
-    let old_store = ethrex_storage_libmdbx::Store::new(
-        old_storage_path.to_str().expect("Invalid old storage path"),
-        ethrex_storage_libmdbx::EngineType::Libmdbx,
-    )
-    .expect("Cannot open libmdbx store");
+    dry_run: bool,
+) -> Result<()> {
+    let old_path = old_storage_path
+        .to_str()
+        .wrap_err("Invalid UTF-8 in old storage path")?;
+    let old_store = ethrex_storage_libmdbx::Store::new(old_path, ethrex_storage_libmdbx::EngineType::Libmdbx)
+        .wrap_err_with(|| format!("Cannot open libmdbx store at {old_storage_path:?}"))?;
     old_store
         .load_initial_state()
         .await
-        .expect("Cannot load libmdbx store state");
+        .wrap_err("Cannot load libmdbx store state")?;
 
+    let genesis = genesis_path
+        .to_str()
+        .wrap_err("Invalid UTF-8 in genesis path")?;
     let new_store = ethrex_storage::Store::new_from_genesis(
         new_storage_path,
         ethrex_storage::EngineType::RocksDB,
-        genesis_path
-            .to_str()
-            .expect("Cannot convert genesis path to str"),
+        genesis,
     )
     .await
-    .expect("Cannot create rocksdb store");
+    .wrap_err_with(|| format!("Cannot create/open rocksdb store at {new_storage_path:?}"))?;
 
     let last_block_number = old_store
         .get_latest_block_number()
         .await
-        .expect("Cannot get latest block from libmdbx store");
+        .wrap_err("Cannot get latest block from libmdbx store")?;
     let last_known_block = new_store
         .get_latest_block_number()
         .await
-        .expect("Cannot get latest known block from rocksdb store");
+        .wrap_err("Cannot get latest block from rocksdb store")?;
 
-    if last_known_block >= last_block_number {
-        println!("Rocksdb store is already up to date");
-        return;
+    let Some(plan) = build_migration_plan(last_known_block, last_block_number) else {
+        println!(
+            "Rocksdb store is already up to date (target head: {last_known_block}, source head: {last_block_number})"
+        );
+        return Ok(());
+    };
+
+    println!(
+        "Migration plan: {} block(s), from #{}, to #{}",
+        plan.block_count(),
+        plan.start_block,
+        plan.end_block
+    );
+
+    if dry_run {
+        println!("Dry-run complete: no data was written.");
+        return Ok(());
     }
-
-    println!("Migrating from block {last_known_block} to {last_block_number}");
 
     let blockchain_opts = BlockchainOptions {
         // TODO: we may want to migrate using a specified fee config
@@ -99,22 +132,21 @@ async fn migrate_libmdbx_to_rocksdb(
     let blockchain = Blockchain::new(new_store.clone(), blockchain_opts);
 
     let block_bodies = old_store
-        .get_block_bodies(last_known_block + 1, last_block_number)
+        .get_block_bodies(plan.start_block, plan.end_block)
         .await
-        .expect("Cannot get bodies from libmdbx store");
+        .wrap_err("Cannot get block bodies from libmdbx store")?;
 
-    let block_headers = (last_known_block + 1..=last_block_number).map(|i| {
+    let block_headers = (plan.start_block..=plan.end_block).map(|i| {
         old_store
             .get_block_header(i)
-            .ok()
-            .flatten()
-            .expect("Cannot get block headers from libmdbx store")
+            .wrap_err_with(|| format!("Cannot fetch block header #{i} from libmdbx store"))?
+            .ok_or_else(|| eyre::eyre!("Missing block header #{i} in libmdbx store"))
     });
 
     let blocks = block_headers.zip(block_bodies);
     let mut added_blocks = Vec::new();
     for (header, body) in blocks {
-        let header = migrate_block_header(header);
+        let header = migrate_block_header(header?);
         let body = migrate_block_body(body);
         let block_number = header.number;
         let block = Block::new(header, body);
@@ -122,15 +154,14 @@ async fn migrate_libmdbx_to_rocksdb(
         let block_hash = block.hash();
         blockchain
             .add_block_pipeline(block)
-            .unwrap_or_else(|e| panic!("Cannot add block {block_number} to rocksdb store: {e}"));
+            .wrap_err_with(|| format!("Cannot add block {block_number} to rocksdb store"))?;
         added_blocks.push((block_number, block_hash));
     }
 
     let last_block = old_store
-        .get_block_header(last_block_number)
-        .ok()
-        .flatten()
-        .expect("Cannot get last block from libmdbx store");
+        .get_block_header(plan.end_block)
+        .wrap_err_with(|| format!("Cannot fetch last block header #{}", plan.end_block))?
+        .ok_or_else(|| eyre::eyre!("Missing block header #{}", plan.end_block))?;
     new_store
         .forkchoice_update(
             added_blocks,
@@ -140,5 +171,44 @@ async fn migrate_libmdbx_to_rocksdb(
             None,
         )
         .await
-        .expect("Cannot apply forkchoice update");
+        .wrap_err("Cannot apply forkchoice update")?;
+
+    println!(
+        "Migration completed successfully: imported {} block(s).",
+        plan.block_count()
+    );
+
+    Ok(())
+}
+
+fn build_migration_plan(last_known_block: u64, last_source_block: u64) -> Option<MigrationPlan> {
+    (last_known_block < last_source_block).then_some(MigrationPlan {
+        start_block: last_known_block + 1,
+        end_block: last_source_block,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_migration_plan;
+
+    #[test]
+    fn no_plan_when_target_is_up_to_date() {
+        let plan = build_migration_plan(100, 100);
+        assert!(plan.is_none());
+    }
+
+    #[test]
+    fn no_plan_when_target_is_ahead() {
+        let plan = build_migration_plan(101, 100);
+        assert!(plan.is_none());
+    }
+
+    #[test]
+    fn builds_plan_when_source_is_ahead() {
+        let plan = build_migration_plan(12, 20).expect("plan should exist");
+        assert_eq!(plan.start_block, 13);
+        assert_eq!(plan.end_block, 20);
+        assert_eq!(plan.block_count(), 8);
+    }
 }
