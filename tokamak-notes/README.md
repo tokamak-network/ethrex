@@ -7,6 +7,8 @@
 ```
 tokamak-notes/
 ├── branching-strategy.md          # 브랜치 전략
+├── local-setup-guide.md           # 로컬 프루버 벤치마크 환경 구축 가이드
+├── sp1-profiling-baseline.md      # SP1 프로파일링 베이스라인
 └── analysis-doc-kr/               # ethrex 코드 분석 (한국어)
     ├── 00-개요.md
     ├── 01-아키텍처.md
@@ -26,6 +28,10 @@ tokamak-notes/
 
 ### 브랜치 전략
 - [branching-strategy.md](./branching-strategy.md) — upstream 동기화 및 Tokamak 특화 브랜치 관리 규칙
+
+### ZK 프루버 최적화
+- [local-setup-guide.md](./local-setup-guide.md) — 로컬 프루버 벤치마크 환경 구축 (SP1/RISC0)
+- [sp1-profiling-baseline.md](./sp1-profiling-baseline.md) — SP1 프로파일링 베이스라인 (사이클 분석, 최적화 타겟)
 
 ### ethrex 코드 분석
 
