@@ -304,6 +304,7 @@ fn build_migration_plan(last_known_block: u64, last_source_block: u64) -> Option
 #[cfg(test)]
 mod tests {
     use super::{MigrationErrorReport, MigrationPlan, MigrationReport, build_migration_plan};
+    use serde_json::{Value, json};
 
     #[test]
     fn no_plan_when_target_is_up_to_date() {
@@ -339,10 +340,42 @@ mod tests {
             imported_blocks: 0,
         };
 
-        let encoded = serde_json::to_string(&report).expect("report should serialize");
-        assert!(encoded.contains("\"status\":\"planned\""));
-        assert!(encoded.contains("\"dry_run\":true"));
-        assert!(encoded.contains("\"start_block\":41"));
+        let encoded = serde_json::to_value(&report).expect("report should serialize");
+        let expected = json!({
+            "status": "planned",
+            "source_head": 42,
+            "target_head": 40,
+            "plan": {
+                "start_block": 41,
+                "end_block": 42
+            },
+            "dry_run": true,
+            "imported_blocks": 0
+        });
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn serializes_up_to_date_report_with_null_plan() {
+        let report = MigrationReport {
+            status: "up_to_date",
+            source_head: 100,
+            target_head: 100,
+            plan: None,
+            dry_run: false,
+            imported_blocks: 0,
+        };
+
+        let encoded = serde_json::to_value(&report).expect("report should serialize");
+        let expected = json!({
+            "status": "up_to_date",
+            "source_head": 100,
+            "target_head": 100,
+            "plan": Value::Null,
+            "dry_run": false,
+            "imported_blocks": 0
+        });
+        assert_eq!(encoded, expected);
     }
 
     #[test]
@@ -352,8 +385,11 @@ mod tests {
             error: "boom".to_owned(),
         };
 
-        let encoded = serde_json::to_string(&report).expect("error report should serialize");
-        assert!(encoded.contains("\"status\":\"failed\""));
-        assert!(encoded.contains("\"error\":\"boom\""));
+        let encoded = serde_json::to_value(&report).expect("error report should serialize");
+        let expected = json!({
+            "status": "failed",
+            "error": "boom"
+        });
+        assert_eq!(encoded, expected);
     }
 }

@@ -36,3 +36,35 @@ Options:
 
 `--json` prints a structured migration report (`status`, source/target heads, plan, dry-run flag, imported blocks) suitable for scripting and CI logs.
 When execution fails with `--json`, the CLI emits `{ "status": "failed", "error": "..." }` for stable automation parsing.
+
+## JSON output contract (stable)
+
+Success/progress shape:
+
+```json
+{
+  "status": "planned|in_progress|completed|up_to_date",
+  "source_head": 42,
+  "target_head": 40,
+  "plan": {
+    "start_block": 41,
+    "end_block": 42
+  },
+  "dry_run": true,
+  "imported_blocks": 0
+}
+```
+
+Notes:
+- `plan` is `null` only when `status = "up_to_date"`.
+- `imported_blocks` is `0` for `planned`, `in_progress`, and `up_to_date`.
+- `imported_blocks > 0` only for `completed` runs.
+
+Failure shape:
+
+```json
+{
+  "status": "failed",
+  "error": "human-readable error with context"
+}
+```
