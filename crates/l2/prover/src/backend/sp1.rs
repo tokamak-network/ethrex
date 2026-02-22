@@ -1,4 +1,4 @@
-use ethrex_guest_program::{ZKVM_SP1_PROGRAM_ELF, input::ProgramInput};
+use ethrex_guest_program::{ZKVM_SP1_PROGRAM_ELF, input::ProgramInput, traits::backends};
 use ethrex_l2_common::{
     calldata::Value,
     prover::{BatchProof, ProofBytes, ProofCalldata, ProofFormat, ProverType},
@@ -147,6 +147,10 @@ impl ProverBackend for Sp1Backend {
         ProverType::SP1
     }
 
+    fn backend_name(&self) -> &'static str {
+        backends::SP1
+    }
+
     fn serialize_input(&self, input: &ProgramInput) -> Result<Self::SerializedInput, BackendError> {
         let mut stdin = SP1Stdin::new();
         let bytes = rkyv::to_bytes::<Error>(input).map_err(BackendError::serialization)?;
@@ -211,5 +215,38 @@ impl ProverBackend for Sp1Backend {
         let start = Instant::now();
         let proof = self.prove_with_stdin(&stdin, format)?;
         Ok((proof, start.elapsed()))
+    }
+
+    fn execute_with_elf(
+        &self,
+        elf: &[u8],
+        serialized_input: &[u8],
+    ) -> Result<(), BackendError> {
+        let setup = self.get_setup();
+        let mut stdin = SP1Stdin::new();
+        stdin.write_slice(serialized_input);
+        setup
+            .client
+            .execute(elf, &stdin)
+            .map_err(BackendError::execution)?;
+        Ok(())
+    }
+
+    fn prove_with_elf(
+        &self,
+        elf: &[u8],
+        serialized_input: &[u8],
+        format: ProofFormat,
+    ) -> Result<Self::ProofOutput, BackendError> {
+        let setup = self.get_setup();
+        let mut stdin = SP1Stdin::new();
+        stdin.write_slice(serialized_input);
+        let (pk, vk) = setup.client.setup(elf);
+        let sp1_format = Self::convert_format(format);
+        let proof = setup
+            .client
+            .prove(&pk, &stdin, sp1_format)
+            .map_err(BackendError::proving)?;
+        Ok(Sp1ProveOutput::new(proof, vk))
     }
 }

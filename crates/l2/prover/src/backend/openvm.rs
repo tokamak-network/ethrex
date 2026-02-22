@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use ethrex_guest_program::input::ProgramInput;
+use ethrex_guest_program::{input::ProgramInput, traits::backends};
 use ethrex_l2_common::prover::{BatchProof, ProofFormat, ProverType};
 use openvm_continuations::verifier::internal::types::VmStarkProof;
 use openvm_sdk::{Sdk, StdIn, types::EvmProof};
@@ -66,6 +66,10 @@ impl ProverBackend for OpenVmBackend {
 
     fn prover_type(&self) -> ProverType {
         unimplemented!("OpenVM is not yet enabled as a backend for the L2")
+    }
+
+    fn backend_name(&self) -> &'static str {
+        backends::OPENVM
     }
 
     fn serialize_input(&self, input: &ProgramInput) -> Result<Self::SerializedInput, BackendError> {

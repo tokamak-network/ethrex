@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ethrex_guest_program::{ZKVM_ZISK_PROGRAM_ELF, input::ProgramInput};
+use ethrex_guest_program::{ZKVM_ZISK_PROGRAM_ELF, input::ProgramInput, traits::backends};
 use ethrex_l2_common::prover::{BatchProof, ProofFormat, ProverType};
 
 use crate::backend::{BackendError, ProverBackend};
@@ -115,6 +115,10 @@ impl ProverBackend for ZiskBackend {
 
     fn prover_type(&self) -> ProverType {
         unimplemented!("ZisK is not yet enabled as a backend for the L2")
+    }
+
+    fn backend_name(&self) -> &'static str {
+        backends::ZISK
     }
 
     fn serialize_input(&self, input: &ProgramInput) -> Result<Self::SerializedInput, BackendError> {

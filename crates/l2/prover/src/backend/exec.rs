@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
 
-use ethrex_guest_program::{input::ProgramInput, output::ProgramOutput};
+use ethrex_guest_program::{input::ProgramInput, output::ProgramOutput, traits::backends};
 use ethrex_l2_common::{
     calldata::Value,
     prover::{BatchProof, ProofCalldata, ProofFormat, ProverType},
@@ -41,6 +41,10 @@ impl ProverBackend for ExecBackend {
 
     fn prover_type(&self) -> ProverType {
         ProverType::Exec
+    }
+
+    fn backend_name(&self) -> &'static str {
+        backends::EXEC
     }
 
     fn serialize_input(
@@ -84,5 +88,30 @@ impl ProverBackend for ExecBackend {
         let elapsed = start.elapsed();
         info!("Successfully executed program in {:.2?}", elapsed);
         Ok(elapsed)
+    }
+
+    fn execute_with_elf(
+        &self,
+        _elf: &[u8],
+        serialized_input: &[u8],
+    ) -> Result<(), BackendError> {
+        // Exec mode ignores the ELF and runs execution_program directly.
+        // Deserialize the rkyv bytes back to ProgramInput.
+        let input: ProgramInput = rkyv::from_bytes::<ProgramInput, rkyv::rancor::Error>(serialized_input)
+            .map_err(|e| BackendError::serialization(e.to_string()))?;
+        Self::execute_core(input)?;
+        Ok(())
+    }
+
+    fn prove_with_elf(
+        &self,
+        _elf: &[u8],
+        serialized_input: &[u8],
+        _format: ProofFormat,
+    ) -> Result<Self::ProofOutput, BackendError> {
+        warn!("\"exec\" prover backend generates no proof, only executes (ELF path)");
+        let input: ProgramInput = rkyv::from_bytes::<ProgramInput, rkyv::rancor::Error>(serialized_input)
+            .map_err(|e| BackendError::serialization(e.to_string()))?;
+        Self::execute_core(input)
     }
 }
