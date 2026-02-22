@@ -52,5 +52,8 @@ ci = []
 # report_cycles function will be reported to stdout when running inside SP1 zkVM.
 sp1-cycles = []
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lib]
 path = "./src/lib.rs"
