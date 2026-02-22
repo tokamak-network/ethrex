@@ -54,6 +54,15 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+// Clean up expired sessions every hour
+const { cleanupExpiredSessions } = require("./db/sessions");
+setInterval(() => {
+  const removed = cleanupExpiredSessions();
+  if (removed > 0) {
+    console.log(`Cleaned up ${removed} expired session(s)`);
+  }
+}, 60 * 60 * 1000);
+
 // Static file serving for uploads
 const path = require("path");
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));

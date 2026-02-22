@@ -1,28 +1,15 @@
 const crypto = require("crypto");
 const { getUserById } = require("../db/users");
-
-// In-memory session store
-const sessions = new Map();
-const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const sessions = require("../db/sessions");
 
 function createSession(userId) {
   const token = "ps_" + crypto.randomBytes(32).toString("hex");
-  sessions.set(token, { userId, createdAt: Date.now() });
+  sessions.createSession(token, userId);
   return token;
 }
 
-function getSession(token) {
-  const session = sessions.get(token);
-  if (!session) return null;
-  if (Date.now() - session.createdAt > SESSION_TTL) {
-    sessions.delete(token);
-    return null;
-  }
-  return session;
-}
-
 function destroySession(token) {
-  sessions.delete(token);
+  sessions.destroySession(token);
 }
 
 // Middleware: require authentication
@@ -33,14 +20,14 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ error: "Authentication required" });
     }
 
-    const session = getSession(bearer);
+    const session = sessions.getSession(bearer);
     if (!session) {
       return res.status(401).json({ error: "Invalid or expired session" });
     }
 
     const user = getUserById(session.userId);
     if (!user) {
-      sessions.delete(bearer);
+      sessions.destroySession(bearer);
       return res.status(401).json({ error: "User not found" });
     }
     if (user.status !== "active") {
@@ -63,7 +50,7 @@ async function requireAdmin(req, res, next) {
       return res.status(401).json({ error: "Authentication required" });
     }
 
-    const session = getSession(bearer);
+    const session = sessions.getSession(bearer);
     if (!session) {
       return res.status(401).json({ error: "Invalid or expired session" });
     }

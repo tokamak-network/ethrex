@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS deployments (
   created_at INTEGER NOT NULL
 );
 
+-- Sessions (persistent authentication tokens)
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_programs_status ON programs(status);
 CREATE INDEX IF NOT EXISTS idx_programs_category ON programs(category);
