@@ -277,7 +277,18 @@ Phase 2.1-2.4 구현 경험을 바탕으로 한 수정 결과:
     *   `encode_output_never_panics_on_arbitrary_bytes` — 3개 프로그램 × 4개 에지케이스
     *   `validate_elf_never_panics_on_arbitrary_bytes` — 6개 백엔드 × 9개 에지케이스
 
+13. ~~**[낮음]** 동적 ELF 로딩~~ — **✅ 해결됨**:
+    *   `DynamicGuestProgram` 구현: 파일시스템에서 런타임 ELF 로딩 (재컴파일 불필요)
+    *   Builder 패턴: `elf_from_file()`, `elf_from_bytes()`, `vk_from_file()`, `vk_from_bytes()`
+    *   `from_dir()`: 표준 디렉토리 레이아웃 (`<dir>/<backend>/elf`) 자동 스캔
+    *   ELF 헤더 검증 기본 활성화 (`skip_validation()`으로 비활성화 가능)
+    *   `GuestProgram` 트레이트 구현 → `Arc<dyn GuestProgram>`으로 레지스트리 등록 가능
+    *   15개 테스트 추가 (builder, file I/O, directory scan, validation, trait object, Arc)
+
+14. ~~**[낮음]** 개발자 가이드 문서~~ — **✅ 해결됨**:
+    *   `08-developer-guide.md` 작성: Quick Start, Step-by-Step, Dynamic ELF Loading, Trait Reference, Testing, Checklist
+    *   스캐폴드 스크립트 사용법, 수동 생성 절차, 빌드 시스템 연동, 프루버 등록 방법 포함
+
 ### 남은 후속 작업
 
-1. **[낮음]** 개발자 가이드 문서
-2. **[낮음]** 동적 ELF 로딩 — 파일시스템/원격에서 ELF 로드
+(모든 작업 완료)
