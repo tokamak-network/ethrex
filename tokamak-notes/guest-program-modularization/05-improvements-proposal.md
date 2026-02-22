@@ -258,10 +258,16 @@ Phase 2.1-2.4 구현 경험을 바탕으로 한 수정 결과:
     *   ZK-DEX/Tokamon 실행 → 출력 인코딩 → rkyv roundtrip 교차 크레이트 검증
     *   잔여: SP1/RISC0 실제 zkVM `prove_with_elf` 테스트 (CI 환경 필요)
 
+10. ~~**[중간]** 프로덕션 세션 스토리지~~ — **✅ 해결됨**:
+    *   `sessions` 테이블 추가 (`schema.sql`)
+    *   `db/sessions.js` — SQLite 기반 CRUD (`createSession`, `getSession`, `destroySession`, `cleanupExpiredSessions`)
+    *   `middleware/auth.js` — in-memory `Map()` → SQLite 세션 조회로 교체
+    *   `server.js` — 1시간 주기 만료 세션 정리 (`setInterval`)
+    *   서버 재시작 시 세션 유지, ON DELETE CASCADE로 사용자 삭제 시 세션 자동 정리
+
 ### 남은 후속 작업
 
-1. **[중간]** 프로덕션 세션 스토리지 — 플랫폼 서버 세션 인메모리 → Redis/DB 전환
-2. **[낮음]** 개발자 가이드 문서
-3. **[낮음]** 동적 ELF 로딩 — 파일시스템/원격에서 ELF 로드
-4. **[낮음]** ELF 아키텍처 검증 — `validate_elf()` ELF 헤더 확인
-5. **[낮음]** Fuzzing 테스트 — `serialize_input`/`encode_output` 안정성 검증
+1. **[낮음]** 개발자 가이드 문서
+2. **[낮음]** 동적 ELF 로딩 — 파일시스템/원격에서 ELF 로드
+3. **[낮음]** ELF 아키텍처 검증 — `validate_elf()` ELF 헤더 확인
+4. **[낮음]** Fuzzing 테스트 — `serialize_input`/`encode_output` 안정성 검증
