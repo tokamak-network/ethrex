@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod config;
 pub mod prover;
+pub mod registry;
 
 use config::ProverConfig;
 use tracing::warn;
