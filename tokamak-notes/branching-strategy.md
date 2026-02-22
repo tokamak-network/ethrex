@@ -215,14 +215,36 @@ git remote remove upstream            # upstream 연결 해제
 [optional footer]
 ```
 
+**type:**
+- `feat` : 새 기능
+- `fix` : 버그 수정
+- `refactor` : 리팩토링
+- `test` : 테스트
+- `docs` : 문서
+- `chore` : 빌드, CI, 설정
+- `perf` : 성능 개선
+- `revert` : 되돌리기
+
+**scope (권장):** 브랜치 scope와 동일 (`l1`, `l2`, `zk`, `mod`, `infra`, `common` 등).
+더 구체적인 하위 scope도 허용: `guest-program`, `prover`, `sequencer`, `trie` 등.
+
 **예시:**
 ```
-feat(l2): add Tokamak custom deposit handling
+feat(guest-program): add GuestProgram trait for modular circuit support
+feat(prover): support custom ELF loading for app-specific L2
 fix(zk): resolve prover OOM on large batches
+perf(trie): batch account updates to reduce keccak calls
 refactor(l1): simplify block validation pipeline
-docs(common): update API documentation for bridge module
+docs(zk): add SP1 profiling baseline report
 chore(infra): add prover benchmark CI job
+test(guest-program): add Transfer Circuit integration tests
 ```
+
+**규칙:**
+- 제목은 **영어**, **소문자**, **명령형** (add, fix, update — 과거형 금지)
+- 제목 72자 이내
+- scope는 변경의 주요 영역을 정확히 표현
+- body는 선택사항이지만, 큰 변경에는 "왜" 이 변경이 필요한지 설명
 
 ## PR 규칙
 
