@@ -115,3 +115,54 @@ impl ProverBackend for ExecBackend {
         Self::execute_core(input)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::ProverBackend;
+
+    #[test]
+    fn backend_name_is_exec() {
+        let backend = ExecBackend::new();
+        assert_eq!(backend.backend_name(), "exec");
+    }
+
+    #[test]
+    fn execute_with_elf_invalid_input_returns_serialization_error() {
+        let backend = ExecBackend::new();
+        let bad_input = b"not valid rkyv bytes";
+        let result = backend.execute_with_elf(&[], bad_input);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, BackendError::Serialization(_)),
+            "expected Serialization error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn prove_with_elf_invalid_input_returns_serialization_error() {
+        let backend = ExecBackend::new();
+        let bad_input = b"not valid rkyv bytes";
+        let result = backend.prove_with_elf(&[], bad_input, ProofFormat::Compressed);
+        match result {
+            Err(BackendError::Serialization(_)) => {} // expected
+            Err(other) => panic!("expected Serialization error, got: {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn execute_with_elf_empty_input_returns_error() {
+        let backend = ExecBackend::new();
+        let result = backend.execute_with_elf(&[], &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn prove_with_elf_empty_input_returns_error() {
+        let backend = ExecBackend::new();
+        let result = backend.prove_with_elf(&[], &[], ProofFormat::Compressed);
+        assert!(matches!(result, Err(_)));
+    }
+}
