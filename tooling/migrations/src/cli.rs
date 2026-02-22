@@ -68,6 +68,31 @@ struct MigrationReport {
     imported_blocks: u64,
 }
 
+#[derive(Serialize)]
+struct MigrationErrorReport {
+    status: &'static str,
+    error: String,
+}
+
+pub fn emit_error_report(json: bool, error: &eyre::Report) {
+    if json {
+        let report = MigrationErrorReport {
+            status: "failed",
+            error: format!("{error:#}"),
+        };
+
+        match serde_json::to_string(&report) {
+            Ok(encoded) => println!("{encoded}"),
+            Err(ser_error) => {
+                eprintln!("Migration failed: {error:#}\nReport encoding failed: {ser_error}")
+            }
+        }
+        return;
+    }
+
+    eprintln!("Migration failed: {error:#}");
+}
+
 fn emit_report(report: &MigrationReport, json: bool) -> Result<()> {
     if json {
         println!(
@@ -103,6 +128,12 @@ fn emit_report(report: &MigrationReport, json: bool) -> Result<()> {
 }
 
 impl Subcommand {
+    pub fn json_output(&self) -> bool {
+        match self {
+            Self::Libmdbx2Rocksdb { json, .. } => *json,
+        }
+    }
+
     pub async fn run(&self) -> Result<()> {
         match self {
             Self::Libmdbx2Rocksdb {
@@ -272,7 +303,7 @@ fn build_migration_plan(last_known_block: u64, last_source_block: u64) -> Option
 
 #[cfg(test)]
 mod tests {
-    use super::{MigrationPlan, MigrationReport, build_migration_plan};
+    use super::{MigrationErrorReport, MigrationPlan, MigrationReport, build_migration_plan};
 
     #[test]
     fn no_plan_when_target_is_up_to_date() {
@@ -312,5 +343,17 @@ mod tests {
         assert!(encoded.contains("\"status\":\"planned\""));
         assert!(encoded.contains("\"dry_run\":true"));
         assert!(encoded.contains("\"start_block\":41"));
+    }
+
+    #[test]
+    fn serializes_error_report() {
+        let report = MigrationErrorReport {
+            status: "failed",
+            error: "boom".to_owned(),
+        };
+
+        let encoded = serde_json::to_string(&report).expect("error report should serialize");
+        assert!(encoded.contains("\"status\":\"failed\""));
+        assert!(encoded.contains("\"error\":\"boom\""));
     }
 }
