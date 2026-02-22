@@ -236,13 +236,32 @@ Phase 2.1-2.4 구현 경험을 바탕으로 한 수정 결과:
 5. ~~**[높음]** 멀티 ELF 빌드 도구~~ — **✅ 이미 구현됨**: `GUEST_PROGRAMS` 환경변수, `build.rs`, `Makefile`, scaffold 스크립트
 6. ~~**[중간]** `serialize_raw()` 표준화 (§2.3)~~ — **✅ 해결됨**: ELF/레거시 직렬화 통합, 모든 백엔드 리팩토링
 
+### 완료된 후속 작업 (추가분)
+
+7. ~~**[높음]** ZK-DEX / Tokamon 실제 ELF 구현~~ — **✅ 해결됨**:
+    *   ZK-DEX/Tokamon 커스텀 타입 (`DexProgramInput`, `TokammonProgramInput`) 및 실행 로직 구현
+    *   SP1 zkVM 엔트리포인트 (`bin/sp1-zk-dex/`, `bin/sp1-tokamon/`) 생성
+    *   `build.rs`에 `GUEST_PROGRAMS=zk-dex,tokamon` 빌드 분기 추가
+    *   `lib.rs`에 `ZKVM_SP1_ZK_DEX_ELF`, `ZKVM_SP1_TOKAMON_ELF` 상수 추가
+    *   GuestProgram `elf()` 구현체에 SP1 백엔드 분기 추가
+
+8. ~~**[중간]** Guest Program SDK~~ — **✅ 해결됨**:
+    *   `scripts/new-guest-program.sh` 스캐폴드 스크립트 업그레이드
+    *   모듈 디렉토리 구조 (`types.rs`, `execution.rs`, `mod.rs`) 자동 생성
+    *   SP1 바이너리 (`bin/sp1-<name>/`) 자동 생성
+    *   PascalCase/snake_case/UPPER_SNAKE 자동 변환, type_id 자동 할당
+    *   `mod.rs`에 자동 등록 (`pub mod`, `pub use`)
+    *   테스트 포함 (8개: trait, execution, rkyv roundtrip)
+9. ~~**[중간]** E2E 테스트~~ — **✅ 부분 해결**:
+    *   레지스트리 통합 테스트 9개 추가 (`registry.rs`)
+    *   `create_default_registry()` 에서 evm-l2/zk-dex/tokamon 3개 프로그램 정상 등록 검증
+    *   ZK-DEX/Tokamon 실행 → 출력 인코딩 → rkyv roundtrip 교차 크레이트 검증
+    *   잔여: SP1/RISC0 실제 zkVM `prove_with_elf` 테스트 (CI 환경 필요)
+
 ### 남은 후속 작업
 
-1. **[높음]** ZK-DEX / Tokamon 실제 ELF 구현 — 실제 zkVM 엔트리포인트 + 입력/출력 타입 정의
-2. **[중간]** Guest Program SDK — `cargo generate` 템플릿 + CLI 도구
-3. **[중간]** E2E 테스트 — 서버/클라이언트 통합 테스트, SP1/RISC0 prove_with_elf zkVM 테스트
-4. **[중간]** 프로덕션 세션 스토리지 — 플랫폼 서버 세션 인메모리 → Redis/DB 전환
-5. **[낮음]** 개발자 가이드 문서
-6. **[낮음]** 동적 ELF 로딩 — 파일시스템/원격에서 ELF 로드
-7. **[낮음]** ELF 아키텍처 검증 — `validate_elf()` ELF 헤더 확인
-8. **[낮음]** Fuzzing 테스트 — `serialize_input`/`encode_output` 안정성 검증
+1. **[중간]** 프로덕션 세션 스토리지 — 플랫폼 서버 세션 인메모리 → Redis/DB 전환
+2. **[낮음]** 개발자 가이드 문서
+3. **[낮음]** 동적 ELF 로딩 — 파일시스템/원격에서 ELF 로드
+4. **[낮음]** ELF 아키텍처 검증 — `validate_elf()` ELF 헤더 확인
+5. **[낮음]** Fuzzing 테스트 — `serialize_input`/`encode_output` 안정성 검증
