@@ -1,17 +1,36 @@
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-env-changed=GUEST_PROGRAMS");
 
-    #[cfg(all(not(clippy), feature = "risc0"))]
-    build_risc0_program();
+    // Parse GUEST_PROGRAMS env var to determine which programs to build.
+    // Default: "evm-l2" (backward compatible).
+    // Example: GUEST_PROGRAMS=evm-l2,zk-dex,tokamon
+    let programs: Vec<String> = match std::env::var("GUEST_PROGRAMS") {
+        Ok(val) => val.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        Err(_) => vec!["evm-l2".to_string()],
+    };
 
-    #[cfg(all(not(clippy), feature = "sp1"))]
-    build_sp1_program();
+    // Log which programs will be built
+    for prog in &programs {
+        println!("cargo:warning=Guest program target: {prog}");
+    }
 
-    #[cfg(all(not(clippy), feature = "zisk"))]
-    build_zisk_program();
+    // For now, only evm-l2 has actual ELF builds.
+    // Other programs will use uploaded ELFs from the Store platform.
+    // When their bin/ directories are created, they can be added here.
+    if programs.contains(&"evm-l2".to_string()) {
+        #[cfg(all(not(clippy), feature = "risc0"))]
+        build_risc0_program();
 
-    #[cfg(all(not(clippy), feature = "openvm"))]
-    build_openvm_program();
+        #[cfg(all(not(clippy), feature = "sp1"))]
+        build_sp1_program();
+
+        #[cfg(all(not(clippy), feature = "zisk"))]
+        build_zisk_program();
+
+        #[cfg(all(not(clippy), feature = "openvm"))]
+        build_openvm_program();
+    }
 }
 
 #[cfg(all(not(clippy), feature = "risc0"))]

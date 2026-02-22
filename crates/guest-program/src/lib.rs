@@ -2,6 +2,8 @@ pub mod common;
 pub mod l1;
 pub mod l2;
 pub mod methods;
+pub mod programs;
+pub mod traits;
 
 // Backward-compatible re-exports based on feature flag.
 // The prover backend uses `ethrex_guest_program::input::ProgramInput`, etc.

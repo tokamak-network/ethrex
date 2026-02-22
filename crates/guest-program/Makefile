@@ -1,4 +1,4 @@
-.PHONY: sp1 risc0 zisk openvm l2-sp1 l2-risc0 l2-zisk l2-openvm clean help
+.PHONY: sp1 risc0 zisk openvm l2-sp1 l2-risc0 l2-zisk l2-openvm l2-all clean help
 
 # Build flags
 CARGO_FLAGS := --release -p ethrex-guest-program
@@ -6,6 +6,11 @@ CARGO_FLAGS := --release -p ethrex-guest-program
 # Environment for reproducible builds
 ifdef REPRODUCIBLE
 	ENV_PREFIX := PROVER_REPRODUCIBLE_BUILD=true
+endif
+
+# Guest program selection
+ifdef PROGRAMS
+	ENV_PREFIX += GUEST_PROGRAMS=$(PROGRAMS)
 endif
 
 # Default target
@@ -26,6 +31,7 @@ help:
 	@echo ""
 	@echo "Options:"
 	@echo "  REPRODUCIBLE=1    Use Docker for reproducible builds"
+	@echo "  PROGRAMS=list     Comma-separated guest programs to build (default: evm-l2)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make sp1                  # Local build"
@@ -60,3 +66,7 @@ l2-openvm:
 
 clean:
 	rm -rf bin/sp1/out bin/risc0/out bin/zisk/out bin/openvm/out
+
+# Multi-program targets
+l2-all:
+	$(ENV_PREFIX) GUEST_PROGRAMS=evm-l2,zk-dex,tokamon cargo check $(CARGO_FLAGS) --features sp1,l2
