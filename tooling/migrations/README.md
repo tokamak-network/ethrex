@@ -44,6 +44,7 @@ Success/progress shape:
 ```json
 {
   "status": "planned|in_progress|completed|up_to_date",
+  "phase": "planning|execution",
   "source_head": 42,
   "target_head": 40,
   "plan": {
@@ -56,6 +57,7 @@ Success/progress shape:
 ```
 
 Notes:
+- `phase` is `planning` for `planned`/`up_to_date` and `execution` for `in_progress`/`completed`.
 - `plan` is `null` only when `status = "up_to_date"`.
 - `imported_blocks` is `0` for `planned`, `in_progress`, and `up_to_date`.
 - `imported_blocks > 0` only for `completed` runs.
@@ -65,6 +67,7 @@ Failure shape:
 ```json
 {
   "status": "failed",
+  "phase": "execution",
   "error": "human-readable error with context"
 }
 ```

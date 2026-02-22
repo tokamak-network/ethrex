@@ -61,6 +61,7 @@ impl MigrationPlan {
 #[derive(Serialize)]
 struct MigrationReport {
     status: &'static str,
+    phase: &'static str,
     source_head: u64,
     target_head: u64,
     plan: Option<MigrationPlan>,
@@ -71,6 +72,7 @@ struct MigrationReport {
 #[derive(Serialize)]
 struct MigrationErrorReport {
     status: &'static str,
+    phase: &'static str,
     error: String,
 }
 
@@ -78,6 +80,7 @@ pub fn emit_error_report(json: bool, error: &eyre::Report) {
     if json {
         let report = MigrationErrorReport {
             status: "failed",
+            phase: "execution",
             error: format!("{error:#}"),
         };
 
@@ -197,6 +200,7 @@ async fn migrate_libmdbx_to_rocksdb(
     let Some(plan) = build_migration_plan(last_known_block, last_block_number) else {
         let report = MigrationReport {
             status: "up_to_date",
+            phase: "planning",
             source_head: last_block_number,
             target_head: last_known_block,
             plan: None,
@@ -210,6 +214,7 @@ async fn migrate_libmdbx_to_rocksdb(
     if dry_run {
         let report = MigrationReport {
             status: "planned",
+            phase: "planning",
             source_head: last_block_number,
             target_head: last_known_block,
             plan: Some(plan),
@@ -223,6 +228,7 @@ async fn migrate_libmdbx_to_rocksdb(
     emit_report(
         &MigrationReport {
             status: "in_progress",
+            phase: "execution",
             source_head: last_block_number,
             target_head: last_known_block,
             plan: Some(plan),
@@ -283,6 +289,7 @@ async fn migrate_libmdbx_to_rocksdb(
 
     let report = MigrationReport {
         status: "completed",
+        phase: "execution",
         source_head: last_block_number,
         target_head: plan.end_block,
         plan: Some(plan),
@@ -330,6 +337,7 @@ mod tests {
     fn serializes_migration_report() {
         let report = MigrationReport {
             status: "planned",
+            phase: "planning",
             source_head: 42,
             target_head: 40,
             plan: Some(MigrationPlan {
@@ -343,6 +351,7 @@ mod tests {
         let encoded = serde_json::to_value(&report).expect("report should serialize");
         let expected = json!({
             "status": "planned",
+            "phase": "planning",
             "source_head": 42,
             "target_head": 40,
             "plan": {
@@ -359,6 +368,7 @@ mod tests {
     fn serializes_up_to_date_report_with_null_plan() {
         let report = MigrationReport {
             status: "up_to_date",
+            phase: "planning",
             source_head: 100,
             target_head: 100,
             plan: None,
@@ -369,6 +379,7 @@ mod tests {
         let encoded = serde_json::to_value(&report).expect("report should serialize");
         let expected = json!({
             "status": "up_to_date",
+            "phase": "planning",
             "source_head": 100,
             "target_head": 100,
             "plan": Value::Null,
@@ -382,12 +393,14 @@ mod tests {
     fn serializes_error_report() {
         let report = MigrationErrorReport {
             status: "failed",
+            phase: "execution",
             error: "boom".to_owned(),
         };
 
         let encoded = serde_json::to_value(&report).expect("error report should serialize");
         let expected = json!({
             "status": "failed",
+            "phase": "execution",
             "error": "boom"
         });
         assert_eq!(encoded, expected);
