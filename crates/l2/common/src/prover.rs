@@ -337,3 +337,154 @@ impl ProofData {
         ProofData::ProofSubmitACK { batch_number }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Protocol backward compatibility tests ──────────────────────────
+    //
+    // These tests verify that pre-modularization JSON (without the new
+    // `supported_programs` / `program_id` fields) still deserializes
+    // correctly via `#[serde(default)]`.
+
+    #[test]
+    fn batch_request_without_supported_programs_deserializes() {
+        // Old-format prover: no supported_programs field.
+        let json = r#"{"BatchRequest":{"commit_hash":"abc123","prover_type":"Exec"}}"#;
+        let data: ProofData = serde_json::from_str(json).expect("should deserialize");
+        match data {
+            ProofData::BatchRequest {
+                commit_hash,
+                prover_type,
+                supported_programs,
+            } => {
+                assert_eq!(commit_hash, "abc123");
+                assert_eq!(prover_type, ProverType::Exec);
+                assert!(supported_programs.is_empty(), "default should be empty vec");
+            }
+            _ => panic!("expected BatchRequest"),
+        }
+    }
+
+    #[test]
+    fn batch_request_with_supported_programs_roundtrips() {
+        let original = ProofData::batch_request_with_programs(
+            "hash1".to_string(),
+            ProverType::SP1,
+            vec!["evm-l2".to_string(), "zk-dex".to_string()],
+        );
+        let json = serde_json::to_string(&original).expect("serialize");
+        let deserialized: ProofData = serde_json::from_str(&json).expect("deserialize");
+        match deserialized {
+            ProofData::BatchRequest {
+                commit_hash,
+                prover_type,
+                supported_programs,
+            } => {
+                assert_eq!(commit_hash, "hash1");
+                assert_eq!(prover_type, ProverType::SP1);
+                assert_eq!(supported_programs, vec!["evm-l2", "zk-dex"]);
+            }
+            _ => panic!("expected BatchRequest"),
+        }
+    }
+
+    #[test]
+    fn batch_response_without_program_id_deserializes() {
+        // Old-format coordinator: no program_id field.
+        let json =
+            r#"{"BatchResponse":{"batch_number":42,"input":null,"format":null}}"#;
+        let data: ProofData = serde_json::from_str(json).expect("should deserialize");
+        match data {
+            ProofData::BatchResponse {
+                batch_number,
+                program_id,
+                ..
+            } => {
+                assert_eq!(batch_number, Some(42));
+                assert!(program_id.is_none(), "default should be None");
+            }
+            _ => panic!("expected BatchResponse"),
+        }
+    }
+
+    #[test]
+    fn batch_response_with_program_id_roundtrips() {
+        let json = r#"{"BatchResponse":{"batch_number":7,"input":null,"format":null,"program_id":"zk-dex"}}"#;
+        let data: ProofData = serde_json::from_str(json).expect("should deserialize");
+        match data {
+            ProofData::BatchResponse { program_id, .. } => {
+                assert_eq!(program_id, Some("zk-dex".to_string()));
+            }
+            _ => panic!("expected BatchResponse"),
+        }
+    }
+
+    #[test]
+    fn proof_submit_without_program_id_uses_default() {
+        // Old-format prover: no program_id field in ProofSubmit.
+        let json = r#"{
+            "ProofSubmit": {
+                "batch_number": 1,
+                "batch_proof": {
+                    "ProofCalldata": {
+                        "prover_type": "Exec",
+                        "calldata": []
+                    }
+                }
+            }
+        }"#;
+        let data: ProofData = serde_json::from_str(json).expect("should deserialize");
+        match data {
+            ProofData::ProofSubmit { program_id, .. } => {
+                assert_eq!(program_id, "evm-l2", "default program_id should be evm-l2");
+            }
+            _ => panic!("expected ProofSubmit"),
+        }
+    }
+
+    #[test]
+    fn proof_submit_with_program_id_roundtrips() {
+        let proof = BatchProof::ProofCalldata(ProofCalldata {
+            prover_type: ProverType::Exec,
+            calldata: vec![],
+        });
+        let original =
+            ProofData::proof_submit_with_program(5, proof, "tokamon".to_string());
+        let json = serde_json::to_string(&original).expect("serialize");
+        let deserialized: ProofData = serde_json::from_str(&json).expect("deserialize");
+        match deserialized {
+            ProofData::ProofSubmit {
+                batch_number,
+                program_id,
+                ..
+            } => {
+                assert_eq!(batch_number, 5);
+                assert_eq!(program_id, "tokamon");
+            }
+            _ => panic!("expected ProofSubmit"),
+        }
+    }
+
+    #[test]
+    fn empty_batch_response_roundtrips() {
+        let original = ProofData::empty_batch_response();
+        let json = serde_json::to_string(&original).expect("serialize");
+        let deserialized: ProofData = serde_json::from_str(&json).expect("deserialize");
+        match deserialized {
+            ProofData::BatchResponse {
+                batch_number,
+                input,
+                format,
+                program_id,
+            } => {
+                assert!(batch_number.is_none());
+                assert!(input.is_none());
+                assert!(format.is_none());
+                assert!(program_id.is_none());
+            }
+            _ => panic!("expected BatchResponse"),
+        }
+    }
+}

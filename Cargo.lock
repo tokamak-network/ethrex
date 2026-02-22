@@ -4082,6 +4082,7 @@ dependencies = [
  "rkyv",
  "secp256k1",
  "serde",
+ "serde_json",
  "serde_with",
  "sha3",
  "thiserror 2.0.18",
