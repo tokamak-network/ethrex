@@ -359,3 +359,35 @@ MVP: SQLite
 5. `docs/ops-agent/acceptance.md`
 
 본 문서는 구현 착수 기준이 되는 마스터 계획서로 사용한다.
+
+
+## 10. Playbook Trigger 표준 (정량 기준)
+
+아래 기준은 MVP 기본값이며 환경별로 조정 가능하다.
+
+| Domain | Trigger | 기본 임계값 | 연속 확인 횟수 | Abort 조건 |
+|---|---|---:|---:|---|
+| sync | block height 정체 | 180초 이상 증가 없음 | 3회 | height 증가 재개 |
+| sync | execution RPC timeout rate | 30% 초과 | 2회 | 10% 이하 회복 |
+| sequencer | commit 지연 | 120초 초과 | 2회 | 60초 이내 회복 |
+| sequencer | committer stopped | health fail | 2회 | health OK |
+| infra | CPU pressure | 90% 초과 | 3회 | 75% 이하 5분 유지 |
+| infra | RAM pressure | 92% 초과 | 3회 | 80% 이하 5분 유지 |
+| infra | FD leak suspect | fd 증가율 10%/5min | 3회 | 증가율 정상화 |
+
+### 승인 만료 정책
+- High 위험 조치 승인 TTL: 기본 10분
+- TTL 만료 시 실행 금지 + incident는 `escalated`로 전환
+- 동일 액션 재요청은 최소 2분 cooldown 후 허용
+
+
+## 11. 테스트 매트릭스 (장애 주입 시나리오)
+
+| 시나리오 | 입력 장애 | 기대 결과 | 통과 기준 |
+|---|---|---|---|
+| S-01 Sync stall | new block 미수신 5분 | incident 생성 + low 조치 + 재검증 | MTTR 목표 이내 복구 |
+| S-02 RPC timeout burst | timeout 40% | medium 조치/보고 | 오탐 조치 없음 |
+| S-03 Committer stopped | admin health fail | start 복구 또는 승인 요청 | 승인 없는 high 조치 0 |
+| S-04 FD leak | fd 지속 증가 | high 승인 요청 + 재시작 | rollback/escalation 누락 0 |
+| S-05 Metrics stack down | Prometheus/Loki 불가 | RPC fallback 모드 전환 | 탐지 파이프라인 지속 |
+| S-06 Approval timeout | 승인 미응답 | 실행 금지 + escalated | 무승인 실행 0 |

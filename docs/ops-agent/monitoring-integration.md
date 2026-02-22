@@ -166,3 +166,32 @@ Agent를 붙이면 아래 효용이 생긴다.
 3. 초기에는 저위험 자동화부터 시작하고, 고위험은 승인 기반으로 점진 확대한다.
 
 이 방식이 현재 코드 자산을 가장 많이 재사용하면서도 운영 효용을 가장 빠르게 만든다.
+
+
+## 10. 필수 쿼리 계약 (Prometheus/Loki/RPC)
+
+에이전트는 최소 아래 신호를 주기적으로 수집해야 한다.
+
+### Prometheus
+- block height / finalized height
+- rpc error rate, rpc latency p95
+- cpu/memory/fd/process restart count
+- sequencer/committer health metrics
+
+### Loki (또는 로그 수집)
+- error burst 키워드(WS, RPC, DB, panic)
+- reconnect/restart 패턴
+- 동일 에러 반복 빈도(분당)
+
+### RPC/Admin API
+- `/health`
+- L2 admin: `/committer/start`, `/committer/stop` 실행 가능 여부
+- execution/consensus endpoint 가용성
+
+## 11. Fallback 우선순위
+
+1. Prometheus + Loki + RPC 정상: full mode
+2. Prometheus 장애: Loki + RPC mode
+3. Loki 장애: Prometheus + RPC mode
+4. 모니터링 스택 장애: RPC-only degraded mode
+5. RPC까지 장애: incident 즉시 escalated (자동조치 금지)
