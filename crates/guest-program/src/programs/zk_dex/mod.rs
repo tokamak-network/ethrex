@@ -64,28 +64,38 @@ impl GuestProgram for ZkDexGuestProgram {
     }
 
     fn serialize_input(&self, raw_input: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
-        use crate::common::input_converter::convert_to_app_input;
-        use crate::l2::ProgramInput;
-        use rkyv::rancor::Error as RkyvError;
+        // With the l2 feature, convert ProgramInput → AppProgramInput.
+        // Without it (e.g., inside the zkVM guest), pass through as-is.
+        #[cfg(feature = "l2")]
+        {
+            use crate::common::input_converter::convert_to_app_input;
+            use crate::l2::ProgramInput;
+            use rkyv::rancor::Error as RkyvError;
 
-        // 1. Deserialize ProgramInput from rkyv.
-        let program_input: ProgramInput =
-            rkyv::from_bytes::<ProgramInput, RkyvError>(raw_input)
-                .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
+            // 1. Deserialize ProgramInput from rkyv.
+            let program_input: ProgramInput =
+                rkyv::from_bytes::<ProgramInput, RkyvError>(raw_input)
+                    .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
 
-        // 2. Determine needed accounts and storage slots from transactions.
-        let (accounts, storage_slots) =
-            analyze_zk_dex_transactions(&program_input.blocks, DEX_CONTRACT_ADDRESS)
+            // 2. Determine needed accounts and storage slots from transactions.
+            let (accounts, storage_slots) =
+                analyze_zk_dex_transactions(&program_input.blocks, DEX_CONTRACT_ADDRESS)
+                    .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
+
+            // 3. Convert to AppProgramInput.
+            let app_input = convert_to_app_input(program_input, &accounts, &storage_slots)
                 .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
 
-        // 3. Convert to AppProgramInput.
-        let app_input = convert_to_app_input(program_input, &accounts, &storage_slots)
-            .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
+            // 4. Re-serialize as AppProgramInput via rkyv.
+            let bytes = rkyv::to_bytes::<RkyvError>(&app_input)
+                .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
+            Ok(bytes.to_vec())
+        }
 
-        // 4. Re-serialize as AppProgramInput via rkyv.
-        let bytes = rkyv::to_bytes::<RkyvError>(&app_input)
-            .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
-        Ok(bytes.to_vec())
+        #[cfg(not(feature = "l2"))]
+        {
+            Ok(raw_input.to_vec())
+        }
     }
 
     fn encode_output(&self, raw_output: &[u8]) -> Result<Vec<u8>, GuestProgramError> {

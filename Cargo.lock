@@ -4280,6 +4280,7 @@ dependencies = [
  "risc0-zkp",
  "risc0-zkvm",
  "rkyv",
+ "secp256k1",
  "serde",
  "serde_json",
  "sha2",
