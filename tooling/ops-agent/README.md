@@ -1,0 +1,31 @@
+# ethrex-ops-agent (observe-only MVP)
+
+## Scope
+- Detect only (no automatic action)
+- Persist incidents into SQLite
+- Send Telegram alerts
+
+## Covered scenarios
+1. Block height stall (>= 180s)
+2. Execution RPC timeout rate (> 30%, 2 consecutive checks)
+3. CPU pressure (> 90%, 3 consecutive checks)
+
+## Required environment variables
+- `OPS_AGENT_PROMETHEUS_BASE_URL`
+- `OPS_AGENT_EXECUTION_RPC_URL`
+- `OPS_AGENT_TELEGRAM_BOT_TOKEN`
+- `OPS_AGENT_TELEGRAM_CHAT_ID`
+
+## Optional environment variables
+- `OPS_AGENT_SQLITE_PATH` (default: `ops-agent.sqlite`)
+- `OPS_AGENT_POLL_SECONDS` (default: `30`)
+
+## False-positive measurement
+Incidents are stored with nullable `false_positive`.
+- `NULL`: unlabeled
+- `1`: false positive
+- `0`: true positive
+
+Current repository methods:
+- `mark_false_positive(incident_id, bool)`
+- `false_positive_rate()`

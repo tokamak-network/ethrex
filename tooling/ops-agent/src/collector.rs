@@ -103,6 +103,10 @@ impl Collector {
             .json::<PrometheusQueryResponse>()
             .await?;
 
+        Self::parse_prometheus_scalar(response)
+    }
+
+    fn parse_prometheus_scalar(response: PrometheusQueryResponse) -> Result<f64, CollectorError> {
         if response.status != "success" {
             return Err(CollectorError::PrometheusStatus(response.status));
         }
@@ -133,6 +137,10 @@ impl Collector {
             .json::<RpcResponse>()
             .await?;
 
+        Self::parse_rpc_block_number(response)
+    }
+
+    fn parse_rpc_block_number(response: RpcResponse) -> Result<u64, CollectorError> {
         let hex_result = response.result.ok_or(CollectorError::MissingRpcResult)?;
         let trimmed = hex_result.trim_start_matches("0x");
         u64::from_str_radix(trimmed, 16).map_err(CollectorError::from)
@@ -158,4 +166,55 @@ struct PrometheusResult {
 #[derive(Debug, Deserialize)]
 struct RpcResponse {
     result: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collector() -> Collector {
+        Collector::new("http://prometheus".to_owned(), "http://rpc".to_owned())
+    }
+
+    #[test]
+    fn merges_block_height_using_max_value() {
+        let c = collector();
+        let merged = c.merge_block_height(100.9, 101);
+        assert!(merged.is_ok());
+        assert_eq!(merged.unwrap_or_default(), 101);
+    }
+
+    #[test]
+    fn rejects_invalid_prometheus_block_height() {
+        let c = collector();
+        let merged = c.merge_block_height(-1.0, 1);
+        assert!(matches!(merged, Err(CollectorError::InvalidBlockHeight(_))));
+    }
+
+    #[test]
+    fn parses_prometheus_scalar_successfully() {
+        let response = PrometheusQueryResponse {
+            status: "success".to_owned(),
+            data: PrometheusData {
+                result: vec![PrometheusResult {
+                    value: vec![serde_json::json!(1710000000), serde_json::json!("33.5")],
+                }],
+            },
+        };
+
+        let parsed = Collector::parse_prometheus_scalar(response);
+        assert!(parsed.is_ok());
+        assert_eq!(parsed.unwrap_or_default(), 33.5);
+    }
+
+    #[test]
+    fn parses_rpc_block_number_successfully() {
+        let response = RpcResponse {
+            result: Some("0x10".to_owned()),
+        };
+
+        let parsed = Collector::parse_rpc_block_number(response);
+        assert!(parsed.is_ok());
+        assert_eq!(parsed.unwrap_or_default(), 16);
+    }
 }
