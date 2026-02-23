@@ -12,6 +12,9 @@ use serde::Serialize;
 
 use crate::utils::{migrate_block_body, migrate_block_header};
 
+const MAX_RETRY_ATTEMPTS: u32 = 3;
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
+
 #[allow(clippy::upper_case_acronyms)]
 #[derive(ClapParser)]
 #[command(
@@ -139,6 +142,7 @@ struct MigrationErrorReport {
     phase: &'static str,
     error_type: &'static str,
     retryable: bool,
+    retry_attempts: u32,
     error: String,
     elapsed_ms: u64,
 }
@@ -156,6 +160,7 @@ pub fn emit_error_report(json: bool, started_at: Instant, error: &eyre::Report) 
             phase: "execution",
             error_type: error_kind.as_str(),
             retryable: error_kind.retryable(),
+            retry_attempts: MAX_RETRY_ATTEMPTS,
             error: error_message,
             elapsed_ms: elapsed_ms(started_at),
         };
@@ -245,9 +250,6 @@ async fn migrate_libmdbx_to_rocksdb(
     dry_run: bool,
     json: bool,
 ) -> Result<()> {
-    const MAX_RETRY_ATTEMPTS: u32 = 3;
-    const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
-
     let started_at = Instant::now();
     let mut retries_performed = 0u32;
 
@@ -554,6 +556,7 @@ mod tests {
             phase: "execution",
             error_type: "fatal",
             retryable: false,
+            retry_attempts: 3,
             error: "boom".to_owned(),
             elapsed_ms: 11,
         };
@@ -564,6 +567,7 @@ mod tests {
             "phase": "execution",
             "error_type": "fatal",
             "retryable": false,
+            "retry_attempts": 3,
             "error": "boom",
             "elapsed_ms": 11
         });
