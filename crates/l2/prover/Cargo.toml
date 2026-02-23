@@ -34,6 +34,7 @@ ethrex-rlp.workspace = true
 ethrex-trie.workspace = true
 ethrex-crypto.workspace = true
 ethrex-blockchain.workspace = true
+secp256k1.workspace = true
 
 # l2
 ethrex-l2 = { path = "../", default-features = false }

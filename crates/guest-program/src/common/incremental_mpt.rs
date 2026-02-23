@@ -12,7 +12,7 @@
 
 use ethrex_common::types::AccountState;
 use ethrex_common::{Address, H256};
-use ethrex_trie::{InMemoryTrieDB, Nibbles, Trie, TrieDB, EMPTY_TRIE_HASH};
+use ethrex_trie::{InMemoryTrieDB, Nibbles, Node, Trie, TrieDB, EMPTY_TRIE_HASH};
 use ethrex_crypto::keccak::keccak_hash;
 use ethrex_rlp::decode::RLPDecode;
 use ethrex_rlp::encode::RLPEncode;
@@ -198,6 +198,11 @@ pub fn compute_new_state_root(state: &AppState) -> Result<H256, IncrementalMptEr
 /// The proof nodes are RLP-encoded trie nodes along the path from root
 /// to a specific leaf. Multiple proofs can be combined to build a trie
 /// that covers multiple paths.
+///
+/// Each proof consists of a lookup path and a list of RLP-encoded nodes
+/// from root to leaf. The function decodes each node to determine its
+/// type (Branch, Extension, Leaf) and computes the correct nibble path
+/// position for storage in the DB, matching the trie's traversal logic.
 fn build_trie_from_proofs(
     expected_root: H256,
     proofs: Vec<(Vec<u8>, Vec<Vec<u8>>)>,
@@ -206,27 +211,42 @@ fn build_trie_from_proofs(
     let db = Arc::new(Mutex::new(db_map));
     let in_memory_db = InMemoryTrieDB::new(db.clone());
 
-    // Insert all proof nodes into the DB.
-    // Each proof node is stored at its nibble path position.
-    for (_path, proof_nodes) in &proofs {
-        // The first node in the proof is the root node.
-        // Subsequent nodes are children along the path.
-        if let Some(root_node_rlp) = proof_nodes.first() {
-            // Store root node at the default (empty) nibble path.
-            in_memory_db
-                .put(Nibbles::default(), root_node_rlp.clone())
-                .map_err(|e| IncrementalMptError::Trie(e.to_string()))?;
-        }
+    for (path, proof_nodes) in &proofs {
+        // Convert the lookup path to nibbles for tracking position.
+        let mut nibble_path = Nibbles::from_bytes(path);
 
-        // Store intermediate nodes.
-        // The trie will look them up by hash when traversing.
-        for node_rlp in proof_nodes.iter().skip(1) {
-            if node_rlp.len() >= 32 {
-                let node_hash = keccak_hash(node_rlp);
-                let hash_nibbles = Nibbles::from_bytes(&node_hash);
+        for (i, node_rlp) in proof_nodes.iter().enumerate() {
+            if i == 0 {
+                // Root node is always stored at the default (empty) nibble path.
                 in_memory_db
-                    .put(hash_nibbles, node_rlp.clone())
+                    .put(Nibbles::default(), node_rlp.clone())
                     .map_err(|e| IncrementalMptError::Trie(e.to_string()))?;
+            } else {
+                // Intermediate/leaf nodes: stored at the consumed nibble path.
+                // `nibble_path.current()` returns the already-consumed portion.
+                let db_key = nibble_path.current();
+                in_memory_db
+                    .put(db_key, node_rlp.clone())
+                    .map_err(|e| IncrementalMptError::Trie(e.to_string()))?;
+            }
+
+            // Decode the node to determine how many nibbles it consumes,
+            // so we can compute the correct DB key for the next node.
+            let node = Node::decode(node_rlp)
+                .map_err(|e| IncrementalMptError::RlpDecode(e.to_string()))?;
+            match node {
+                Node::Branch(_) => {
+                    // Branch consumes one nibble (the choice index).
+                    let _ = nibble_path.next_choice();
+                }
+                Node::Extension(ext) => {
+                    // Extension consumes its prefix nibbles.
+                    nibble_path.skip_prefix(&ext.prefix);
+                }
+                Node::Leaf(_) => {
+                    // Leaf is the end of the path, no more nodes to store.
+                    break;
+                }
             }
         }
     }
@@ -369,5 +389,105 @@ mod tests {
         let expected_root = expected_trie.hash_no_commit();
 
         assert_eq!(new_root, expected_root);
+    }
+
+    /// Test multi-account trie with branch nodes — the proof reconstruction
+    /// must correctly store intermediate nodes at their nibble path positions.
+    #[test]
+    fn multi_account_unchanged_root() {
+        let mut trie = Trie::empty_in_memory();
+
+        // Insert 20 accounts to force branch nodes in the trie.
+        let accounts: Vec<(Address, AccountState)> = (0u8..20)
+            .map(|i| (test_address(i), test_account(u64::from(i), 1000 + u64::from(i))))
+            .collect();
+
+        for (addr, account) in &accounts {
+            let path = keccak_hash(addr.as_bytes()).to_vec();
+            trie.insert(path, account.encode_to_vec()).unwrap();
+        }
+        let root = trie.hash_no_commit();
+
+        // Get proofs for all accounts.
+        let account_proofs: Vec<AccountProof> = accounts
+            .iter()
+            .map(|(addr, account)| {
+                let path = keccak_hash(addr.as_bytes()).to_vec();
+                let proof = trie.get_proof(&path).unwrap();
+                AccountProof {
+                    address: *addr,
+                    nonce: account.nonce,
+                    balance: account.balance,
+                    storage_root: account.storage_root,
+                    code_hash: account.code_hash,
+                    proof,
+                }
+            })
+            .collect();
+
+        let state = AppState::from_proofs(root, account_proofs, vec![]);
+
+        // Verify proofs.
+        verify_state_proofs(&state).unwrap();
+
+        // No changes → same root.
+        let new_root = compute_new_state_root(&state).unwrap();
+        assert_eq!(new_root, root, "multi-account unchanged state should produce same root");
+    }
+
+    /// Test multi-account trie with balance update.
+    #[test]
+    fn multi_account_balance_update() {
+        let mut trie = Trie::empty_in_memory();
+
+        let accounts: Vec<(Address, AccountState)> = (0u8..10)
+            .map(|i| (test_address(i), test_account(0, 1000 + u64::from(i))))
+            .collect();
+
+        for (addr, account) in &accounts {
+            let path = keccak_hash(addr.as_bytes()).to_vec();
+            trie.insert(path, account.encode_to_vec()).unwrap();
+        }
+        let root = trie.hash_no_commit();
+
+        let account_proofs: Vec<AccountProof> = accounts
+            .iter()
+            .map(|(addr, account)| {
+                let path = keccak_hash(addr.as_bytes()).to_vec();
+                let proof = trie.get_proof(&path).unwrap();
+                AccountProof {
+                    address: *addr,
+                    nonce: account.nonce,
+                    balance: account.balance,
+                    storage_root: account.storage_root,
+                    code_hash: account.code_hash,
+                    proof,
+                }
+            })
+            .collect();
+
+        let mut state = AppState::from_proofs(root, account_proofs, vec![]);
+
+        // Modify first account's balance.
+        let target = accounts[0].0;
+        state.set_balance(target, U256::from(9999)).unwrap();
+
+        let new_root = compute_new_state_root(&state).unwrap();
+        assert_ne!(new_root, root, "balance change should alter root");
+
+        // Verify against full recomputation.
+        let mut expected_trie = Trie::empty_in_memory();
+        for (i, (addr, account)) in accounts.iter().enumerate() {
+            let mut updated = *account;
+            if i == 0 {
+                updated.balance = U256::from(9999);
+            }
+            let path = keccak_hash(addr.as_bytes()).to_vec();
+            expected_trie
+                .insert(path, updated.encode_to_vec())
+                .unwrap();
+        }
+        let expected_root = expected_trie.hash_no_commit();
+        assert_eq!(new_root, expected_root, "incremental root should match");
     }
 }
