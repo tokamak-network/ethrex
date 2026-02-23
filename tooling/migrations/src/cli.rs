@@ -203,22 +203,27 @@ fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis() as u64
 }
 
+fn build_migration_error_report(error: &eyre::Report, started_at: Instant) -> MigrationErrorReport {
+    let retry_failure = error.downcast_ref::<RetryFailure>();
+    let error_message = format!("{error:#}");
+    let (error_kind, error_classification) = classify_error_from_report(error);
+
+    MigrationErrorReport {
+        status: "failed",
+        phase: "execution",
+        error_type: error_kind.as_str(),
+        error_classification,
+        retryable: error_kind.retryable(),
+        retry_attempts: MAX_RETRY_ATTEMPTS,
+        retry_attempts_used: retry_failure.map(|failure| failure.attempts_used),
+        error: error_message,
+        elapsed_ms: elapsed_ms(started_at),
+    }
+}
+
 pub fn emit_error_report(json: bool, started_at: Instant, error: &eyre::Report) {
     if json {
-        let retry_failure = error.downcast_ref::<RetryFailure>();
-        let error_message = format!("{error:#}");
-        let (error_kind, error_classification) = classify_error_from_report(error);
-        let report = MigrationErrorReport {
-            status: "failed",
-            phase: "execution",
-            error_type: error_kind.as_str(),
-            error_classification,
-            retryable: error_kind.retryable(),
-            retry_attempts: MAX_RETRY_ATTEMPTS,
-            retry_attempts_used: retry_failure.map(|failure| failure.attempts_used),
-            error: error_message,
-            elapsed_ms: elapsed_ms(started_at),
-        };
+        let report = build_migration_error_report(error, started_at);
 
         match serde_json::to_string(&report) {
             Ok(encoded) => println!("{encoded}"),
@@ -505,14 +510,18 @@ fn build_migration_plan(last_known_block: u64, last_source_block: u64) -> Option
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Instant,
     };
 
     use super::{
-        MigrationErrorReport, MigrationPlan, MigrationReport, RetryFailure, build_migration_plan,
-        classify_error, classify_error_from_report, retry_async,
+        MigrationErrorReport, MigrationPlan, MigrationReport, RetryFailure,
+        build_migration_error_report, build_migration_plan, classify_error,
+        classify_error_from_report, retry_async,
     };
     use serde_json::{Value, json};
 
@@ -710,6 +719,32 @@ mod tests {
         assert_eq!(source, "default_fatal");
     }
 
+    #[test]
+    fn build_error_report_uses_io_classification() {
+        let io_error = std::io::Error::new(std::io::ErrorKind::TimedOut, "network timeout");
+        let report = eyre::Report::new(io_error);
+        let error_report = build_migration_error_report(&report, Instant::now());
+
+        assert_eq!(error_report.error_type, "transient");
+        assert_eq!(error_report.error_classification, "io_kind");
+        assert!(error_report.retryable);
+        assert_eq!(error_report.retry_attempts_used, None);
+    }
+
+    #[test]
+    fn build_error_report_uses_retry_failure_metadata() {
+        let report = eyre::Report::new(RetryFailure {
+            attempts_used: 3,
+            max_attempts: 3,
+            kind: super::ErrorKind::Transient,
+            message: "temporary timeout".to_owned(),
+        });
+        let error_report = build_migration_error_report(&report, Instant::now());
+
+        assert_eq!(error_report.error_type, "transient");
+        assert_eq!(error_report.error_classification, "retry_failure");
+        assert_eq!(error_report.retry_attempts_used, Some(3));
+    }
     #[test]
     fn retry_failure_display_includes_attempt_metadata() {
         let failure = RetryFailure {
