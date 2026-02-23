@@ -76,6 +76,20 @@ Notes:
 - `error_classification` explains how retryability was derived (`retry_failure`, `io_kind`, `message_marker`, `default_fatal`).
 - For `retry_failure`, the underlying error text includes attempt metadata (`retry_attempts_used`, `max_attempts`) for debugging.
 
+### Retryability policy notes
+
+The current IO classification policy treats these as **transient** (retryable):
+- `WouldBlock`
+- `TimedOut`
+- `Interrupted`
+- `OutOfMemory`
+- `ConnectionReset`
+- `ConnectionAborted`
+- `NotConnected`
+- `BrokenPipe`
+
+Other `std::io::ErrorKind` values are treated as **fatal** by default.
+
 Failure shape:
 
 ```json
