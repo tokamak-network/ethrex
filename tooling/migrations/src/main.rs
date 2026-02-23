@@ -10,9 +10,10 @@ async fn main() {
     let started_at = Instant::now();
     let CLI { command } = CLI::parse();
     let json = command.json_output();
+    let retry_attempts = command.retry_attempts();
 
     if let Err(error) = command.run().await {
-        emit_error_report(json, started_at, &error);
+        emit_error_report(json, retry_attempts, started_at, &error);
         std::process::exit(1);
     }
 }

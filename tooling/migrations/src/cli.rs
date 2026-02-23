@@ -13,7 +13,8 @@ use serde::Serialize;
 use crate::utils::{migrate_block_body, migrate_block_header};
 
 const MAX_RETRY_ATTEMPTS: u32 = 3;
-const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
+const DEFAULT_RETRY_BASE_DELAY_MS: u64 = 1_000;
+const MAX_RETRY_BASE_DELAY_MS: u64 = 60_000;
 
 #[allow(clippy::upper_case_acronyms)]
 #[derive(ClapParser)]
@@ -50,6 +51,12 @@ pub enum Subcommand {
         #[arg(long = "json", default_value_t = false)]
         /// Emit machine-readable JSON output
         json: bool,
+        #[arg(long = "retry-attempts", default_value_t = MAX_RETRY_ATTEMPTS, value_parser = clap::value_parser!(u32).range(1..=10))]
+        /// Retry budget for retryable operations (1-10, inclusive)
+        retry_attempts: u32,
+        #[arg(long = "retry-base-delay-ms", default_value_t = DEFAULT_RETRY_BASE_DELAY_MS, value_parser = clap::value_parser!(u64).range(0..=MAX_RETRY_BASE_DELAY_MS))]
+        /// Initial retry backoff delay in milliseconds (0-60000)
+        retry_base_delay_ms: u64,
     },
 }
 
@@ -203,7 +210,11 @@ fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis() as u64
 }
 
-fn build_migration_error_report(error: &eyre::Report, started_at: Instant) -> MigrationErrorReport {
+fn build_migration_error_report(
+    error: &eyre::Report,
+    started_at: Instant,
+    retry_attempts: u32,
+) -> MigrationErrorReport {
     let retry_failure = error.downcast_ref::<RetryFailure>();
     let error_message = format!("{error:#}");
     let (error_kind, error_classification) = classify_error_from_report(error);
@@ -214,16 +225,21 @@ fn build_migration_error_report(error: &eyre::Report, started_at: Instant) -> Mi
         error_type: error_kind.as_str(),
         error_classification,
         retryable: error_kind.retryable(),
-        retry_attempts: MAX_RETRY_ATTEMPTS,
+        retry_attempts,
         retry_attempts_used: retry_failure.map(|failure| failure.attempts_used),
         error: error_message,
         elapsed_ms: elapsed_ms(started_at),
     }
 }
 
-pub fn emit_error_report(json: bool, started_at: Instant, error: &eyre::Report) {
+pub fn emit_error_report(
+    json: bool,
+    retry_attempts: u32,
+    started_at: Instant,
+    error: &eyre::Report,
+) {
     if json {
-        let report = build_migration_error_report(error, started_at);
+        let report = build_migration_error_report(error, started_at, retry_attempts);
 
         match serde_json::to_string(&report) {
             Ok(encoded) => println!("{encoded}"),
@@ -281,6 +297,12 @@ impl Subcommand {
         }
     }
 
+    pub fn retry_attempts(&self) -> u32 {
+        match self {
+            Self::Libmdbx2Rocksdb { retry_attempts, .. } => *retry_attempts,
+        }
+    }
+
     pub async fn run(&self) -> Result<()> {
         match self {
             Self::Libmdbx2Rocksdb {
@@ -289,6 +311,8 @@ impl Subcommand {
                 new_storage_path,
                 dry_run,
                 json,
+                retry_attempts,
+                retry_base_delay_ms,
             } => {
                 migrate_libmdbx_to_rocksdb(
                     genesis_path,
@@ -296,6 +320,8 @@ impl Subcommand {
                     new_storage_path,
                     *dry_run,
                     *json,
+                    *retry_attempts,
+                    Duration::from_millis(*retry_base_delay_ms),
                 )
                 .await
             }
@@ -309,6 +335,8 @@ async fn migrate_libmdbx_to_rocksdb(
     new_storage_path: &Path,
     dry_run: bool,
     json: bool,
+    retry_attempts: u32,
+    retry_base_delay: Duration,
 ) -> Result<()> {
     let started_at = Instant::now();
     let mut retries_performed = 0u32;
@@ -326,8 +354,8 @@ async fn migrate_libmdbx_to_rocksdb(
                 .await
                 .wrap_err("Cannot load libmdbx store state")
         },
-        MAX_RETRY_ATTEMPTS,
-        RETRY_BASE_DELAY,
+        retry_attempts,
+        retry_base_delay,
     )
     .await?;
     retries_performed += attempts.saturating_sub(1);
@@ -350,8 +378,8 @@ async fn migrate_libmdbx_to_rocksdb(
                 .await
                 .wrap_err("Cannot get latest block from libmdbx store")
         },
-        MAX_RETRY_ATTEMPTS,
-        RETRY_BASE_DELAY,
+        retry_attempts,
+        retry_base_delay,
     )
     .await?;
     retries_performed += attempts.saturating_sub(1);
@@ -363,8 +391,8 @@ async fn migrate_libmdbx_to_rocksdb(
                 .await
                 .wrap_err("Cannot get latest block from rocksdb store")
         },
-        MAX_RETRY_ATTEMPTS,
-        RETRY_BASE_DELAY,
+        retry_attempts,
+        retry_base_delay,
     )
     .await?;
     retries_performed += attempts.saturating_sub(1);
@@ -379,7 +407,7 @@ async fn migrate_libmdbx_to_rocksdb(
             dry_run,
             imported_blocks: 0,
             elapsed_ms: elapsed_ms(started_at),
-            retry_attempts: MAX_RETRY_ATTEMPTS,
+            retry_attempts,
             retries_performed,
         };
         emit_report(&report, json)?;
@@ -396,7 +424,7 @@ async fn migrate_libmdbx_to_rocksdb(
             dry_run: true,
             imported_blocks: 0,
             elapsed_ms: elapsed_ms(started_at),
-            retry_attempts: MAX_RETRY_ATTEMPTS,
+            retry_attempts,
             retries_performed,
         };
         emit_report(&report, json)?;
@@ -413,7 +441,7 @@ async fn migrate_libmdbx_to_rocksdb(
             dry_run: false,
             imported_blocks: 0,
             elapsed_ms: elapsed_ms(started_at),
-            retry_attempts: MAX_RETRY_ATTEMPTS,
+            retry_attempts,
             retries_performed,
         },
         json,
@@ -433,8 +461,8 @@ async fn migrate_libmdbx_to_rocksdb(
                 .await
                 .wrap_err("Cannot get block bodies from libmdbx store")
         },
-        MAX_RETRY_ATTEMPTS,
-        RETRY_BASE_DELAY,
+        retry_attempts,
+        retry_base_delay,
     )
     .await?;
     retries_performed += attempts.saturating_sub(1);
@@ -478,8 +506,8 @@ async fn migrate_libmdbx_to_rocksdb(
                 .await
                 .wrap_err("Cannot apply forkchoice update")
         },
-        MAX_RETRY_ATTEMPTS,
-        RETRY_BASE_DELAY,
+        retry_attempts,
+        retry_base_delay,
     )
     .await?;
     retries_performed += attempts.saturating_sub(1);
@@ -493,7 +521,7 @@ async fn migrate_libmdbx_to_rocksdb(
         dry_run: false,
         imported_blocks: plan.block_count(),
         elapsed_ms: elapsed_ms(started_at),
-        retry_attempts: MAX_RETRY_ATTEMPTS,
+        retry_attempts,
         retries_performed,
     };
     emit_report(&report, json)?;
@@ -519,9 +547,9 @@ mod tests {
     };
 
     use super::{
-        CLI, MigrationErrorReport, MigrationPlan, MigrationReport, RetryFailure, Subcommand,
-        build_migration_error_report, build_migration_plan, classify_error,
-        classify_error_from_report, retry_async,
+        CLI, DEFAULT_RETRY_BASE_DELAY_MS, MAX_RETRY_ATTEMPTS, MigrationErrorReport, MigrationPlan,
+        MigrationReport, RetryFailure, Subcommand, build_migration_error_report,
+        build_migration_plan, classify_error, classify_error_from_report, retry_async,
     };
     use clap::Parser;
     use serde_json::{Value, json};
@@ -568,12 +596,16 @@ mod tests {
                 new_storage_path,
                 dry_run,
                 json,
+                retry_attempts,
+                retry_base_delay_ms,
             } => {
                 assert_eq!(genesis_path, std::path::PathBuf::from("genesis.json"));
                 assert_eq!(old_storage_path, std::path::PathBuf::from("old-db"));
                 assert_eq!(new_storage_path, std::path::PathBuf::from("new-db"));
                 assert!(dry_run);
                 assert!(json);
+                assert_eq!(retry_attempts, MAX_RETRY_ATTEMPTS);
+                assert_eq!(retry_base_delay_ms, DEFAULT_RETRY_BASE_DELAY_MS);
             }
         }
     }
@@ -610,6 +642,53 @@ mod tests {
 
         assert!(rendered.contains("--store.old"));
         assert!(rendered.contains("--store.new"));
+    }
+
+    #[test]
+    fn rejects_retry_attempts_out_of_range() {
+        let parsed = CLI::try_parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--retry-attempts",
+            "0",
+        ]);
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn parses_custom_retry_config() {
+        let cli = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--retry-attempts",
+            "5",
+            "--retry-base-delay-ms",
+            "250",
+        ]);
+
+        match cli.command {
+            Subcommand::Libmdbx2Rocksdb {
+                retry_attempts,
+                retry_base_delay_ms,
+                ..
+            } => {
+                assert_eq!(retry_attempts, 5);
+                assert_eq!(retry_base_delay_ms, 250);
+            }
+        }
     }
 
     #[test]
@@ -891,7 +970,8 @@ mod tests {
     fn build_error_report_uses_io_classification() {
         let io_error = std::io::Error::new(std::io::ErrorKind::TimedOut, "network timeout");
         let report = eyre::Report::new(io_error);
-        let error_report = build_migration_error_report(&report, Instant::now());
+        let error_report =
+            build_migration_error_report(&report, Instant::now(), MAX_RETRY_ATTEMPTS);
 
         assert_eq!(error_report.error_type, "transient");
         assert_eq!(error_report.error_classification, "io_kind");
@@ -907,7 +987,8 @@ mod tests {
             kind: super::ErrorKind::Transient,
             message: "temporary timeout".to_owned(),
         });
-        let error_report = build_migration_error_report(&report, Instant::now());
+        let error_report =
+            build_migration_error_report(&report, Instant::now(), MAX_RETRY_ATTEMPTS);
 
         assert_eq!(error_report.error_type, "transient");
         assert_eq!(error_report.error_classification, "retry_failure");
@@ -917,7 +998,8 @@ mod tests {
     #[test]
     fn build_error_report_uses_message_marker_fallback() {
         let report = eyre::eyre!("temporary EAGAIN read failure");
-        let error_report = build_migration_error_report(&report, Instant::now());
+        let error_report =
+            build_migration_error_report(&report, Instant::now(), MAX_RETRY_ATTEMPTS);
 
         assert_eq!(error_report.error_type, "transient");
         assert_eq!(error_report.error_classification, "message_marker");
@@ -927,7 +1009,8 @@ mod tests {
     #[test]
     fn build_error_report_uses_default_fatal_fallback() {
         let report = eyre::eyre!("unexpected migration corruption");
-        let error_report = build_migration_error_report(&report, Instant::now());
+        let error_report =
+            build_migration_error_report(&report, Instant::now(), MAX_RETRY_ATTEMPTS);
 
         assert_eq!(error_report.error_type, "fatal");
         assert_eq!(error_report.error_classification, "default_fatal");
@@ -940,7 +1023,8 @@ mod tests {
             std::io::ErrorKind::TimedOut,
             "network timeout",
         ));
-        let io_report = build_migration_error_report(&io_timeout, Instant::now());
+        let io_report =
+            build_migration_error_report(&io_timeout, Instant::now(), MAX_RETRY_ATTEMPTS);
         assert_eq!(io_report.error_type, "transient");
         assert_eq!(io_report.error_classification, "io_kind");
         assert!(io_report.retryable);
@@ -952,14 +1036,15 @@ mod tests {
             kind: super::ErrorKind::Transient,
             message: "temporary timeout".to_owned(),
         });
-        let retry_report = build_migration_error_report(&retry_failure, Instant::now());
+        let retry_report =
+            build_migration_error_report(&retry_failure, Instant::now(), MAX_RETRY_ATTEMPTS);
         assert_eq!(retry_report.error_type, "transient");
         assert_eq!(retry_report.error_classification, "retry_failure");
         assert!(retry_report.retryable);
         assert_eq!(retry_report.retry_attempts_used, Some(3));
 
         let fatal = eyre::eyre!("corrupted leveldb block");
-        let fatal_report = build_migration_error_report(&fatal, Instant::now());
+        let fatal_report = build_migration_error_report(&fatal, Instant::now(), MAX_RETRY_ATTEMPTS);
         assert_eq!(fatal_report.error_type, "fatal");
         assert_eq!(fatal_report.error_classification, "default_fatal");
         assert!(!fatal_report.retryable);
