@@ -1,11 +1,11 @@
 use ethrex_ops_agent::{
-    alerter::{Notifier, TelegramAlerter},
+    alerter::TelegramAlerter,
     collector::Collector,
     config::AppConfig,
     diagnoser::Diagnoser,
+    service::process_snapshot,
     storage::IncidentRepository,
 };
-use std::sync::Arc;
 use tokio::time;
 use tracing::{error, info, warn};
 
@@ -29,7 +29,6 @@ async fn run() -> Result<(), String> {
     let mut diagnoser = Diagnoser::default();
 
     let repository = IncidentRepository::open(&config.sqlite_path).map_err(|error| error.to_string())?;
-    let repository = Arc::new(repository);
 
     let alerter = TelegramAlerter::new(config.telegram_bot_token, config.telegram_chat_id);
 
@@ -48,25 +47,9 @@ async fn run() -> Result<(), String> {
             }
         };
 
-        let incidents = diagnoser.evaluate(&snapshot);
-        if incidents.is_empty() {
-            continue;
-        }
-
-        for incident in incidents {
-            match repository.insert(&incident) {
-                Ok(incident_id) => {
-                    info!(incident_id, scenario = ?incident.scenario, "incident stored");
-                    if let Err(error) = alerter.send_incident(&incident).await {
-                        warn!(incident_id, error = %error, "failed to send telegram alert");
-                    } else {
-                        info!(incident_id, "telegram alert sent");
-                    }
-                }
-                Err(error) => {
-                    warn!(error = %error, "failed to store incident");
-                }
-            }
+        let sent_count = process_snapshot(&mut diagnoser, &repository, &alerter, &snapshot).await;
+        if sent_count > 0 {
+            info!(sent_count, "incidents processed and alerted");
         }
     }
 }
