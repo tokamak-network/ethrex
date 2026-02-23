@@ -448,8 +448,14 @@ fn build_migration_plan(last_known_block: u64, last_source_block: u64) -> Option
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::{
         MigrationErrorReport, MigrationPlan, MigrationReport, build_migration_plan, classify_error,
+        retry_async,
     };
     use serde_json::{Value, json};
 
@@ -582,5 +588,44 @@ mod tests {
             classify_error("leveldb corrupted block"),
             super::ErrorKind::Fatal
         );
+    }
+
+    #[tokio::test]
+    async fn retry_async_retries_transient_error_until_success() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_op = Arc::clone(&attempts);
+
+        let (value, total_attempts) = retry_async(
+            move || {
+                let attempts_for_op = Arc::clone(&attempts_for_op);
+                async move {
+                    let current = attempts_for_op.fetch_add(1, Ordering::SeqCst);
+                    if current == 0 {
+                        Err(eyre::eyre!("temporary EAGAIN failure"))
+                    } else {
+                        Ok(42u64)
+                    }
+                }
+            },
+            3,
+            std::time::Duration::from_millis(0),
+        )
+        .await
+        .expect("retry should eventually succeed");
+
+        assert_eq!(value, 42);
+        assert_eq!(total_attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn retry_async_does_not_retry_fatal_error() {
+        let result = retry_async(
+            || async { Err::<u64, _>(eyre::eyre!("corrupted leveldb block")) },
+            3,
+            std::time::Duration::from_millis(0),
+        )
+        .await;
+
+        assert!(result.is_err());
     }
 }
