@@ -692,6 +692,49 @@ mod tests {
     }
 
     #[test]
+    fn accepts_zero_retry_base_delay() {
+        let cli = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--retry-base-delay-ms",
+            "0",
+        ]);
+
+        match cli.command {
+            Subcommand::Libmdbx2Rocksdb {
+                retry_base_delay_ms,
+                ..
+            } => {
+                assert_eq!(retry_base_delay_ms, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_retry_base_delay_out_of_range() {
+        let parsed = CLI::try_parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--retry-base-delay-ms",
+            "60001",
+        ]);
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
     fn json_output_reflects_flag_value() {
         let with_json = CLI::parse_from([
             "migrations",
