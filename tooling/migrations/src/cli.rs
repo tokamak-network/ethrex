@@ -614,6 +614,45 @@ mod tests {
     }
 
     #[test]
+    fn success_report_json_contract_keys_are_stable() {
+        let report = MigrationReport {
+            status: "completed",
+            phase: "execution",
+            source_head: 10,
+            target_head: 10,
+            plan: Some(MigrationPlan {
+                start_block: 1,
+                end_block: 10,
+            }),
+            dry_run: false,
+            imported_blocks: 10,
+            elapsed_ms: 55,
+            retry_attempts: 3,
+            retries_performed: 1,
+        };
+
+        let encoded = serde_json::to_value(&report).expect("report should serialize");
+        let object = encoded.as_object().expect("must be json object");
+        let expected_keys = [
+            "status",
+            "phase",
+            "source_head",
+            "target_head",
+            "plan",
+            "dry_run",
+            "imported_blocks",
+            "elapsed_ms",
+            "retry_attempts",
+            "retries_performed",
+        ];
+
+        assert_eq!(object.len(), expected_keys.len());
+        for key in expected_keys {
+            assert!(object.contains_key(key), "missing key: {key}");
+        }
+    }
+
+    #[test]
     fn serializes_error_report() {
         let report = MigrationErrorReport {
             status: "failed",
@@ -669,6 +708,40 @@ mod tests {
             "elapsed_ms": 9
         });
         assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn failure_report_json_contract_keys_are_stable() {
+        let report = MigrationErrorReport {
+            status: "failed",
+            phase: "execution",
+            error_type: "transient",
+            error_classification: "retry_failure",
+            retryable: true,
+            retry_attempts: 3,
+            retry_attempts_used: Some(3),
+            error: "temporary timeout".to_owned(),
+            elapsed_ms: 77,
+        };
+
+        let encoded = serde_json::to_value(&report).expect("error report should serialize");
+        let object = encoded.as_object().expect("must be json object");
+        let expected_keys = [
+            "status",
+            "phase",
+            "error_type",
+            "error_classification",
+            "retryable",
+            "retry_attempts",
+            "retry_attempts_used",
+            "error",
+            "elapsed_ms",
+        ];
+
+        assert_eq!(object.len(), expected_keys.len());
+        for key in expected_keys {
+            assert!(object.contains_key(key), "missing key: {key}");
+        }
     }
 
     #[test]
