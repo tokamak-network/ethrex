@@ -47,6 +47,7 @@ Success/progress shape:
 
 ```json
 {
+  "schema_version": 1,
   "status": "planned|in_progress|completed|up_to_date",
   "phase": "planning|execution",
   "source_head": 42,
@@ -64,6 +65,7 @@ Success/progress shape:
 ```
 
 Notes:
+- `schema_version` is the JSON contract version for downstream compatibility handling.
 - `phase` is `planning` for `planned`/`up_to_date` and `execution` for `in_progress`/`completed`.
 - `plan` is `null` only when `status = "up_to_date"`.
 - `imported_blocks` is `0` for `planned`, `in_progress`, and `up_to_date`.
@@ -94,6 +96,7 @@ Failure shape:
 
 ```json
 {
+  "schema_version": 1,
   "status": "failed",
   "phase": "execution",
   "error_type": "transient|fatal",

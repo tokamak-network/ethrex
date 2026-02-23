@@ -13,6 +13,7 @@ use serde::Serialize;
 use crate::utils::{migrate_block_body, migrate_block_header};
 
 const MAX_RETRY_ATTEMPTS: u32 = 3;
+const REPORT_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_RETRY_BASE_DELAY_MS: u64 = 1_000;
 const MAX_RETRY_BASE_DELAY_MS: u64 = 60_000;
 
@@ -74,6 +75,7 @@ impl MigrationPlan {
 
 #[derive(Serialize)]
 struct MigrationReport {
+    schema_version: u32,
     status: &'static str,
     phase: &'static str,
     source_head: u64,
@@ -207,6 +209,7 @@ where
 
 #[derive(Serialize)]
 struct MigrationErrorReport {
+    schema_version: u32,
     status: &'static str,
     phase: &'static str,
     error_type: &'static str,
@@ -232,6 +235,7 @@ fn build_migration_error_report(
     let (error_kind, error_classification) = classify_error_from_report(error);
 
     MigrationErrorReport {
+        schema_version: REPORT_SCHEMA_VERSION,
         status: "failed",
         phase: "execution",
         error_type: error_kind.as_str(),
@@ -411,6 +415,7 @@ async fn migrate_libmdbx_to_rocksdb(
 
     let Some(plan) = build_migration_plan(last_known_block, last_block_number) else {
         let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
             status: "up_to_date",
             phase: "planning",
             source_head: last_block_number,
@@ -428,6 +433,7 @@ async fn migrate_libmdbx_to_rocksdb(
 
     if dry_run {
         let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
             status: "planned",
             phase: "planning",
             source_head: last_block_number,
@@ -445,6 +451,7 @@ async fn migrate_libmdbx_to_rocksdb(
 
     emit_report(
         &MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
             status: "in_progress",
             phase: "execution",
             source_head: last_block_number,
@@ -525,6 +532,7 @@ async fn migrate_libmdbx_to_rocksdb(
     retries_performed += attempts.saturating_sub(1);
 
     let report = MigrationReport {
+        schema_version: REPORT_SCHEMA_VERSION,
         status: "completed",
         phase: "execution",
         source_head: last_block_number,
@@ -560,9 +568,9 @@ mod tests {
 
     use super::{
         CLI, DEFAULT_RETRY_BASE_DELAY_MS, MAX_RETRY_ATTEMPTS, MigrationErrorReport, MigrationPlan,
-        MigrationReport, RetryFailure, Subcommand, build_migration_error_report,
-        build_migration_plan, classify_error, classify_error_from_report, classify_io_error_kind,
-        compute_backoff_delay, retry_async,
+        MigrationReport, REPORT_SCHEMA_VERSION, RetryFailure, Subcommand,
+        build_migration_error_report, build_migration_plan, classify_error,
+        classify_error_from_report, classify_io_error_kind, compute_backoff_delay, retry_async,
     };
     use clap::Parser;
     use serde_json::{Value, json};
@@ -778,6 +786,7 @@ mod tests {
     #[test]
     fn serializes_migration_report() {
         let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
             status: "planned",
             phase: "planning",
             source_head: 42,
@@ -795,6 +804,7 @@ mod tests {
 
         let encoded = serde_json::to_value(&report).expect("report should serialize");
         let expected = json!({
+            "schema_version": 1,
             "status": "planned",
             "phase": "planning",
             "source_head": 42,
@@ -815,6 +825,7 @@ mod tests {
     #[test]
     fn serializes_up_to_date_report_with_null_plan() {
         let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
             status: "up_to_date",
             phase: "planning",
             source_head: 100,
@@ -829,6 +840,7 @@ mod tests {
 
         let encoded = serde_json::to_value(&report).expect("report should serialize");
         let expected = json!({
+            "schema_version": 1,
             "status": "up_to_date",
             "phase": "planning",
             "source_head": 100,
@@ -846,6 +858,7 @@ mod tests {
     #[test]
     fn success_report_json_contract_keys_are_stable() {
         let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
             status: "completed",
             phase: "execution",
             source_head: 10,
@@ -864,6 +877,7 @@ mod tests {
         let encoded = serde_json::to_value(&report).expect("report should serialize");
         let object = encoded.as_object().expect("must be json object");
         let expected_keys = [
+            "schema_version",
             "status",
             "phase",
             "source_head",
@@ -885,6 +899,7 @@ mod tests {
     #[test]
     fn serializes_error_report() {
         let report = MigrationErrorReport {
+            schema_version: REPORT_SCHEMA_VERSION,
             status: "failed",
             phase: "execution",
             error_type: "fatal",
@@ -898,6 +913,7 @@ mod tests {
 
         let encoded = serde_json::to_value(&report).expect("error report should serialize");
         let expected = json!({
+            "schema_version": 1,
             "status": "failed",
             "phase": "execution",
             "error_type": "fatal",
@@ -914,6 +930,7 @@ mod tests {
     #[test]
     fn serializes_error_report_without_retry_attempts_used() {
         let report = MigrationErrorReport {
+            schema_version: REPORT_SCHEMA_VERSION,
             status: "failed",
             phase: "execution",
             error_type: "fatal",
@@ -927,6 +944,7 @@ mod tests {
 
         let encoded = serde_json::to_value(&report).expect("error report should serialize");
         let expected = json!({
+            "schema_version": 1,
             "status": "failed",
             "phase": "execution",
             "error_type": "fatal",
@@ -943,6 +961,7 @@ mod tests {
     #[test]
     fn failure_report_json_contract_keys_are_stable() {
         let report = MigrationErrorReport {
+            schema_version: REPORT_SCHEMA_VERSION,
             status: "failed",
             phase: "execution",
             error_type: "transient",
@@ -957,6 +976,7 @@ mod tests {
         let encoded = serde_json::to_value(&report).expect("error report should serialize");
         let object = encoded.as_object().expect("must be json object");
         let expected_keys = [
+            "schema_version",
             "status",
             "phase",
             "error_type",
