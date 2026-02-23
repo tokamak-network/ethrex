@@ -85,6 +85,26 @@ enum ErrorKind {
     Fatal,
 }
 
+#[derive(Debug)]
+struct RetryFailure {
+    attempts_used: u32,
+    max_attempts: u32,
+    kind: ErrorKind,
+    message: String,
+}
+
+impl std::fmt::Display for RetryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} (retry_attempts_used={} max_attempts={})",
+            self.message, self.attempts_used, self.max_attempts
+        )
+    }
+}
+
+impl std::error::Error for RetryFailure {}
+
 impl ErrorKind {
     fn as_str(self) -> &'static str {
         match self {
@@ -124,9 +144,15 @@ where
         match operation().await {
             Ok(value) => return Ok((value, attempts)),
             Err(error) => {
-                let is_retryable = classify_error(&format!("{error:#}")).retryable();
-                if !is_retryable || attempts >= max_attempts {
-                    return Err(eyre::eyre!("{error:#} (retry_attempts_used={attempts})"));
+                let message = format!("{error:#}");
+                let kind = classify_error(&message);
+                if !kind.retryable() || attempts >= max_attempts {
+                    return Err(eyre::Report::new(RetryFailure {
+                        attempts_used: attempts,
+                        max_attempts,
+                        kind,
+                        message,
+                    }));
                 }
 
                 let backoff = base_delay * 2u32.pow(attempts - 1);
@@ -152,32 +178,20 @@ fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis() as u64
 }
 
-fn extract_retry_attempts_used(message: &str) -> Option<u32> {
-    let marker = "retry_attempts_used=";
-    let start = message.find(marker)? + marker.len();
-    let digits: String = message[start..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-
-    if digits.is_empty() {
-        return None;
-    }
-
-    digits.parse().ok()
-}
-
 pub fn emit_error_report(json: bool, started_at: Instant, error: &eyre::Report) {
     if json {
+        let retry_failure = error.downcast_ref::<RetryFailure>();
         let error_message = format!("{error:#}");
-        let error_kind = classify_error(&error_message);
+        let error_kind = retry_failure
+            .map(|failure| failure.kind)
+            .unwrap_or_else(|| classify_error(&error_message));
         let report = MigrationErrorReport {
             status: "failed",
             phase: "execution",
             error_type: error_kind.as_str(),
             retryable: error_kind.retryable(),
             retry_attempts: MAX_RETRY_ATTEMPTS,
-            retry_attempts_used: extract_retry_attempts_used(&error_message),
+            retry_attempts_used: retry_failure.map(|failure| failure.attempts_used),
             error: error_message,
             elapsed_ms: elapsed_ms(started_at),
         };
@@ -473,8 +487,8 @@ mod tests {
     };
 
     use super::{
-        MigrationErrorReport, MigrationPlan, MigrationReport, build_migration_plan, classify_error,
-        extract_retry_attempts_used, retry_async,
+        MigrationErrorReport, MigrationPlan, MigrationReport, RetryFailure, build_migration_plan,
+        classify_error, retry_async,
     };
     use serde_json::{Value, json};
 
@@ -653,7 +667,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_async_failure_includes_attempts_used_marker() {
+    async fn retry_async_failure_carries_typed_retry_metadata() {
         let result = retry_async(
             || async { Err::<u64, _>(eyre::eyre!("temporary EAGAIN failure")) },
             3,
@@ -662,14 +676,12 @@ mod tests {
         .await;
 
         let error = result.expect_err("expected retry exhaustion failure");
-        let message = format!("{error:#}");
-        assert_eq!(extract_retry_attempts_used(&message), Some(3));
-    }
+        let retry_failure = error
+            .downcast_ref::<RetryFailure>()
+            .expect("retry failure metadata should be attached");
 
-    #[test]
-    fn extracts_retry_attempts_used_from_message() {
-        let message = "db timeout (retry_attempts_used=2)";
-        assert_eq!(extract_retry_attempts_used(message), Some(2));
-        assert_eq!(extract_retry_attempts_used("no marker"), None);
+        assert_eq!(retry_failure.attempts_used, 3);
+        assert_eq!(retry_failure.max_attempts, 3);
+        assert_eq!(retry_failure.kind, super::ErrorKind::Transient);
     }
 }
