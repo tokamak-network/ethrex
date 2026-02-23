@@ -1,5 +1,5 @@
 use crate::models::Incident;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 use thiserror::Error;
@@ -64,6 +64,41 @@ impl IncidentRepository {
 
         Ok(self.connection.last_insert_rowid())
     }
+
+    pub fn mark_false_positive(&self, incident_id: i64, is_false_positive: bool) -> Result<(), StorageError> {
+        let value: i64 = if is_false_positive { 1 } else { 0 };
+        self.connection.execute(
+            "UPDATE incidents SET false_positive = ?1 WHERE id = ?2",
+            params![value, incident_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn false_positive_rate(&self) -> Result<Option<f64>, StorageError> {
+        let mut statement = self.connection.prepare(
+            "
+            SELECT
+                SUM(CASE WHEN false_positive = 1 THEN 1 ELSE 0 END) as fp,
+                SUM(CASE WHEN false_positive IS NOT NULL THEN 1 ELSE 0 END) as labeled
+            FROM incidents
+            ",
+        )?;
+
+        let pair: Option<(i64, i64)> = statement
+            .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()?;
+
+        let (false_positives, labeled) = match pair {
+            Some(values) => values,
+            None => return Ok(None),
+        };
+
+        if labeled == 0 {
+            return Ok(None);
+        }
+
+        Ok(Some(false_positives as f64 / labeled as f64))
+    }
 }
 
 #[cfg(test)]
@@ -105,5 +140,51 @@ mod tests {
         };
 
         assert!(row_id > 0);
+    }
+
+    #[test]
+    fn calculates_false_positive_rate_from_labeled_incidents() {
+        let file_result = NamedTempFile::new();
+        assert!(file_result.is_ok());
+        let file = match file_result {
+            Ok(file) => file,
+            Err(_) => return,
+        };
+
+        let repository_result = IncidentRepository::open(file.path());
+        assert!(repository_result.is_ok());
+        let repository = match repository_result {
+            Ok(repository) => repository,
+            Err(_) => return,
+        };
+
+        let base_incident = Incident {
+            scenario: Scenario::ExecutionRpcTimeout,
+            severity: Severity::Warning,
+            message: "rpc timeout burst".to_owned(),
+            detected_at: UNIX_EPOCH,
+            evidence: json!({"timeout_rate": 33.5}),
+        };
+
+        let first_id = match repository.insert(&base_incident) {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+        let second_id = match repository.insert(&base_incident) {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+
+        assert!(repository.mark_false_positive(first_id, true).is_ok());
+        assert!(repository.mark_false_positive(second_id, false).is_ok());
+
+        let rate = repository.false_positive_rate();
+        assert!(rate.is_ok());
+        let value = match rate {
+            Ok(Some(v)) => v,
+            _ => return,
+        };
+
+        assert_eq!(value, 0.5);
     }
 }
