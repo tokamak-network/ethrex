@@ -555,7 +555,7 @@ const GUEST_PROGRAM_REGISTRY_BYTECODE: &[u8] = include_bytes!(concat!(
 ));
 
 const INITIALIZE_ON_CHAIN_PROPOSER_SIGNATURE_BASED: &str = "initialize(bool,address,bool,bool,bool,bool,address,address,address,address,bytes32,bytes32,bytes32,bytes32,address,uint256,address)";
-const INITIALIZE_ON_CHAIN_PROPOSER_SIGNATURE: &str = "initialize(bool,address,bool,bool,bool,bool,address,address,address,address,bytes32,bytes32,bytes32,bytes32,uint256,address)";
+const INITIALIZE_ON_CHAIN_PROPOSER_SIGNATURE: &str = "initialize(bool,address,bool,bool,bool,bool,address,address,address,address,bytes32,bytes32,bytes32,bytes32,uint256,address,address)";
 const INITIALIZE_TIMELOCK_SIGNATURE: &str = "initialize(uint256,address[],address,address,address)";
 
 const TRANSFER_OWNERSHIP_SIGNATURE: &str = "transferOwnership(address)";
@@ -564,7 +564,6 @@ const BRIDGE_INITIALIZER_SIGNATURE: &str = "initialize(address,address,uint256,a
 const ROUTER_INITIALIZER_SIGNATURE: &str = "initialize(address)";
 const ROUTER_REGISTER_SIGNATURE: &str = "register(uint256,address)";
 const GUEST_PROGRAM_REGISTRY_INITIALIZER_SIGNATURE: &str = "initialize(address)";
-const SET_GUEST_PROGRAM_REGISTRY_SIGNATURE: &str = "setGuestProgramRegistry(address)";
 
 // Gas limit for deploying and initializing contracts
 // Needed to avoid estimating gas of initializations when the
@@ -1351,6 +1350,7 @@ async fn initialize_contracts(
             Value::FixedBytes(genesis.compute_state_root().0.to_vec().into()),
             Value::Uint(genesis.config.chain_id.into()),
             Value::Address(contract_addresses.bridge_address),
+            Value::Address(contract_addresses.guest_program_registry_address),
         ];
         trace!(calldata_values = ?calldata_values, "OnChainProposer initialization calldata values");
         let on_chain_proposer_initialization_calldata =
@@ -1538,39 +1538,6 @@ async fn initialize_contracts(
     };
     info!(tx_hash = %format!("{initialize_tx_hash:#x}"), "GuestProgramRegistry initialized");
     tx_hashes.push(initialize_tx_hash);
-
-    // Link GuestProgramRegistry to OnChainProposer
-    info!("Setting GuestProgramRegistry on OnChainProposer");
-    let set_registry_tx_hash = {
-        let initializer_nonce = eth_client
-            .get_nonce(
-                initializer.address(),
-                BlockIdentifier::Tag(BlockTag::Pending),
-            )
-            .await?;
-        let calldata_values = vec![Value::Address(
-            contract_addresses.guest_program_registry_address,
-        )];
-        let set_registry_calldata =
-            encode_calldata(SET_GUEST_PROGRAM_REGISTRY_SIGNATURE, &calldata_values)?;
-
-        initialize_contract_no_wait(
-            contract_addresses.on_chain_proposer_address,
-            set_registry_calldata,
-            initializer,
-            eth_client,
-            Overrides {
-                nonce: Some(initializer_nonce),
-                gas_limit: Some(TRANSACTION_GAS_LIMIT),
-                max_fee_per_gas: Some(gas_price),
-                max_priority_fee_per_gas: Some(gas_price),
-                ..Default::default()
-            },
-        )
-        .await?
-    };
-    info!(tx_hash = %format!("{set_registry_tx_hash:#x}"), "GuestProgramRegistry linked to OnChainProposer");
-    tx_hashes.push(set_registry_tx_hash);
 
     trace!("Contracts initialized");
     Ok(tx_hashes)
