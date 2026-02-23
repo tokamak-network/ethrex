@@ -126,7 +126,7 @@ where
             Err(error) => {
                 let is_retryable = classify_error(&format!("{error:#}")).retryable();
                 if !is_retryable || attempts >= max_attempts {
-                    return Err(error);
+                    return Err(eyre::eyre!("{error:#} (retry_attempts_used={attempts})"));
                 }
 
                 let backoff = base_delay * 2u32.pow(attempts - 1);
@@ -143,12 +143,28 @@ struct MigrationErrorReport {
     error_type: &'static str,
     retryable: bool,
     retry_attempts: u32,
+    retry_attempts_used: Option<u32>,
     error: String,
     elapsed_ms: u64,
 }
 
 fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis() as u64
+}
+
+fn extract_retry_attempts_used(message: &str) -> Option<u32> {
+    let marker = "retry_attempts_used=";
+    let start = message.find(marker)? + marker.len();
+    let digits: String = message[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+
+    if digits.is_empty() {
+        return None;
+    }
+
+    digits.parse().ok()
 }
 
 pub fn emit_error_report(json: bool, started_at: Instant, error: &eyre::Report) {
@@ -161,6 +177,7 @@ pub fn emit_error_report(json: bool, started_at: Instant, error: &eyre::Report) 
             error_type: error_kind.as_str(),
             retryable: error_kind.retryable(),
             retry_attempts: MAX_RETRY_ATTEMPTS,
+            retry_attempts_used: extract_retry_attempts_used(&error_message),
             error: error_message,
             elapsed_ms: elapsed_ms(started_at),
         };
@@ -457,7 +474,7 @@ mod tests {
 
     use super::{
         MigrationErrorReport, MigrationPlan, MigrationReport, build_migration_plan, classify_error,
-        retry_async,
+        extract_retry_attempts_used, retry_async,
     };
     use serde_json::{Value, json};
 
@@ -557,6 +574,7 @@ mod tests {
             error_type: "fatal",
             retryable: false,
             retry_attempts: 3,
+            retry_attempts_used: Some(2),
             error: "boom".to_owned(),
             elapsed_ms: 11,
         };
@@ -568,6 +586,7 @@ mod tests {
             "error_type": "fatal",
             "retryable": false,
             "retry_attempts": 3,
+            "retry_attempts_used": 2,
             "error": "boom",
             "elapsed_ms": 11
         });
@@ -631,5 +650,26 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn retry_async_failure_includes_attempts_used_marker() {
+        let result = retry_async(
+            || async { Err::<u64, _>(eyre::eyre!("temporary EAGAIN failure")) },
+            3,
+            std::time::Duration::from_millis(0),
+        )
+        .await;
+
+        let error = result.expect_err("expected retry exhaustion failure");
+        let message = format!("{error:#}");
+        assert_eq!(extract_retry_attempts_used(&message), Some(3));
+    }
+
+    #[test]
+    fn extracts_retry_attempts_used_from_message() {
+        let message = "db timeout (retry_attempts_used=2)";
+        assert_eq!(extract_retry_attempts_used(message), Some(2));
+        assert_eq!(extract_retry_attempts_used("no marker"), None);
     }
 }
