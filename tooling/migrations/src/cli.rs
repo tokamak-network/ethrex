@@ -519,10 +519,11 @@ mod tests {
     };
 
     use super::{
-        MigrationErrorReport, MigrationPlan, MigrationReport, RetryFailure,
+        CLI, MigrationErrorReport, MigrationPlan, MigrationReport, RetryFailure, Subcommand,
         build_migration_error_report, build_migration_plan, classify_error,
         classify_error_from_report, retry_async,
     };
+    use clap::Parser;
     use serde_json::{Value, json};
 
     #[test]
@@ -543,6 +544,59 @@ mod tests {
         assert_eq!(plan.start_block, 13);
         assert_eq!(plan.end_block, 20);
         assert_eq!(plan.block_count(), 8);
+    }
+
+    #[test]
+    fn parses_libmdbx2rocksdb_flags() {
+        let cli = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "genesis.json",
+            "--store.old",
+            "old-db",
+            "--store.new",
+            "new-db",
+            "--dry-run",
+            "--json",
+        ]);
+
+        match cli.command {
+            Subcommand::Libmdbx2Rocksdb {
+                genesis_path,
+                old_storage_path,
+                new_storage_path,
+                dry_run,
+                json,
+            } => {
+                assert_eq!(genesis_path, std::path::PathBuf::from("genesis.json"));
+                assert_eq!(old_storage_path, std::path::PathBuf::from("old-db"));
+                assert_eq!(new_storage_path, std::path::PathBuf::from("new-db"));
+                assert!(dry_run);
+                assert!(json);
+            }
+        }
+    }
+
+    #[test]
+    fn parses_alias_l2r() {
+        let cli = CLI::parse_from([
+            "migrations",
+            "l2r",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "a",
+            "--store.new",
+            "b",
+        ]);
+
+        match cli.command {
+            Subcommand::Libmdbx2Rocksdb { dry_run, json, .. } => {
+                assert!(!dry_run);
+                assert!(!json);
+            }
+        }
     }
 
     #[test]
