@@ -67,7 +67,8 @@ Notes:
 - `elapsed_ms` is the runtime elapsed at the moment the report is emitted.
 - `retry_attempts` is the configured max attempts for retryable operations.
 - `retries_performed` is the number of retries actually used in successful/planned runs.
-- Failure reports include `retry_attempts` (policy budget) and `retry_attempts_used` (actual attempts consumed before terminal failure) when available.
+- Failure reports include `retry_attempts` (policy budget).
+- `retry_attempts_used` is populated when a retry-managed operation exhausts attempts; otherwise it is `null` for direct/non-retried failures.
 
 Failure shape:
 

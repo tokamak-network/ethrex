@@ -608,6 +608,33 @@ mod tests {
     }
 
     #[test]
+    fn serializes_error_report_without_retry_attempts_used() {
+        let report = MigrationErrorReport {
+            status: "failed",
+            phase: "execution",
+            error_type: "fatal",
+            retryable: false,
+            retry_attempts: 3,
+            retry_attempts_used: None,
+            error: "direct fatal failure".to_owned(),
+            elapsed_ms: 9,
+        };
+
+        let encoded = serde_json::to_value(&report).expect("error report should serialize");
+        let expected = json!({
+            "status": "failed",
+            "phase": "execution",
+            "error_type": "fatal",
+            "retryable": false,
+            "retry_attempts": 3,
+            "retry_attempts_used": Value::Null,
+            "error": "direct fatal failure",
+            "elapsed_ms": 9
+        });
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
     fn classifies_transient_error_markers() {
         assert_eq!(
             classify_error("read failed: EAGAIN"),
