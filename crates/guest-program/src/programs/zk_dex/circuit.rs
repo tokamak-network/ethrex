@@ -33,6 +33,11 @@ fn transfer_selector() -> [u8; 4] {
     [hash[0], hash[1], hash[2], hash[3]]
 }
 
+/// Public accessor for the transfer selector bytes (used by input conversion).
+pub fn transfer_selector_bytes() -> [u8; 4] {
+    transfer_selector()
+}
+
 /// ERC-20 `Transfer(address,address,uint256)` event topic.
 fn transfer_event_topic() -> H256 {
     H256::from(keccak_hash(b"Transfer(address,address,uint256)"))
