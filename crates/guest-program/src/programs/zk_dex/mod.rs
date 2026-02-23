@@ -1,3 +1,4 @@
+pub mod circuit;
 pub mod execution;
 pub mod types;
 
