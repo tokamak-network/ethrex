@@ -73,10 +73,41 @@ struct MigrationReport {
     elapsed_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ErrorKind {
+    Transient,
+    Fatal,
+}
+
+impl ErrorKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Transient => "transient",
+            Self::Fatal => "fatal",
+        }
+    }
+
+    fn retryable(self) -> bool {
+        matches!(self, Self::Transient)
+    }
+}
+
+fn classify_error(message: &str) -> ErrorKind {
+    let msg = message.to_ascii_lowercase();
+    let transient_markers = ["eagain", "etimedout", "timed out", "enospc", "temporar"];
+    if transient_markers.iter().any(|marker| msg.contains(marker)) {
+        return ErrorKind::Transient;
+    }
+
+    ErrorKind::Fatal
+}
+
 #[derive(Serialize)]
 struct MigrationErrorReport {
     status: &'static str,
     phase: &'static str,
+    error_type: &'static str,
+    retryable: bool,
     error: String,
     elapsed_ms: u64,
 }
@@ -87,10 +118,14 @@ fn elapsed_ms(started_at: Instant) -> u64 {
 
 pub fn emit_error_report(json: bool, started_at: Instant, error: &eyre::Report) {
     if json {
+        let error_message = format!("{error:#}");
+        let error_kind = classify_error(&error_message);
         let report = MigrationErrorReport {
             status: "failed",
             phase: "execution",
-            error: format!("{error:#}"),
+            error_type: error_kind.as_str(),
+            retryable: error_kind.retryable(),
+            error: error_message,
             elapsed_ms: elapsed_ms(started_at),
         };
 
@@ -329,7 +364,9 @@ fn build_migration_plan(last_known_block: u64, last_source_block: u64) -> Option
 
 #[cfg(test)]
 mod tests {
-    use super::{MigrationErrorReport, MigrationPlan, MigrationReport, build_migration_plan};
+    use super::{
+        MigrationErrorReport, MigrationPlan, MigrationReport, build_migration_plan, classify_error,
+    };
     use serde_json::{Value, json};
 
     #[test]
@@ -417,6 +454,8 @@ mod tests {
         let report = MigrationErrorReport {
             status: "failed",
             phase: "execution",
+            error_type: "fatal",
+            retryable: false,
             error: "boom".to_owned(),
             elapsed_ms: 11,
         };
@@ -425,9 +464,31 @@ mod tests {
         let expected = json!({
             "status": "failed",
             "phase": "execution",
+            "error_type": "fatal",
+            "retryable": false,
             "error": "boom",
             "elapsed_ms": 11
         });
         assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn classifies_transient_error_markers() {
+        assert_eq!(
+            classify_error("read failed: EAGAIN"),
+            super::ErrorKind::Transient
+        );
+        assert_eq!(
+            classify_error("operation timed out while reading"),
+            super::ErrorKind::Transient
+        );
+    }
+
+    #[test]
+    fn classifies_fatal_errors_by_default() {
+        assert_eq!(
+            classify_error("leveldb corrupted block"),
+            super::ErrorKind::Fatal
+        );
     }
 }

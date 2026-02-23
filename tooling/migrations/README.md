@@ -34,8 +34,8 @@ Options:
 
 `--dry-run` can be used in automation to verify source and target DB readability and to preview how many blocks would be imported before doing a real migration run.
 
-`--json` prints a structured migration report (`status`, source/target heads, plan, dry-run flag, imported blocks) suitable for scripting and CI logs.
-When execution fails with `--json`, the CLI emits `{ "status": "failed", "error": "..." }` for stable automation parsing.
+`--json` prints a structured migration report (`status`, `phase`, source/target heads, plan, dry-run flag, imported blocks, elapsed runtime) suitable for scripting and CI logs.
+When execution fails with `--json`, the CLI emits a structured failure object including `error_type` and `retryable` for automation parsing.
 
 ## JSON output contract (stable)
 
@@ -70,6 +70,8 @@ Failure shape:
 {
   "status": "failed",
   "phase": "execution",
+  "error_type": "transient|fatal",
+  "retryable": true,
   "error": "human-readable error with context",
   "elapsed_ms": 27
 }
