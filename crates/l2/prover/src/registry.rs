@@ -214,10 +214,13 @@ mod tests {
         assert_eq!(circuit.gas_cost(&op), TOKEN_TRANSFER_GAS);
         assert_eq!(circuit.gas_cost(&op), 65_000);
 
-        // Verify serialize_input pass-through.
+        // serialize_input now converts ProgramInput → AppProgramInput,
+        // so arbitrary bytes will fail deserialization.
         let raw = b"some bytes";
-        let serialized = prog.serialize_input(raw).expect("serialize_input");
-        assert_eq!(serialized, raw);
+        assert!(
+            prog.serialize_input(raw).is_err(),
+            "serialize_input should reject invalid rkyv bytes"
+        );
     }
 
     #[test]
