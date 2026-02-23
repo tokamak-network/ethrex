@@ -55,12 +55,43 @@ fn emits_json_failure_payload_for_runtime_error() {
     let _ = fs::remove_dir_all(&new_path);
 }
 
-#[test]
-fn clap_validation_failure_reports_usage_error() {
+fn run_and_expect_clap_validation_error(args: &[&str], expected_flag: &str) {
     let bin = env!("CARGO_BIN_EXE_migrations");
 
     let output = Command::new(bin)
-        .args([
+        .args(args)
+        .output()
+        .expect("failed to execute migrations binary");
+
+    assert!(!output.status.success(), "command should fail clap validation");
+
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(stderr.contains(expected_flag));
+    assert!(stderr.contains("range") || stderr.contains("..="));
+}
+
+#[test]
+fn help_command_succeeds_and_lists_core_flags() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+
+    let output = Command::new(bin)
+        .args(["libmdbx2rocksdb", "--help"])
+        .output()
+        .expect("failed to execute migrations binary");
+
+    assert!(output.status.success(), "--help should succeed");
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert!(stdout.contains("--dry-run"));
+    assert!(stdout.contains("--json"));
+    assert!(stdout.contains("--retry-attempts"));
+    assert!(stdout.contains("--retry-base-delay-ms"));
+}
+
+#[test]
+fn clap_validation_failure_reports_retry_attempts_error() {
+    run_and_expect_clap_validation_error(
+        &[
             "libmdbx2rocksdb",
             "--genesis",
             "g.json",
@@ -70,13 +101,25 @@ fn clap_validation_failure_reports_usage_error() {
             "new",
             "--retry-attempts",
             "0",
-        ])
-        .output()
-        .expect("failed to execute migrations binary");
+        ],
+        "retry-attempts",
+    );
+}
 
-    assert!(!output.status.success(), "command should fail clap validation");
-
-    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
-    assert!(stderr.contains("retry-attempts"));
-    assert!(stderr.contains("1..=10") || stderr.contains("range"));
+#[test]
+fn clap_validation_failure_reports_retry_base_delay_error() {
+    run_and_expect_clap_validation_error(
+        &[
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--retry-base-delay-ms",
+            "60001",
+        ],
+        "retry-base-delay-ms",
+    );
 }
