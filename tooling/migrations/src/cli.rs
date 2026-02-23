@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use clap::{Parser as ClapParser, Subcommand as ClapSubcommand};
 use ethrex_blockchain::{Blockchain, BlockchainOptions, BlockchainType, L2Config};
@@ -67,6 +70,7 @@ struct MigrationReport {
     plan: Option<MigrationPlan>,
     dry_run: bool,
     imported_blocks: u64,
+    elapsed_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -74,14 +78,20 @@ struct MigrationErrorReport {
     status: &'static str,
     phase: &'static str,
     error: String,
+    elapsed_ms: u64,
 }
 
-pub fn emit_error_report(json: bool, error: &eyre::Report) {
+fn elapsed_ms(started_at: Instant) -> u64 {
+    started_at.elapsed().as_millis() as u64
+}
+
+pub fn emit_error_report(json: bool, started_at: Instant, error: &eyre::Report) {
     if json {
         let report = MigrationErrorReport {
             status: "failed",
             phase: "execution",
             error: format!("{error:#}"),
+            elapsed_ms: elapsed_ms(started_at),
         };
 
         match serde_json::to_string(&report) {
@@ -93,7 +103,10 @@ pub fn emit_error_report(json: bool, error: &eyre::Report) {
         return;
     }
 
-    eprintln!("Migration failed: {error:#}");
+    eprintln!(
+        "Migration failed after {}ms: {error:#}",
+        elapsed_ms(started_at)
+    );
 }
 
 fn emit_report(report: &MigrationReport, json: bool) -> Result<()> {
@@ -166,6 +179,8 @@ async fn migrate_libmdbx_to_rocksdb(
     dry_run: bool,
     json: bool,
 ) -> Result<()> {
+    let started_at = Instant::now();
+
     let old_path = old_storage_path
         .to_str()
         .wrap_err("Invalid UTF-8 in old storage path")?;
@@ -206,6 +221,7 @@ async fn migrate_libmdbx_to_rocksdb(
             plan: None,
             dry_run,
             imported_blocks: 0,
+            elapsed_ms: elapsed_ms(started_at),
         };
         emit_report(&report, json)?;
         return Ok(());
@@ -220,6 +236,7 @@ async fn migrate_libmdbx_to_rocksdb(
             plan: Some(plan),
             dry_run: true,
             imported_blocks: 0,
+            elapsed_ms: elapsed_ms(started_at),
         };
         emit_report(&report, json)?;
         return Ok(());
@@ -234,6 +251,7 @@ async fn migrate_libmdbx_to_rocksdb(
             plan: Some(plan),
             dry_run: false,
             imported_blocks: 0,
+            elapsed_ms: elapsed_ms(started_at),
         },
         json,
     )?;
@@ -295,6 +313,7 @@ async fn migrate_libmdbx_to_rocksdb(
         plan: Some(plan),
         dry_run: false,
         imported_blocks: plan.block_count(),
+        elapsed_ms: elapsed_ms(started_at),
     };
     emit_report(&report, json)?;
 
@@ -346,6 +365,7 @@ mod tests {
             }),
             dry_run: true,
             imported_blocks: 0,
+            elapsed_ms: 7,
         };
 
         let encoded = serde_json::to_value(&report).expect("report should serialize");
@@ -359,7 +379,8 @@ mod tests {
                 "end_block": 42
             },
             "dry_run": true,
-            "imported_blocks": 0
+            "imported_blocks": 0,
+            "elapsed_ms": 7
         });
         assert_eq!(encoded, expected);
     }
@@ -374,6 +395,7 @@ mod tests {
             plan: None,
             dry_run: false,
             imported_blocks: 0,
+            elapsed_ms: 3,
         };
 
         let encoded = serde_json::to_value(&report).expect("report should serialize");
@@ -384,7 +406,8 @@ mod tests {
             "target_head": 100,
             "plan": Value::Null,
             "dry_run": false,
-            "imported_blocks": 0
+            "imported_blocks": 0,
+            "elapsed_ms": 3
         });
         assert_eq!(encoded, expected);
     }
@@ -395,13 +418,15 @@ mod tests {
             status: "failed",
             phase: "execution",
             error: "boom".to_owned(),
+            elapsed_ms: 11,
         };
 
         let encoded = serde_json::to_value(&report).expect("error report should serialize");
         let expected = json!({
             "status": "failed",
             "phase": "execution",
-            "error": "boom"
+            "error": "boom",
+            "elapsed_ms": 11
         });
         assert_eq!(encoded, expected);
     }

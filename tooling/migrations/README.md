@@ -52,7 +52,8 @@ Success/progress shape:
     "end_block": 42
   },
   "dry_run": true,
-  "imported_blocks": 0
+  "imported_blocks": 0,
+  "elapsed_ms": 15
 }
 ```
 
@@ -61,6 +62,7 @@ Notes:
 - `plan` is `null` only when `status = "up_to_date"`.
 - `imported_blocks` is `0` for `planned`, `in_progress`, and `up_to_date`.
 - `imported_blocks > 0` only for `completed` runs.
+- `elapsed_ms` is the runtime elapsed at the moment the report is emitted.
 
 Failure shape:
 
@@ -68,6 +70,7 @@ Failure shape:
 {
   "status": "failed",
   "phase": "execution",
-  "error": "human-readable error with context"
+  "error": "human-readable error with context",
+  "elapsed_ms": 27
 }
 ```
