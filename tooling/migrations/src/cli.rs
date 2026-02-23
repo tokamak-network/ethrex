@@ -119,13 +119,37 @@ impl ErrorKind {
 }
 
 fn classify_error(message: &str) -> ErrorKind {
+    classify_error_from_message(message).0
+}
+
+fn classify_error_from_message(message: &str) -> (ErrorKind, &'static str) {
     let msg = message.to_ascii_lowercase();
     let transient_markers = ["eagain", "etimedout", "timed out", "enospc", "temporar"];
     if transient_markers.iter().any(|marker| msg.contains(marker)) {
-        return ErrorKind::Transient;
+        return (ErrorKind::Transient, "message_marker");
     }
 
-    ErrorKind::Fatal
+    (ErrorKind::Fatal, "default_fatal")
+}
+
+fn classify_error_from_report(error: &eyre::Report) -> (ErrorKind, &'static str) {
+    if let Some(retry_failure) = error.downcast_ref::<RetryFailure>() {
+        return (retry_failure.kind, "retry_failure");
+    }
+
+    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+        use std::io::ErrorKind as IoErrorKind;
+        let kind = match io_error.kind() {
+            IoErrorKind::WouldBlock
+            | IoErrorKind::TimedOut
+            | IoErrorKind::Interrupted
+            | IoErrorKind::OutOfMemory => ErrorKind::Transient,
+            _ => ErrorKind::Fatal,
+        };
+        return (kind, "io_kind");
+    }
+
+    classify_error_from_message(&format!("{error:#}"))
 }
 
 async fn retry_async<T, O, Fut>(
@@ -167,6 +191,7 @@ struct MigrationErrorReport {
     status: &'static str,
     phase: &'static str,
     error_type: &'static str,
+    error_classification: &'static str,
     retryable: bool,
     retry_attempts: u32,
     retry_attempts_used: Option<u32>,
@@ -182,13 +207,12 @@ pub fn emit_error_report(json: bool, started_at: Instant, error: &eyre::Report) 
     if json {
         let retry_failure = error.downcast_ref::<RetryFailure>();
         let error_message = format!("{error:#}");
-        let error_kind = retry_failure
-            .map(|failure| failure.kind)
-            .unwrap_or_else(|| classify_error(&error_message));
+        let (error_kind, error_classification) = classify_error_from_report(error);
         let report = MigrationErrorReport {
             status: "failed",
             phase: "execution",
             error_type: error_kind.as_str(),
+            error_classification,
             retryable: error_kind.retryable(),
             retry_attempts: MAX_RETRY_ATTEMPTS,
             retry_attempts_used: retry_failure.map(|failure| failure.attempts_used),
@@ -488,7 +512,7 @@ mod tests {
 
     use super::{
         MigrationErrorReport, MigrationPlan, MigrationReport, RetryFailure, build_migration_plan,
-        classify_error, retry_async,
+        classify_error, classify_error_from_report, retry_async,
     };
     use serde_json::{Value, json};
 
@@ -586,6 +610,7 @@ mod tests {
             status: "failed",
             phase: "execution",
             error_type: "fatal",
+            error_classification: "retry_failure",
             retryable: false,
             retry_attempts: 3,
             retry_attempts_used: Some(2),
@@ -598,6 +623,7 @@ mod tests {
             "status": "failed",
             "phase": "execution",
             "error_type": "fatal",
+            "error_classification": "retry_failure",
             "retryable": false,
             "retry_attempts": 3,
             "retry_attempts_used": 2,
@@ -613,6 +639,7 @@ mod tests {
             status: "failed",
             phase: "execution",
             error_type: "fatal",
+            error_classification: "default_fatal",
             retryable: false,
             retry_attempts: 3,
             retry_attempts_used: None,
@@ -625,6 +652,7 @@ mod tests {
             "status": "failed",
             "phase": "execution",
             "error_type": "fatal",
+            "error_classification": "default_fatal",
             "retryable": false,
             "retry_attempts": 3,
             "retry_attempts_used": Value::Null,
@@ -652,6 +680,16 @@ mod tests {
             classify_error("leveldb corrupted block"),
             super::ErrorKind::Fatal
         );
+    }
+
+    #[test]
+    fn classify_error_from_report_prefers_io_error_kind() {
+        let io_error = std::io::Error::new(std::io::ErrorKind::TimedOut, "network timeout");
+        let report = eyre::Report::new(io_error);
+        let (kind, source) = classify_error_from_report(&report);
+
+        assert_eq!(kind, super::ErrorKind::Transient);
+        assert_eq!(source, "io_kind");
     }
 
     #[tokio::test]
@@ -710,5 +748,9 @@ mod tests {
         assert_eq!(retry_failure.attempts_used, 3);
         assert_eq!(retry_failure.max_attempts, 3);
         assert_eq!(retry_failure.kind, super::ErrorKind::Transient);
+
+        let (kind, source) = classify_error_from_report(&error);
+        assert_eq!(kind, super::ErrorKind::Transient);
+        assert_eq!(source, "retry_failure");
     }
 }

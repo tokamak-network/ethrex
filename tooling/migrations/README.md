@@ -69,6 +69,7 @@ Notes:
 - `retries_performed` is the number of retries actually used in successful/planned runs.
 - Failure reports include `retry_attempts` (policy budget).
 - `retry_attempts_used` is populated when a retry-managed operation exhausts attempts; otherwise it is `null` for direct/non-retried failures.
+- `error_classification` explains how retryability was derived (`retry_failure`, `io_kind`, `message_marker`, `default_fatal`).
 
 Failure shape:
 
@@ -77,6 +78,7 @@ Failure shape:
   "status": "failed",
   "phase": "execution",
   "error_type": "transient|fatal",
+  "error_classification": "retry_failure|io_kind|message_marker|default_fatal",
   "retryable": true,
   "retry_attempts": 3,
   "retry_attempts_used": 2,
