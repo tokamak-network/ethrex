@@ -693,6 +693,24 @@ mod tests {
     }
 
     #[test]
+    fn classify_error_from_report_falls_back_to_message_marker() {
+        let report = eyre::eyre!("temporary EAGAIN read failure");
+        let (kind, source) = classify_error_from_report(&report);
+
+        assert_eq!(kind, super::ErrorKind::Transient);
+        assert_eq!(source, "message_marker");
+    }
+
+    #[test]
+    fn classify_error_from_report_falls_back_to_default_fatal() {
+        let report = eyre::eyre!("unknown unrecoverable migration failure");
+        let (kind, source) = classify_error_from_report(&report);
+
+        assert_eq!(kind, super::ErrorKind::Fatal);
+        assert_eq!(source, "default_fatal");
+    }
+
+    #[test]
     fn retry_failure_display_includes_attempt_metadata() {
         let failure = RetryFailure {
             attempts_used: 2,
