@@ -692,6 +692,20 @@ mod tests {
         assert_eq!(source, "io_kind");
     }
 
+    #[test]
+    fn retry_failure_display_includes_attempt_metadata() {
+        let failure = RetryFailure {
+            attempts_used: 2,
+            max_attempts: 3,
+            kind: super::ErrorKind::Transient,
+            message: "temporary timeout".to_owned(),
+        };
+
+        let rendered = failure.to_string();
+        assert!(rendered.contains("retry_attempts_used=2"));
+        assert!(rendered.contains("max_attempts=3"));
+    }
+
     #[tokio::test]
     async fn retry_async_retries_transient_error_until_success() {
         let attempts = Arc::new(AtomicUsize::new(0));

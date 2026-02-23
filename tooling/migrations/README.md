@@ -70,6 +70,7 @@ Notes:
 - Failure reports include `retry_attempts` (policy budget).
 - `retry_attempts_used` is populated when a retry-managed operation exhausts attempts; otherwise it is `null` for direct/non-retried failures.
 - `error_classification` explains how retryability was derived (`retry_failure`, `io_kind`, `message_marker`, `default_fatal`).
+- For `retry_failure`, the underlying error text includes attempt metadata (`retry_attempts_used`, `max_attempts`) for debugging.
 
 Failure shape:
 
