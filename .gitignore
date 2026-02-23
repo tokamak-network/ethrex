@@ -154,3 +154,9 @@ platform/server/db/*.sqlite-wal
 # Generated L2 config files
 zk-dex-l2-l2-config.toml
 
+# halo2-dex build artifacts
+crates/halo2-dex/configs/
+crates/halo2-dex/data/*.pk
+crates/halo2-dex/data/*.vk
+crates/halo2-dex/data/*.snark
+
