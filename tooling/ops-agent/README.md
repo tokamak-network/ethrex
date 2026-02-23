@@ -36,3 +36,17 @@ Incidents are stored with nullable `false_positive`.
 Current repository methods:
 - `mark_false_positive(incident_id, bool)`
 - `false_positive_rate()`
+
+## Labeling helper CLI
+Use the included helper to label incidents and track false-positive rate.
+
+```bash
+# list recent incidents
+OPS_AGENT_SQLITE_PATH=ops-agent.sqlite cargo run -p ethrex-ops-agent --bin incident-label -- list 20
+
+# label incident as false-positive
+OPS_AGENT_SQLITE_PATH=ops-agent.sqlite cargo run -p ethrex-ops-agent --bin incident-label -- label 42 fp
+
+# label incident as true-positive
+OPS_AGENT_SQLITE_PATH=ops-agent.sqlite cargo run -p ethrex-ops-agent --bin incident-label -- label 43 tp
+```

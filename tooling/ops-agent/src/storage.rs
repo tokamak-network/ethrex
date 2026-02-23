@@ -4,6 +4,15 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 use thiserror::Error;
 
+#[derive(Debug, Clone)]
+pub struct IncidentRow {
+    pub id: i64,
+    pub scenario: String,
+    pub severity: String,
+    pub message: String,
+    pub false_positive: Option<bool>,
+}
+
 #[derive(Debug)]
 pub struct IncidentRepository {
     connection: Connection,
@@ -99,6 +108,37 @@ impl IncidentRepository {
 
         Ok(Some(false_positives as f64 / labeled as f64))
     }
+
+    pub fn list_recent(&self, limit: usize) -> Result<Vec<IncidentRow>, StorageError> {
+        let mut statement = self.connection.prepare(
+            "
+            SELECT id, scenario, severity, message, false_positive
+            FROM incidents
+            ORDER BY id DESC
+            LIMIT ?1
+            ",
+        )?;
+
+        let rows = statement.query_map([limit as i64], |row| {
+            let fp_raw: Option<i64> = row.get(4)?;
+            let false_positive = fp_raw.map(|value| value != 0);
+
+            Ok(IncidentRow {
+                id: row.get(0)?,
+                scenario: row.get(1)?,
+                severity: row.get(2)?,
+                message: row.get(3)?,
+                false_positive,
+            })
+        })?;
+
+        let mut incidents = Vec::new();
+        for row in rows {
+            incidents.push(row?);
+        }
+
+        Ok(incidents)
+    }
 }
 
 #[cfg(test)]
@@ -186,5 +226,61 @@ mod tests {
         };
 
         assert_eq!(value, 0.5);
+    }
+
+    #[test]
+    fn lists_recent_incidents_with_label_status() {
+        let file_result = NamedTempFile::new();
+        assert!(file_result.is_ok());
+        let file = match file_result {
+            Ok(file) => file,
+            Err(_) => return,
+        };
+
+        let repository_result = IncidentRepository::open(file.path());
+        assert!(repository_result.is_ok());
+        let repository = match repository_result {
+            Ok(repository) => repository,
+            Err(_) => return,
+        };
+
+        let first = Incident {
+            scenario: Scenario::ExecutionRpcTimeout,
+            severity: Severity::Warning,
+            message: "first".to_owned(),
+            detected_at: UNIX_EPOCH,
+            evidence: json!({}),
+        };
+        let second = Incident {
+            scenario: Scenario::CpuPressure,
+            severity: Severity::Warning,
+            message: "second".to_owned(),
+            detected_at: UNIX_EPOCH,
+            evidence: json!({}),
+        };
+
+        let first_id = match repository.insert(&first) {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+        let second_id = match repository.insert(&second) {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+
+        assert!(repository.mark_false_positive(second_id, true).is_ok());
+
+        let rows_result = repository.list_recent(2);
+        assert!(rows_result.is_ok());
+        let rows = match rows_result {
+            Ok(rows) => rows,
+            Err(_) => return,
+        };
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, second_id);
+        assert_eq!(rows[0].false_positive, Some(true));
+        assert_eq!(rows[1].id, first_id);
+        assert_eq!(rows[1].false_positive, None);
     }
 }
