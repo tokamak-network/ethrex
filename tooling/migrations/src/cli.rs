@@ -1187,4 +1187,23 @@ mod tests {
         assert_eq!(kind, super::ErrorKind::Transient);
         assert_eq!(source, "retry_failure");
     }
+
+    #[tokio::test]
+    async fn retry_async_honors_custom_max_attempts() {
+        let result = retry_async(
+            || async { Err::<u64, _>(eyre::eyre!("temporary ETIMEDOUT failure")) },
+            5,
+            std::time::Duration::from_millis(0),
+        )
+        .await;
+
+        let error = result.expect_err("expected retry exhaustion at configured max attempts");
+        let retry_failure = error
+            .downcast_ref::<RetryFailure>()
+            .expect("retry failure metadata should be attached");
+
+        assert_eq!(retry_failure.attempts_used, 5);
+        assert_eq!(retry_failure.max_attempts, 5);
+        assert_eq!(retry_failure.kind, super::ErrorKind::Transient);
+    }
 }
