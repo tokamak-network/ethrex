@@ -600,6 +600,47 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_required_args() {
+        let parsed = CLI::try_parse_from(["migrations", "libmdbx2rocksdb", "--genesis", "g.json"]);
+        assert!(
+            parsed.is_err(),
+            "cli should fail when required store paths are missing"
+        );
+        let rendered = parsed.err().expect("must be clap error").to_string();
+
+        assert!(rendered.contains("--store.old"));
+        assert!(rendered.contains("--store.new"));
+    }
+
+    #[test]
+    fn json_output_reflects_flag_value() {
+        let with_json = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--json",
+        ]);
+        assert!(with_json.command.json_output());
+
+        let without_json = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+        ]);
+        assert!(!without_json.command.json_output());
+    }
+
+    #[test]
     fn serializes_migration_report() {
         let report = MigrationReport {
             status: "planned",
