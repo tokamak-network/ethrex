@@ -1,8 +1,4 @@
 pub mod circuit;
-pub mod events;
-pub mod notes;
-pub mod orders;
-pub mod storage;
 
 use crate::traits::{GuestProgram, GuestProgramError, ResourceLimits, backends};
 
@@ -11,14 +7,28 @@ const DEX_CONTRACT_ADDRESS: ethrex_common::Address = ethrex_common::H160([0xDE; 
 
 /// ZK-DEX Guest Program — privacy-preserving decentralized exchange.
 ///
-/// This program proves batch state transitions for the ZkDex contract using
-/// the [`DexCircuit`](circuit::DexCircuit) implementation of the [`AppCircuit`]
-/// trait. Supports 8 operation types: token transfer, mint, spend, liquidate,
-/// convertNote, makeOrder, takeOrder, and settleOrder.
+/// This program proves batch token transfer state transitions using the
+/// [`DexCircuit`](circuit::DexCircuit) implementation of the [`AppCircuit`]
+/// trait.  The execution engine ([`execute_app_circuit`]) handles common
+/// logic (signature verification, nonces, deposits, withdrawals, gas,
+/// receipts, state root computation) and delegates token-transfer operations
+/// to the circuit.
 ///
 /// Reference: <https://github.com/tokamak-network/zk-dex/tree/circom>
 ///
+/// ## Serialization
+///
+/// The ZK-DEX guest binary reads rkyv-serialized [`AppProgramInput`]
+/// from the zkVM stdin.  [`serialize_input`](GuestProgram::serialize_input)
+/// is a pass-through because the prover already supplies the correct bytes.
+///
+/// [`encode_output`](GuestProgram::encode_output) is also a pass-through;
+/// the guest binary calls [`ProgramOutput::encode`] internally.
+///
+/// [`AppProgramInput`]: crate::common::app_types::AppProgramInput
 /// [`AppCircuit`]: crate::common::app_execution::AppCircuit
+/// [`execute_app_circuit`]: crate::common::app_execution::execute_app_circuit
+/// [`ProgramOutput`]: crate::l2::ProgramOutput
 pub struct ZkDexGuestProgram;
 
 impl ZkDexGuestProgram {
@@ -52,36 +62,7 @@ impl GuestProgram for ZkDexGuestProgram {
     }
 
     fn serialize_input(&self, raw_input: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
-        #[cfg(feature = "l2")]
-        {
-            use crate::common::input_converter::convert_to_app_input;
-            use crate::l2::ProgramInput;
-            use rkyv::rancor::Error as RkyvError;
-
-            let program_input: ProgramInput =
-                rkyv::from_bytes::<ProgramInput, RkyvError>(raw_input)
-                    .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
-
-            let (accounts, storage_slots) = analyze_zk_dex_transactions(
-                &program_input.blocks,
-                DEX_CONTRACT_ADDRESS,
-                &program_input.fee_configs,
-                &program_input.execution_witness,
-            )
-            .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
-
-            let app_input = convert_to_app_input(program_input, &accounts, &storage_slots)
-                .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
-
-            let bytes = rkyv::to_bytes::<RkyvError>(&app_input)
-                .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
-            Ok(bytes.to_vec())
-        }
-
-        // 4. Re-serialize as AppProgramInput via rkyv.
-        let bytes = rkyv::to_bytes::<RkyvError>(&app_input)
-            .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
-        Ok(bytes.to_vec())
+        Ok(raw_input.to_vec())
     }
 
     fn encode_output(&self, raw_output: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
@@ -539,9 +520,6 @@ mod tests {
     fn serialize_input_rejects_invalid_bytes() {
         let gp = ZkDexGuestProgram;
         let data = b"test data";
-        assert!(
-            gp.serialize_input(data).is_err(),
-            "serialize_input should reject arbitrary bytes"
-        );
+        assert_eq!(gp.serialize_input(data).unwrap(), data);
     }
 }
