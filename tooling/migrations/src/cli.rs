@@ -1,6 +1,7 @@
 use std::{
+    future::Future,
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use clap::{Parser as ClapParser, Subcommand as ClapSubcommand};
@@ -71,6 +72,8 @@ struct MigrationReport {
     dry_run: bool,
     imported_blocks: u64,
     elapsed_ms: u64,
+    retry_attempts: u32,
+    retries_performed: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +103,34 @@ fn classify_error(message: &str) -> ErrorKind {
     }
 
     ErrorKind::Fatal
+}
+
+async fn retry_async<T, O, Fut>(
+    mut operation: O,
+    max_attempts: u32,
+    base_delay: Duration,
+) -> Result<(T, u32)>
+where
+    O: FnMut() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let mut attempts = 0u32;
+
+    loop {
+        attempts += 1;
+        match operation().await {
+            Ok(value) => return Ok((value, attempts)),
+            Err(error) => {
+                let is_retryable = classify_error(&format!("{error:#}")).retryable();
+                if !is_retryable || attempts >= max_attempts {
+                    return Err(error);
+                }
+
+                let backoff = base_delay * 2u32.pow(attempts - 1);
+                tokio::time::sleep(backoff).await;
+            }
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -214,7 +245,11 @@ async fn migrate_libmdbx_to_rocksdb(
     dry_run: bool,
     json: bool,
 ) -> Result<()> {
+    const MAX_RETRY_ATTEMPTS: u32 = 3;
+    const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
+
     let started_at = Instant::now();
+    let mut retries_performed = 0u32;
 
     let old_path = old_storage_path
         .to_str()
@@ -222,10 +257,18 @@ async fn migrate_libmdbx_to_rocksdb(
     let old_store =
         ethrex_storage_libmdbx::Store::new(old_path, ethrex_storage_libmdbx::EngineType::Libmdbx)
             .wrap_err_with(|| format!("Cannot open libmdbx store at {old_storage_path:?}"))?;
-    old_store
-        .load_initial_state()
-        .await
-        .wrap_err("Cannot load libmdbx store state")?;
+    let (_, attempts) = retry_async(
+        || async {
+            old_store
+                .load_initial_state()
+                .await
+                .wrap_err("Cannot load libmdbx store state")
+        },
+        MAX_RETRY_ATTEMPTS,
+        RETRY_BASE_DELAY,
+    )
+    .await?;
+    retries_performed += attempts.saturating_sub(1);
 
     let genesis = genesis_path
         .to_str()
@@ -238,14 +281,31 @@ async fn migrate_libmdbx_to_rocksdb(
     .await
     .wrap_err_with(|| format!("Cannot create/open rocksdb store at {new_storage_path:?}"))?;
 
-    let last_block_number = old_store
-        .get_latest_block_number()
-        .await
-        .wrap_err("Cannot get latest block from libmdbx store")?;
-    let last_known_block = new_store
-        .get_latest_block_number()
-        .await
-        .wrap_err("Cannot get latest block from rocksdb store")?;
+    let (last_block_number, attempts) = retry_async(
+        || async {
+            old_store
+                .get_latest_block_number()
+                .await
+                .wrap_err("Cannot get latest block from libmdbx store")
+        },
+        MAX_RETRY_ATTEMPTS,
+        RETRY_BASE_DELAY,
+    )
+    .await?;
+    retries_performed += attempts.saturating_sub(1);
+
+    let (last_known_block, attempts) = retry_async(
+        || async {
+            new_store
+                .get_latest_block_number()
+                .await
+                .wrap_err("Cannot get latest block from rocksdb store")
+        },
+        MAX_RETRY_ATTEMPTS,
+        RETRY_BASE_DELAY,
+    )
+    .await?;
+    retries_performed += attempts.saturating_sub(1);
 
     let Some(plan) = build_migration_plan(last_known_block, last_block_number) else {
         let report = MigrationReport {
@@ -257,6 +317,8 @@ async fn migrate_libmdbx_to_rocksdb(
             dry_run,
             imported_blocks: 0,
             elapsed_ms: elapsed_ms(started_at),
+            retry_attempts: MAX_RETRY_ATTEMPTS,
+            retries_performed,
         };
         emit_report(&report, json)?;
         return Ok(());
@@ -272,6 +334,8 @@ async fn migrate_libmdbx_to_rocksdb(
             dry_run: true,
             imported_blocks: 0,
             elapsed_ms: elapsed_ms(started_at),
+            retry_attempts: MAX_RETRY_ATTEMPTS,
+            retries_performed,
         };
         emit_report(&report, json)?;
         return Ok(());
@@ -287,6 +351,8 @@ async fn migrate_libmdbx_to_rocksdb(
             dry_run: false,
             imported_blocks: 0,
             elapsed_ms: elapsed_ms(started_at),
+            retry_attempts: MAX_RETRY_ATTEMPTS,
+            retries_performed,
         },
         json,
     )?;
@@ -298,10 +364,18 @@ async fn migrate_libmdbx_to_rocksdb(
     };
     let blockchain = Blockchain::new(new_store.clone(), blockchain_opts);
 
-    let block_bodies = old_store
-        .get_block_bodies(plan.start_block, plan.end_block)
-        .await
-        .wrap_err("Cannot get block bodies from libmdbx store")?;
+    let (block_bodies, attempts) = retry_async(
+        || async {
+            old_store
+                .get_block_bodies(plan.start_block, plan.end_block)
+                .await
+                .wrap_err("Cannot get block bodies from libmdbx store")
+        },
+        MAX_RETRY_ATTEMPTS,
+        RETRY_BASE_DELAY,
+    )
+    .await?;
+    retries_performed += attempts.saturating_sub(1);
 
     let block_headers = (plan.start_block..=plan.end_block).map(|i| {
         old_store
@@ -329,16 +403,24 @@ async fn migrate_libmdbx_to_rocksdb(
         .get_block_header(plan.end_block)
         .wrap_err_with(|| format!("Cannot fetch last block header #{}", plan.end_block))?
         .ok_or_else(|| eyre::eyre!("Missing block header #{}", plan.end_block))?;
-    new_store
-        .forkchoice_update(
-            added_blocks,
-            last_block.number,
-            last_block.hash(),
-            None,
-            None,
-        )
-        .await
-        .wrap_err("Cannot apply forkchoice update")?;
+    let (_, attempts) = retry_async(
+        || async {
+            new_store
+                .forkchoice_update(
+                    added_blocks.clone(),
+                    last_block.number,
+                    last_block.hash(),
+                    None,
+                    None,
+                )
+                .await
+                .wrap_err("Cannot apply forkchoice update")
+        },
+        MAX_RETRY_ATTEMPTS,
+        RETRY_BASE_DELAY,
+    )
+    .await?;
+    retries_performed += attempts.saturating_sub(1);
 
     let report = MigrationReport {
         status: "completed",
@@ -349,6 +431,8 @@ async fn migrate_libmdbx_to_rocksdb(
         dry_run: false,
         imported_blocks: plan.block_count(),
         elapsed_ms: elapsed_ms(started_at),
+        retry_attempts: MAX_RETRY_ATTEMPTS,
+        retries_performed,
     };
     emit_report(&report, json)?;
 
@@ -403,6 +487,8 @@ mod tests {
             dry_run: true,
             imported_blocks: 0,
             elapsed_ms: 7,
+            retry_attempts: 3,
+            retries_performed: 1,
         };
 
         let encoded = serde_json::to_value(&report).expect("report should serialize");
@@ -417,7 +503,9 @@ mod tests {
             },
             "dry_run": true,
             "imported_blocks": 0,
-            "elapsed_ms": 7
+            "elapsed_ms": 7,
+            "retry_attempts": 3,
+            "retries_performed": 1
         });
         assert_eq!(encoded, expected);
     }
@@ -433,6 +521,8 @@ mod tests {
             dry_run: false,
             imported_blocks: 0,
             elapsed_ms: 3,
+            retry_attempts: 3,
+            retries_performed: 0,
         };
 
         let encoded = serde_json::to_value(&report).expect("report should serialize");
@@ -444,7 +534,9 @@ mod tests {
             "plan": Value::Null,
             "dry_run": false,
             "imported_blocks": 0,
-            "elapsed_ms": 3
+            "elapsed_ms": 3,
+            "retry_attempts": 3,
+            "retries_performed": 0
         });
         assert_eq!(encoded, expected);
     }

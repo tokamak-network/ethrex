@@ -53,7 +53,9 @@ Success/progress shape:
   },
   "dry_run": true,
   "imported_blocks": 0,
-  "elapsed_ms": 15
+  "elapsed_ms": 15,
+  "retry_attempts": 3,
+  "retries_performed": 0
 }
 ```
 
@@ -63,6 +65,8 @@ Notes:
 - `imported_blocks` is `0` for `planned`, `in_progress`, and `up_to_date`.
 - `imported_blocks > 0` only for `completed` runs.
 - `elapsed_ms` is the runtime elapsed at the moment the report is emitted.
+- `retry_attempts` is the configured max attempts for retryable operations.
+- `retries_performed` is the number of retries actually used in the run.
 
 Failure shape:
 
