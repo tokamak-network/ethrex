@@ -9,6 +9,8 @@ pub struct AppConfig {
     pub telegram_bot_token: String,
     pub telegram_chat_id: i64,
     pub poll_interval: Duration,
+    pub telegram_retry_max: u8,
+    pub telegram_retry_delay_ms: u64,
 }
 
 #[derive(Debug, Error)]
@@ -34,6 +36,16 @@ impl AppConfig {
             .and_then(|raw| raw.parse::<u64>().ok())
             .unwrap_or(30);
 
+        let telegram_retry_max = env::var("OPS_AGENT_TELEGRAM_RETRY_MAX")
+            .ok()
+            .and_then(|raw| raw.parse::<u8>().ok())
+            .unwrap_or(3);
+
+        let telegram_retry_delay_ms = env::var("OPS_AGENT_TELEGRAM_RETRY_DELAY_MS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(500);
+
         Ok(Self {
             prometheus_base_url,
             execution_rpc_url,
@@ -41,6 +53,8 @@ impl AppConfig {
             telegram_bot_token,
             telegram_chat_id,
             poll_interval: Duration::from_secs(poll_seconds),
+            telegram_retry_max,
+            telegram_retry_delay_ms,
         })
     }
 }

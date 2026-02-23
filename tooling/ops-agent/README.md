@@ -19,6 +19,8 @@
 ## Optional environment variables
 - `OPS_AGENT_SQLITE_PATH` (default: `ops-agent.sqlite`)
 - `OPS_AGENT_POLL_SECONDS` (default: `30`)
+- `OPS_AGENT_TELEGRAM_RETRY_MAX` (default: `3`)
+- `OPS_AGENT_TELEGRAM_RETRY_DELAY_MS` (default: `500`)
 
 ## Alert delivery behavior
 Telegram alert sending uses retry-by-default:

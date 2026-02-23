@@ -7,6 +7,7 @@ use ethrex_ops_agent::{
     storage::IncidentRepository,
 };
 use tokio::time;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 #[tokio::main]
@@ -30,7 +31,11 @@ async fn run() -> Result<(), String> {
 
     let repository = IncidentRepository::open(&config.sqlite_path).map_err(|error| error.to_string())?;
 
-    let alerter = TelegramAlerter::new(config.telegram_bot_token, config.telegram_chat_id);
+    let alerter = TelegramAlerter::new(config.telegram_bot_token, config.telegram_chat_id)
+        .with_retry_policy(
+            config.telegram_retry_max,
+            Duration::from_millis(config.telegram_retry_delay_ms),
+        );
 
     info!(poll_seconds = config.poll_interval.as_secs(), "ops-agent started in observe-only mode");
 
