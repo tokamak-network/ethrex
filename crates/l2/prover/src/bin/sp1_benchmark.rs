@@ -33,7 +33,6 @@ use anyhow::Context;
 use clap::Parser;
 use ethrex_guest_program::{
     programs::tokamon::types::{ActionType, GameAction, TokammonProgramInput},
-    programs::zk_dex::types::{DexProgramInput, DexTransfer},
     ZKVM_SP1_TOKAMON_ELF, ZKVM_SP1_ZK_DEX_ELF,
 };
 use rkyv::rancor::Error as RkyvError;
@@ -64,50 +63,18 @@ struct Args {
     execute_only: bool,
 }
 
-/// Generate a deterministic, valid `DexProgramInput`.
-#[expect(clippy::indexing_slicing)]
-fn generate_zk_dex_input(transfer_count: u32) -> anyhow::Result<DexProgramInput> {
-    let initial_state_root = [0x42u8; 32];
-    let count = usize::try_from(transfer_count).context("transfer count overflow")?;
-    let mut transfers = Vec::with_capacity(count);
-
-    for i in 0..transfer_count {
-        let idx = i.to_le_bytes();
-
-        let mut from = [0u8; 20];
-        from[0] = idx[0];
-        from[1] = idx[1];
-        from[2] = idx[2];
-        from[3] = idx[3];
-        from[4] = 0x01;
-
-        let mut to = [0u8; 20];
-        to[0] = idx[0];
-        to[1] = idx[1];
-        to[2] = idx[2];
-        to[3] = idx[3];
-        to[4] = 0x02;
-
-        let mut token = [0u8; 20];
-        token[0] = idx[0];
-        token[1] = idx[1];
-        token[2] = idx[2];
-        token[3] = idx[3];
-        token[4] = 0x03;
-
-        transfers.push(DexTransfer {
-            from,
-            to,
-            token,
-            amount: u64::from(i) + 1,
-            nonce: u64::from(i),
-        });
-    }
-
-    Ok(DexProgramInput {
-        initial_state_root,
-        transfers,
-    })
+/// Generate a deterministic, valid `AppProgramInput` for zk-dex benchmarking.
+///
+/// TODO(Phase 3): Implement mock block + storage proof construction for
+/// `AppProgramInput`. This requires building valid `Block` instances with
+/// token-transfer transactions and matching `StorageProof`/`AccountProof`
+/// entries, which depends on the prover-side input generation pipeline.
+fn generate_zk_dex_input(_transfer_count: u32) -> anyhow::Result<Vec<u8>> {
+    anyhow::bail!(
+        "zk-dex benchmark input generation not yet implemented.\n\
+         The zk-dex guest program now uses AppProgramInput (block-based),\n\
+         which requires mock blocks and storage proofs. See Phase 3."
+    );
 }
 
 /// Generate a deterministic, valid `TokammonProgramInput`.
@@ -239,10 +206,7 @@ fn main() -> anyhow::Result<()> {
     let serialized: Vec<u8> = match args.program.as_str() {
         "zk-dex" => {
             println!("Generating input: {} transfers", args.actions);
-            let input = generate_zk_dex_input(args.actions)?;
-            rkyv::to_bytes::<RkyvError>(&input)
-                .map_err(|e| anyhow::anyhow!("rkyv serialization: {e}"))?
-                .to_vec()
+            generate_zk_dex_input(args.actions)?
         }
         "tokamon" => {
             println!("Generating input: {} game actions", args.actions);
