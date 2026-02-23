@@ -159,6 +159,11 @@ fn classify_error_from_report(error: &eyre::Report) -> (ErrorKind, &'static str)
     classify_error_from_message(&format!("{error:#}"))
 }
 
+fn compute_backoff_delay(base_delay: Duration, attempts_used: u32) -> Duration {
+    let multiplier = 2u32.saturating_pow(attempts_used.saturating_sub(1));
+    base_delay.checked_mul(multiplier).unwrap_or(Duration::MAX)
+}
+
 async fn retry_async<T, O, Fut>(
     mut operation: O,
     max_attempts: u32,
@@ -186,8 +191,7 @@ where
                     }));
                 }
 
-                let backoff = base_delay * 2u32.pow(attempts - 1);
-                tokio::time::sleep(backoff).await;
+                tokio::time::sleep(compute_backoff_delay(base_delay, attempts)).await;
             }
         }
     }
@@ -549,7 +553,8 @@ mod tests {
     use super::{
         CLI, DEFAULT_RETRY_BASE_DELAY_MS, MAX_RETRY_ATTEMPTS, MigrationErrorReport, MigrationPlan,
         MigrationReport, RetryFailure, Subcommand, build_migration_error_report,
-        build_migration_plan, classify_error, classify_error_from_report, retry_async,
+        build_migration_plan, classify_error, classify_error_from_report, compute_backoff_delay,
+        retry_async,
     };
     use clap::Parser;
     use serde_json::{Value, json};
@@ -1205,5 +1210,28 @@ mod tests {
         assert_eq!(retry_failure.attempts_used, 5);
         assert_eq!(retry_failure.max_attempts, 5);
         assert_eq!(retry_failure.kind, super::ErrorKind::Transient);
+    }
+
+    #[test]
+    fn compute_backoff_delay_doubles_per_attempt() {
+        let base = std::time::Duration::from_millis(100);
+        assert_eq!(
+            compute_backoff_delay(base, 1),
+            std::time::Duration::from_millis(100)
+        );
+        assert_eq!(
+            compute_backoff_delay(base, 2),
+            std::time::Duration::from_millis(200)
+        );
+        assert_eq!(
+            compute_backoff_delay(base, 3),
+            std::time::Duration::from_millis(400)
+        );
+    }
+
+    #[test]
+    fn compute_backoff_delay_saturates_on_overflow() {
+        let delay = compute_backoff_delay(std::time::Duration::MAX, 2);
+        assert_eq!(delay, std::time::Duration::MAX);
     }
 }
