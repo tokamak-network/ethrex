@@ -15,6 +15,8 @@ sp1-zkvm = { version = "=5.0.8" }
 rkyv = { version = "0.8.10", features = ["std", "unaligned"] }
 
 ethrex-guest-program = { path = "../../", default-features = false }
+ethrex-common = { path = "../../../common", default-features = false }
 
 [patch.crates-io]
 tiny-keccak = { git = "https://github.com/sp1-patches/tiny-keccak", tag = "patch-2.0.2-sp1-4.0.0" }
+secp256k1 = { git = "https://github.com/sp1-patches/rust-secp256k1", tag = "patch-0.30.0-sp1-5.0.0" }

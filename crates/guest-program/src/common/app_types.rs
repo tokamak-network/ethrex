@@ -1,7 +1,9 @@
+use ethrex_common::rkyv_utils::{H160Wrapper, H256Wrapper, U256Wrapper, VecVecWrapper};
 use ethrex_common::types::blobs_bundle;
 use ethrex_common::types::l2::fee_config::FeeConfig;
 use ethrex_common::types::Block;
 use ethrex_common::{Address, H256, U256};
+use rkyv::{Archive, Deserialize as RDeserialize, Serialize as RSerialize};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, Bytes};
 
@@ -12,12 +14,13 @@ use serde_with::{serde_as, Bytes};
 /// storage proofs needed for the app's operations. The circuit uses these
 /// proofs to verify and update state incrementally, avoiding full EVM execution.
 #[serde_as]
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, RSerialize, RDeserialize, Archive, Clone, Debug)]
 pub struct AppProgramInput {
     /// Blocks to execute.
     pub blocks: Vec<Block>,
 
     /// Previous state root (already verified on L1).
+    #[rkyv(with = H256Wrapper)]
     pub prev_state_root: H256,
 
     /// Merkle proofs for storage slots that will be read/modified.
@@ -48,21 +51,26 @@ pub struct AppProgramInput {
 ///
 /// The circuit verifies this proof against `prev_state_root` and uses it to
 /// compute the new state root after modifications.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, RSerialize, RDeserialize, Archive, Clone, Debug)]
 pub struct StorageProof {
     /// Account address.
+    #[rkyv(with = H160Wrapper)]
     pub address: Address,
 
     /// Storage slot key.
+    #[rkyv(with = H256Wrapper)]
     pub slot: H256,
 
     /// Current value at this slot.
+    #[rkyv(with = U256Wrapper)]
     pub value: U256,
 
     /// Merkle path from state trie root to this account (RLP-encoded nodes).
+    #[rkyv(with = VecVecWrapper)]
     pub account_proof: Vec<Vec<u8>>,
 
     /// Merkle path from storage trie root to this slot (RLP-encoded nodes).
+    #[rkyv(with = VecVecWrapper)]
     pub storage_proof: Vec<Vec<u8>>,
 }
 
@@ -70,23 +78,28 @@ pub struct StorageProof {
 ///
 /// Used for accounts that participate in ETH transfers, gas deduction,
 /// or deposit/withdrawal operations.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, RSerialize, RDeserialize, Archive, Clone, Debug)]
 pub struct AccountProof {
     /// Account address.
+    #[rkyv(with = H160Wrapper)]
     pub address: Address,
 
     /// Account nonce.
     pub nonce: u64,
 
     /// Account balance.
+    #[rkyv(with = U256Wrapper)]
     pub balance: U256,
 
     /// Account storage root.
+    #[rkyv(with = H256Wrapper)]
     pub storage_root: H256,
 
     /// Account code hash.
+    #[rkyv(with = H256Wrapper)]
     pub code_hash: H256,
 
     /// Merkle path from state trie root to this account (RLP-encoded nodes).
+    #[rkyv(with = VecVecWrapper)]
     pub proof: Vec<Vec<u8>>,
 }
