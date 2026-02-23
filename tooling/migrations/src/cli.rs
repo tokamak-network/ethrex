@@ -1020,6 +1020,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_async_with_single_attempt_stops_immediately() {
+        let result = retry_async(
+            || async { Err::<u64, _>(eyre::eyre!("temporary EAGAIN failure")) },
+            1,
+            std::time::Duration::from_millis(0),
+        )
+        .await;
+
+        let error = result.expect_err("single-attempt retry should fail immediately");
+        let retry_failure = error
+            .downcast_ref::<RetryFailure>()
+            .expect("retry metadata should be attached");
+        assert_eq!(retry_failure.attempts_used, 1);
+        assert_eq!(retry_failure.max_attempts, 1);
+        assert_eq!(retry_failure.kind, super::ErrorKind::Transient);
+    }
+
+    #[tokio::test]
     async fn retry_async_failure_carries_typed_retry_metadata() {
         let result = retry_async(
             || async { Err::<u64, _>(eyre::eyre!("temporary EAGAIN failure")) },
