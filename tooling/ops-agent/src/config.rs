@@ -70,3 +70,95 @@ fn read_i64(name: &str) -> Result<i64, ConfigError> {
         source,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn clear_all_test_envs() {
+        let keys = [
+            "OPS_AGENT_PROMETHEUS_BASE_URL",
+            "OPS_AGENT_EXECUTION_RPC_URL",
+            "OPS_AGENT_SQLITE_PATH",
+            "OPS_AGENT_TELEGRAM_BOT_TOKEN",
+            "OPS_AGENT_TELEGRAM_CHAT_ID",
+            "OPS_AGENT_POLL_SECONDS",
+            "OPS_AGENT_TELEGRAM_RETRY_MAX",
+            "OPS_AGENT_TELEGRAM_RETRY_DELAY_MS",
+        ];
+
+        for key in keys {
+            // SAFETY: tests hold a global process-wide mutex to serialize env mutations.
+            unsafe { env::remove_var(key) };
+        }
+    }
+
+    fn set_min_required_envs() {
+        // SAFETY: tests hold a global process-wide mutex to serialize env mutations.
+        unsafe { env::set_var("OPS_AGENT_PROMETHEUS_BASE_URL", "http://prom") };
+        unsafe { env::set_var("OPS_AGENT_EXECUTION_RPC_URL", "http://rpc") };
+        unsafe { env::set_var("OPS_AGENT_TELEGRAM_BOT_TOKEN", "token") };
+        unsafe { env::set_var("OPS_AGENT_TELEGRAM_CHAT_ID", "12345") };
+    }
+
+    #[test]
+    fn loads_default_values_when_optional_envs_missing() {
+        let guard = env_lock().lock();
+        assert!(guard.is_ok());
+        let _guard = match guard {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        clear_all_test_envs();
+        set_min_required_envs();
+
+        let config = AppConfig::from_env();
+        assert!(config.is_ok());
+        let config = match config {
+            Ok(config) => config,
+            Err(_) => return,
+        };
+
+        assert_eq!(config.poll_interval, Duration::from_secs(30));
+        assert_eq!(config.telegram_retry_max, 3);
+        assert_eq!(config.telegram_retry_delay_ms, 500);
+        assert_eq!(config.sqlite_path, PathBuf::from("ops-agent.sqlite"));
+    }
+
+    #[test]
+    fn overrides_optional_values_from_env() {
+        let guard = env_lock().lock();
+        assert!(guard.is_ok());
+        let _guard = match guard {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        clear_all_test_envs();
+        set_min_required_envs();
+
+        unsafe { env::set_var("OPS_AGENT_SQLITE_PATH", "custom.sqlite") };
+        unsafe { env::set_var("OPS_AGENT_POLL_SECONDS", "15") };
+        unsafe { env::set_var("OPS_AGENT_TELEGRAM_RETRY_MAX", "5") };
+        unsafe { env::set_var("OPS_AGENT_TELEGRAM_RETRY_DELAY_MS", "900") };
+
+        let config = AppConfig::from_env();
+        assert!(config.is_ok());
+        let config = match config {
+            Ok(config) => config,
+            Err(_) => return,
+        };
+
+        assert_eq!(config.poll_interval, Duration::from_secs(15));
+        assert_eq!(config.telegram_retry_max, 5);
+        assert_eq!(config.telegram_retry_delay_ms, 900);
+        assert_eq!(config.sqlite_path, PathBuf::from("custom.sqlite"));
+    }
+}
