@@ -139,21 +139,29 @@ fn classify_error_from_message(message: &str) -> (ErrorKind, &'static str) {
     (ErrorKind::Fatal, "default_fatal")
 }
 
+fn classify_io_error_kind(kind: std::io::ErrorKind) -> ErrorKind {
+    use std::io::ErrorKind as IoErrorKind;
+
+    match kind {
+        IoErrorKind::WouldBlock
+        | IoErrorKind::TimedOut
+        | IoErrorKind::Interrupted
+        | IoErrorKind::OutOfMemory
+        | IoErrorKind::ConnectionReset
+        | IoErrorKind::ConnectionAborted
+        | IoErrorKind::NotConnected
+        | IoErrorKind::BrokenPipe => ErrorKind::Transient,
+        _ => ErrorKind::Fatal,
+    }
+}
+
 fn classify_error_from_report(error: &eyre::Report) -> (ErrorKind, &'static str) {
     if let Some(retry_failure) = error.downcast_ref::<RetryFailure>() {
         return (retry_failure.kind, "retry_failure");
     }
 
     if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
-        use std::io::ErrorKind as IoErrorKind;
-        let kind = match io_error.kind() {
-            IoErrorKind::WouldBlock
-            | IoErrorKind::TimedOut
-            | IoErrorKind::Interrupted
-            | IoErrorKind::OutOfMemory => ErrorKind::Transient,
-            _ => ErrorKind::Fatal,
-        };
-        return (kind, "io_kind");
+        return (classify_io_error_kind(io_error.kind()), "io_kind");
     }
 
     classify_error_from_message(&format!("{error:#}"))
@@ -553,8 +561,8 @@ mod tests {
     use super::{
         CLI, DEFAULT_RETRY_BASE_DELAY_MS, MAX_RETRY_ATTEMPTS, MigrationErrorReport, MigrationPlan,
         MigrationReport, RetryFailure, Subcommand, build_migration_error_report,
-        build_migration_plan, classify_error, classify_error_from_report, compute_backoff_delay,
-        retry_async,
+        build_migration_plan, classify_error, classify_error_from_report, classify_io_error_kind,
+        compute_backoff_delay, retry_async,
     };
     use clap::Parser;
     use serde_json::{Value, json};
@@ -994,6 +1002,30 @@ mod tests {
 
         assert_eq!(kind, super::ErrorKind::Transient);
         assert_eq!(source, "io_kind");
+    }
+
+    #[test]
+    fn classify_io_error_kind_maps_expected_transient_cases() {
+        assert_eq!(
+            classify_io_error_kind(std::io::ErrorKind::ConnectionReset),
+            super::ErrorKind::Transient
+        );
+        assert_eq!(
+            classify_io_error_kind(std::io::ErrorKind::BrokenPipe),
+            super::ErrorKind::Transient
+        );
+    }
+
+    #[test]
+    fn classify_io_error_kind_maps_expected_fatal_cases() {
+        assert_eq!(
+            classify_io_error_kind(std::io::ErrorKind::InvalidData),
+            super::ErrorKind::Fatal
+        );
+        assert_eq!(
+            classify_io_error_kind(std::io::ErrorKind::PermissionDenied),
+            super::ErrorKind::Fatal
+        );
     }
 
     #[test]
