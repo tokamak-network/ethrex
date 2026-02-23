@@ -745,6 +745,26 @@ mod tests {
         assert_eq!(error_report.error_classification, "retry_failure");
         assert_eq!(error_report.retry_attempts_used, Some(3));
     }
+
+    #[test]
+    fn build_error_report_uses_message_marker_fallback() {
+        let report = eyre::eyre!("temporary EAGAIN read failure");
+        let error_report = build_migration_error_report(&report, Instant::now());
+
+        assert_eq!(error_report.error_type, "transient");
+        assert_eq!(error_report.error_classification, "message_marker");
+        assert_eq!(error_report.retry_attempts_used, None);
+    }
+
+    #[test]
+    fn build_error_report_uses_default_fatal_fallback() {
+        let report = eyre::eyre!("unexpected migration corruption");
+        let error_report = build_migration_error_report(&report, Instant::now());
+
+        assert_eq!(error_report.error_type, "fatal");
+        assert_eq!(error_report.error_classification, "default_fatal");
+        assert_eq!(error_report.retry_attempts_used, None);
+    }
     #[test]
     fn retry_failure_display_includes_attempt_metadata() {
         let failure = RetryFailure {
