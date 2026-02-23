@@ -838,6 +838,39 @@ mod tests {
         assert_eq!(error_report.error_classification, "default_fatal");
         assert_eq!(error_report.retry_attempts_used, None);
     }
+
+    #[test]
+    fn build_error_report_value_matrix_is_consistent() {
+        let io_timeout = eyre::Report::new(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "network timeout",
+        ));
+        let io_report = build_migration_error_report(&io_timeout, Instant::now());
+        assert_eq!(io_report.error_type, "transient");
+        assert_eq!(io_report.error_classification, "io_kind");
+        assert!(io_report.retryable);
+        assert_eq!(io_report.retry_attempts_used, None);
+
+        let retry_failure = eyre::Report::new(RetryFailure {
+            attempts_used: 3,
+            max_attempts: 3,
+            kind: super::ErrorKind::Transient,
+            message: "temporary timeout".to_owned(),
+        });
+        let retry_report = build_migration_error_report(&retry_failure, Instant::now());
+        assert_eq!(retry_report.error_type, "transient");
+        assert_eq!(retry_report.error_classification, "retry_failure");
+        assert!(retry_report.retryable);
+        assert_eq!(retry_report.retry_attempts_used, Some(3));
+
+        let fatal = eyre::eyre!("corrupted leveldb block");
+        let fatal_report = build_migration_error_report(&fatal, Instant::now());
+        assert_eq!(fatal_report.error_type, "fatal");
+        assert_eq!(fatal_report.error_classification, "default_fatal");
+        assert!(!fatal_report.retryable);
+        assert_eq!(fatal_report.retry_attempts_used, None);
+    }
+
     #[test]
     fn retry_failure_display_includes_attempt_metadata() {
         let failure = RetryFailure {
