@@ -120,6 +120,11 @@ pub fn settle_order_selector_bytes() -> [u8; 4] {
     settle_order_selector()
 }
 
+/// Public accessor for the transfer selector bytes (used by input conversion).
+pub fn transfer_selector_bytes() -> [u8; 4] {
+    transfer_selector()
+}
+
 /// ERC-20 `Transfer(address,address,uint256)` event topic.
 fn transfer_event_topic() -> H256 {
     H256::from(keccak_hash(b"Transfer(address,address,uint256)"))
