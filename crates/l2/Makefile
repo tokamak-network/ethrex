@@ -216,6 +216,59 @@ init-prover-exec:
 
 
 # ==============================================================================
+# ZK-DEX E2E
+# ==============================================================================
+
+deploy-l1-sp1-zk-dex: ## 📜 Deploys L1 contracts with SP1 verifier + ZK-DEX program
+	COMPILE_CONTRACTS=true \
+	GUEST_PROGRAMS=evm-l2,zk-dex \
+	cargo run --release --features l2,l2-sql,sp1 --manifest-path ../../Cargo.toml -- l2 deploy \
+	--eth-rpc-url ${L1_RPC_URL} \
+	--private-key ${L1_PRIVATE_KEY} \
+	--sp1 true \
+	--on-chain-proposer-owner ${L2_OWNER_ADDRESS} \
+	--bridge-owner ${L2_OWNER_ADDRESS} \
+	--bridge-owner-pk ${BRIDGE_OWNER_PRIVATE_KEY} \
+	--deposit-rich \
+	--private-keys-file-path ../../fixtures/keys/private_keys_l1.txt \
+	--genesis-l1-path ${L1_GENESIS_FILE_PATH} \
+	--genesis-l2-path ${L2_GENESIS_FILE_PATH} \
+	--register-guest-programs zk-dex
+
+init-l2-zk-dex: ## 🚀 Initializes L2 with ZK-DEX guest program
+	export $(shell cat ../../cmd/.env | xargs); \
+	GUEST_PROGRAMS=evm-l2,zk-dex \
+	cargo run --release --features l2,l2-sql,sp1 --manifest-path ../../Cargo.toml -- \
+	l2 \
+	--proof-coordinator.guest-program-id zk-dex \
+	--watcher.block-delay 0 \
+	--network ${L2_GENESIS_FILE_PATH} \
+	--http.port ${L2_PORT} \
+	--http.addr ${L2_RPC_ADDRESS} \
+	--metrics \
+	--metrics.port ${L2_PROMETHEUS_METRICS_PORT} \
+	--datadir ${ethrex_L2_DEV_DB} \
+	--l1.bridge-address ${DEFAULT_BRIDGE_ADDRESS} \
+	--l1.on-chain-proposer-address ${DEFAULT_ON_CHAIN_PROPOSER_ADDRESS} \
+	--eth.rpc-url ${L1_RPC_URL} \
+	--osaka-activation-time ${ETHREX_OSAKA_ACTIVATION_TIME} \
+	--block-producer.coinbase-address 0x0007a881CD95B1484fca47615B64803dad620C8d \
+	--block-producer.base-fee-vault-address 0x000c0d6b7c4516a5b274c51ea331a9410fe69127 \
+	--block-producer.operator-fee-vault-address 0xd5d2a85751b6F158e5b9B8cD509206A865672362 \
+	--block-producer.operator-fee-per-gas ${ETHREX_BLOCK_PRODUCER_OPERATOR_FEE_PER_GAS} \
+	--committer.l1-private-key 0x385c546456b6a603a1cfcaa9ec9494ba4832da08dd6bcf4de9a71e4a01b74924 \
+	--proof-coordinator.l1-private-key 0x39725efee3fb28614de3bacaffe4cc4bd8c436257e2c8bb887c4b5c4be45e76d \
+	--proof-coordinator.addr ${PROOF_COORDINATOR_ADDRESS}
+
+init-prover-sp1-zk-dex: ## 🔐 Starts SP1 prover with ZK-DEX program
+	GUEST_PROGRAMS=evm-l2,zk-dex \
+	cargo run --release --features "l2,l2-sql,$(GPU?),sp1" --manifest-path ../../Cargo.toml -- \
+	l2 prover \
+	--proof-coordinators tcp://127.0.0.1:3900 \
+	--backend sp1 \
+	--programs-config programs-zk-dex.toml
+
+# ==============================================================================
 # Guest Programs
 # ==============================================================================
 
