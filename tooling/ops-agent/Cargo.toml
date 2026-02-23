@@ -1,0 +1,30 @@
+[package]
+name = "ethrex-ops-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+documentation.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+rusqlite = { version = "0.33.0", features = ["bundled"] }
+teloxide = { version = "0.13.0", default-features = false, features = ["rustls", "ctrlc_handler"] }
+tracing.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+as_conversions = "warn"
+unnecessary_cast = "warn"
+panic = "deny"
+redundant_clone = "warn"
