@@ -5,6 +5,7 @@ use teloxide::{
     Bot,
 };
 use thiserror::Error;
+use tokio::time::{Duration, sleep};
 
 #[derive(Debug, Error)]
 pub enum AlertError {
@@ -21,6 +22,8 @@ pub trait Notifier {
 pub struct TelegramAlerter {
     bot: Bot,
     chat_id: ChatId,
+    max_retries: u8,
+    retry_delay: Duration,
 }
 
 impl TelegramAlerter {
@@ -28,7 +31,15 @@ impl TelegramAlerter {
         Self {
             bot: Bot::new(bot_token),
             chat_id: ChatId(chat_id),
+            max_retries: 3,
+            retry_delay: Duration::from_millis(500),
         }
+    }
+
+    pub fn with_retry_policy(mut self, max_retries: u8, retry_delay: Duration) -> Self {
+        self.max_retries = max_retries;
+        self.retry_delay = retry_delay;
+        self
     }
 }
 
@@ -43,7 +54,19 @@ impl Notifier for TelegramAlerter {
             incident.evidence
         );
 
-        self.bot.send_message(self.chat_id, message).send().await?;
-        Ok(())
+        let mut attempt: u8 = 0;
+        loop {
+            attempt = attempt.saturating_add(1);
+
+            match self.bot.send_message(self.chat_id, message.clone()).send().await {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    if attempt >= self.max_retries {
+                        return Err(AlertError::Telegram(error));
+                    }
+                    sleep(self.retry_delay).await;
+                }
+            }
+        }
     }
 }

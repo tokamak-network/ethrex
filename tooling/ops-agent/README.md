@@ -20,6 +20,11 @@
 - `OPS_AGENT_SQLITE_PATH` (default: `ops-agent.sqlite`)
 - `OPS_AGENT_POLL_SECONDS` (default: `30`)
 
+## Alert delivery behavior
+Telegram alert sending uses retry-by-default:
+- max retries: `3`
+- retry delay: `500ms`
+
 ## False-positive measurement
 Incidents are stored with nullable `false_positive`.
 - `NULL`: unlabeled
