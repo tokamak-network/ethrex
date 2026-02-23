@@ -51,6 +51,8 @@ pub struct ProofCoordinator {
     #[cfg(feature = "metrics")]
     request_timestamp: Arc<Mutex<HashMap<u64, SystemTime>>>,
     qpl_tool_path: Option<String>,
+    /// Which guest program to assign to batches.
+    guest_program_id: String,
 }
 
 impl ProofCoordinator {
@@ -93,6 +95,7 @@ impl ProofCoordinator {
             #[cfg(feature = "metrics")]
             request_timestamp: Arc::new(Mutex::new(HashMap::new())),
             qpl_tool_path: config.proof_coordinator.qpl_tool_path.clone(),
+            guest_program_id: config.proof_coordinator.guest_program_id.clone(),
         })
     }
 
@@ -225,10 +228,7 @@ impl ProofCoordinator {
             lock.entry(batch_to_prove).or_insert(SystemTime::now());
         );
 
-        // Currently always assigns the default guest program ("evm-l2").
-        // Future: determine_program_for_batch() will look up the
-        // appropriate guest program per batch.
-        let program_id = "evm-l2".to_string();
+        let program_id = self.guest_program_id.clone();
 
         // Check if the prover supports this program.  An empty list means the
         // prover accepts any program (legacy / pre-modularization prover).
