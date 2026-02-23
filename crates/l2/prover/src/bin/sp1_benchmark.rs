@@ -27,21 +27,27 @@
 //! cargo run --release --features sp1 --bin sp1_benchmark -- --program zk-dex --format groth16
 //! ```
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
 use clap::Parser;
+use ethrex_common::types::block_execution_witness::ExecutionWitness;
 use ethrex_common::types::{
-    AccountState, Block, BlockBody, BlockHeader, EIP1559Transaction, Transaction, TxKind,
+    AccountState, Block, BlockBody, BlockHeader, ChainConfig, EIP1559Transaction, Transaction,
+    TxKind,
 };
 use ethrex_common::{Address, H160, H256, U256};
 use ethrex_crypto::keccak::keccak_hash;
 use ethrex_guest_program::{
     programs::tokamon::types::{ActionType, GameAction, TokammonProgramInput},
+    programs::zk_dex::{ZkDexGuestProgram, circuit},
+    traits::GuestProgram,
     ZKVM_SP1_TOKAMON_ELF, ZKVM_SP1_ZK_DEX_ELF,
 };
-use ethrex_rlp::encode::{PayloadRLPEncode as _, RLPEncode as _};
-use ethrex_trie::{Trie, EMPTY_TRIE_HASH};
+use ethrex_rlp::encode::RLPEncode as _;
+use ethrex_trie::{Node, Trie, EMPTY_TRIE_HASH};
 use rkyv::rancor::Error as RkyvError;
 use secp256k1::{Message, SecretKey, SECP256K1};
 #[cfg(not(feature = "gpu"))]
@@ -71,18 +77,191 @@ struct Args {
     execute_only: bool,
 }
 
-/// Generate a deterministic, valid `AppProgramInput` for zk-dex benchmarking.
+/// DEX contract address (must match the guest binary constant).
+const DEX_CONTRACT: Address = H160([0xDE; 20]);
+
+/// Generate a deterministic, valid input for zk-dex benchmarking.
 ///
-/// TODO(Phase 3): Implement mock block + storage proof construction for
-/// `AppProgramInput`. This requires building valid `Block` instances with
-/// token-transfer transactions and matching `StorageProof`/`AccountProof`
-/// entries, which depends on the prover-side input generation pipeline.
-fn generate_zk_dex_input(_transfer_count: u32) -> anyhow::Result<Vec<u8>> {
-    anyhow::bail!(
-        "zk-dex benchmark input generation not yet implemented.\n\
-         The zk-dex guest program now uses AppProgramInput (block-based),\n\
-         which requires mock blocks and storage proofs. See Phase 3."
-    );
+/// Builds a mock `ProgramInput` containing:
+/// - A state trie with sender/receiver accounts and the DEX contract
+/// - Storage tries with token balance slots
+/// - A block with transfer transactions
+///
+/// Then runs it through `ZkDexGuestProgram.serialize_input()` to produce
+/// `AppProgramInput` bytes (exercising the full Phase 3 pipeline).
+#[expect(clippy::indexing_slicing)]
+fn generate_zk_dex_input(transfer_count: u32) -> anyhow::Result<Vec<u8>> {
+    use ethrex_guest_program::l2::ProgramInput;
+
+    let token = H160([0xAA; 20]);
+    let count = usize::try_from(transfer_count).context("transfer count overflow")?;
+
+    // Generate unique sender/receiver pairs.
+    let mut users: Vec<Address> = Vec::with_capacity(count.saturating_mul(2));
+    for i in 0..transfer_count {
+        let bytes = i.to_le_bytes();
+        let mut sender_bytes = [0u8; 20];
+        sender_bytes[0] = 0x10;
+        sender_bytes[16..20].copy_from_slice(&bytes);
+        users.push(Address::from(sender_bytes));
+
+        let mut receiver_bytes = [0u8; 20];
+        receiver_bytes[0] = 0x20;
+        receiver_bytes[16..20].copy_from_slice(&bytes);
+        users.push(Address::from(receiver_bytes));
+    }
+    users.sort();
+    users.dedup();
+
+    // Build storage trie with balance slots for all users.
+    let mut storage_trie = Trie::empty_in_memory();
+    for user in &users {
+        let slot = circuit::balance_storage_slot(token, *user);
+        let hashed_slot = keccak_hash(slot.as_bytes()).to_vec();
+        let balance = U256::from(1_000_000u64);
+        storage_trie
+            .insert(hashed_slot, balance.encode_to_vec())
+            .map_err(|e| anyhow::anyhow!("storage trie insert: {e}"))?;
+    }
+    let storage_root = storage_trie.hash_no_commit();
+    let storage_root_node = storage_trie
+        .root_node()
+        .map_err(|e| anyhow::anyhow!("root_node: {e}"))?
+        .map(Arc::unwrap_or_clone)
+        .unwrap_or_else(|| Node::default());
+
+    // Build state trie with user accounts + DEX contract.
+    let mut state_trie = Trie::empty_in_memory();
+
+    // DEX contract account (with storage).
+    let dex_account = AccountState {
+        nonce: 0,
+        balance: U256::zero(),
+        storage_root,
+        code_hash: H256::zero(),
+    };
+    let dex_path = keccak_hash(DEX_CONTRACT.as_bytes()).to_vec();
+    state_trie
+        .insert(dex_path, dex_account.encode_to_vec())
+        .map_err(|e| anyhow::anyhow!("state trie insert dex: {e}"))?;
+
+    // User accounts (each gets nonce=0, balance=10 ETH for gas).
+    for user in &users {
+        let account = AccountState {
+            nonce: 0,
+            balance: U256::from(10u64) * U256::from(10u64).pow(U256::from(18u64)),
+            storage_root: *EMPTY_TRIE_HASH,
+            code_hash: H256::zero(),
+        };
+        let path = keccak_hash(user.as_bytes()).to_vec();
+        state_trie
+            .insert(path, account.encode_to_vec())
+            .map_err(|e| anyhow::anyhow!("state trie insert user: {e}"))?;
+    }
+    let _state_root = state_trie.hash_no_commit();
+    let state_root_node = state_trie
+        .root_node()
+        .map_err(|e| anyhow::anyhow!("root_node: {e}"))?
+        .map(Arc::unwrap_or_clone)
+        .unwrap_or_else(|| Node::default());
+
+    // Build transactions.
+    let mut transactions = Vec::with_capacity(count);
+    for i in 0..transfer_count {
+        let idx = usize::try_from(i).context("index overflow")?;
+        let sender_idx = idx.saturating_mul(2);
+        let receiver_idx = sender_idx.saturating_add(1);
+
+        // Get sender and receiver (with bounds check).
+        // Sender is needed for storage slot analysis but not used directly in tx construction
+        // (transactions would need proper signatures in a real scenario).
+        let _sender = users
+            .get(sender_idx)
+            .copied()
+            .context("sender index out of bounds")?;
+        let receiver = users
+            .get(receiver_idx)
+            .copied()
+            .context("receiver index out of bounds")?;
+
+        let calldata = circuit::encode_transfer_calldata(receiver, token, U256::from(100u64));
+
+        let tx = Transaction::EIP1559Transaction(EIP1559Transaction {
+            to: TxKind::Call(DEX_CONTRACT),
+            data: bytes::Bytes::from(calldata),
+            nonce: 0,
+            max_fee_per_gas: 1000,
+            max_priority_fee_per_gas: 1,
+            gas_limit: 100_000,
+            chain_id: 42,
+            // NOTE: In a real scenario the signature would be valid.
+            // The benchmark measures cycle count, not signature verification.
+            // For execution-only mode the guest may skip sig verification.
+            ..Default::default()
+        });
+        transactions.push(tx);
+    }
+
+    // Build a mock block containing all transactions.
+    let block = Block {
+        header: BlockHeader {
+            number: 1,
+            base_fee_per_gas: Some(100),
+            gas_limit: u64::try_from(count)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(100_000),
+            ..Default::default()
+        },
+        body: BlockBody {
+            transactions,
+            ..Default::default()
+        },
+    };
+
+    // Parent block header (block 0).
+    let parent_header = BlockHeader {
+        number: 0,
+        ..Default::default()
+    };
+    let parent_header_rlp = parent_header.encode_to_vec();
+
+    // Build ExecutionWitness.
+    let mut storage_trie_roots = BTreeMap::new();
+    storage_trie_roots.insert(DEX_CONTRACT, storage_root_node);
+
+    let witness = ExecutionWitness {
+        state_trie_root: Some(state_root_node),
+        storage_trie_roots,
+        chain_config: ChainConfig {
+            chain_id: 42,
+            ..Default::default()
+        },
+        first_block_number: 1,
+        block_headers_bytes: vec![parent_header_rlp],
+        ..Default::default()
+    };
+
+    // Build ProgramInput.
+    let program_input = ProgramInput {
+        blocks: vec![block],
+        execution_witness: witness,
+        elasticity_multiplier: 2,
+        fee_configs: vec![],
+        blob_commitment: [0u8; 48],
+        blob_proof: [0u8; 48],
+    };
+
+    // Serialize ProgramInput via rkyv.
+    let raw_bytes = rkyv::to_bytes::<RkyvError>(&program_input)
+        .map_err(|e| anyhow::anyhow!("rkyv serialize ProgramInput: {e}"))?;
+
+    // Run through ZkDexGuestProgram.serialize_input() to convert to AppProgramInput.
+    let gp = ZkDexGuestProgram;
+    let app_input_bytes = gp
+        .serialize_input(&raw_bytes)
+        .map_err(|e| anyhow::anyhow!("serialize_input: {e}"))?;
+
+    Ok(app_input_bytes)
 }
 
 /// Generate a deterministic, valid `TokammonProgramInput`.

@@ -24,7 +24,7 @@ const DEX_CONTRACT_ADDRESS: ethrex_common::Address = ethrex_common::H160([0xDE; 
 /// `AppProgramInput` (Merkle proofs only), so the coordinator/protocol
 /// does not need changes.
 ///
-/// [`encode_output`](GuestProgram::encode_output) is also a pass-through;
+/// [`encode_output`](GuestProgram::encode_output) is a pass-through;
 /// the guest binary calls [`ProgramOutput::encode`] internally.
 ///
 /// [`AppProgramInput`]: crate::common::app_types::AppProgramInput
@@ -64,7 +64,28 @@ impl GuestProgram for ZkDexGuestProgram {
     }
 
     fn serialize_input(&self, raw_input: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
-        Ok(raw_input.to_vec())
+        use crate::common::input_converter::convert_to_app_input;
+        use crate::l2::ProgramInput;
+        use rkyv::rancor::Error as RkyvError;
+
+        // 1. Deserialize ProgramInput from rkyv.
+        let program_input: ProgramInput =
+            rkyv::from_bytes::<ProgramInput, RkyvError>(raw_input)
+                .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
+
+        // 2. Determine needed accounts and storage slots from transactions.
+        let (accounts, storage_slots) =
+            analyze_zk_dex_transactions(&program_input.blocks, DEX_CONTRACT_ADDRESS)
+                .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
+
+        // 3. Convert to AppProgramInput.
+        let app_input = convert_to_app_input(program_input, &accounts, &storage_slots)
+            .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
+
+        // 4. Re-serialize as AppProgramInput via rkyv.
+        let bytes = rkyv::to_bytes::<RkyvError>(&app_input)
+            .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
+        Ok(bytes.to_vec())
     }
 
     fn encode_output(&self, raw_output: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
@@ -225,6 +246,9 @@ mod tests {
         let gp = ZkDexGuestProgram;
         // Arbitrary bytes are not valid rkyv ProgramInput, so we expect an error.
         let data = b"test data";
-        assert_eq!(gp.serialize_input(data).unwrap(), data);
+        assert!(
+            gp.serialize_input(data).is_err(),
+            "serialize_input should reject arbitrary bytes"
+        );
     }
 }
