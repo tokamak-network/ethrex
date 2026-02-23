@@ -62,6 +62,11 @@ tempfile.workspace = true
 name = "ethrex_prover_lib"
 path = "src/lib.rs"
 
+[[bin]]
+name = "sp1_benchmark"
+path = "src/bin/sp1_benchmark.rs"
+required-features = ["sp1"]
+
 [features]
 # TODO(#2662) Prover shouldn't have l2 as a default but cargo complains about missing field in struct
 default = ["l2"]
