@@ -195,6 +195,7 @@ fn report_file_appends_across_multiple_json_failures() {
     let new_path = unique_test_path("new-report-append");
     let report_path = unique_test_path("report-append").join("migration.jsonl");
 
+    let mut stdout_lines = Vec::new();
     for _ in 0..2 {
         let output = Command::new(bin)
             .args([
@@ -213,6 +214,8 @@ fn report_file_appends_across_multiple_json_failures() {
             .expect("failed to execute migrations binary");
 
         assert!(!output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+        stdout_lines.push(stdout.trim().to_owned());
     }
 
     let report_content =
@@ -224,7 +227,12 @@ fn report_file_appends_across_multiple_json_failures() {
         "report file should append one json line per run"
     );
 
-    for line in lines {
+    for (idx, line) in lines.iter().enumerate() {
+        assert_eq!(
+            stdout_lines[idx], *line,
+            "stdout json and report-file json line should match for each run"
+        );
+
         let payload: serde_json::Value =
             serde_json::from_str(line).expect("report line should be valid json");
         assert_eq!(payload["schema_version"], 1);
