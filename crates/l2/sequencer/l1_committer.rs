@@ -638,18 +638,32 @@ impl L1Committer {
             verify_tx: None,
         };
 
-        info!(
-            first_block = batch.first_block,
-            last_block = batch.last_block,
-            "Generating and storing witness for batch {}",
-            batch.number,
-        );
+        if batch.is_empty_batch() {
+            info!(
+                first_block = batch.first_block,
+                last_block = batch.last_block,
+                "Empty batch {} — skipping witness generation (no ZK proof needed)",
+                batch.number,
+            );
+            self.rollup_store.seal_batch(batch.clone()).await?;
+        } else {
+            info!(
+                first_block = batch.first_block,
+                last_block = batch.last_block,
+                "Generating and storing witness for batch {}",
+                batch.number,
+            );
 
-        let batch_prover_input = self.generate_batch_prover_input(&batch).await?;
+            let batch_prover_input = self.generate_batch_prover_input(&batch).await?;
 
-        self.rollup_store
-            .seal_batch_with_prover_input(batch.clone(), &self.git_commit_hash, batch_prover_input)
-            .await?;
+            self.rollup_store
+                .seal_batch_with_prover_input(
+                    batch.clone(),
+                    &self.git_commit_hash,
+                    batch_prover_input,
+                )
+                .await?;
+        }
 
         // Create the next checkpoint from the one-time checkpoint used
         let new_checkpoint_path = self
@@ -756,12 +770,30 @@ impl L1Committer {
             // space, and need no receipt/message processing. We skip all heavy
             // processing and just track the block number and state root.
             if potential_batch_block.body.transactions.is_empty() {
-                new_state_root = checkpoint_store
-                    .state_trie(potential_batch_block.hash())?
+                // Empty blocks don't change state — use the block header's
+                // state_root directly (which equals the parent's state_root).
+                new_state_root = potential_batch_block.header.state_root;
+
+                // Still register the block in the checkpoint store so that
+                // forkchoice_update (called at the end of batch assembly) can
+                // find it. We pass empty account updates since no state changed.
+                let account_updates_list = checkpoint_store
+                    .apply_account_updates_batch(
+                        potential_batch_block.header.parent_hash,
+                        &[], // no account updates for empty blocks
+                    )?
                     .ok_or(CommitterError::FailedToGetInformationFromStorage(
-                        "Failed to get state root from storage".to_owned(),
-                    ))?
-                    .hash_no_commit();
+                        "Failed to apply empty account updates for empty block".to_owned(),
+                    ))?;
+                checkpoint_blockchain.store_block(
+                    potential_batch_block.clone(),
+                    account_updates_list,
+                    BlockExecutionResult {
+                        receipts: vec![],
+                        requests: vec![],
+                        block_gas_used: 0,
+                    },
+                )?;
 
                 last_added_block_number += 1;
                 acc_blocks.push((last_added_block_number, potential_batch_block.hash()));
@@ -1402,7 +1434,7 @@ impl L1Committer {
                 .ok_or(CommitterError::UnexpectedError("no commit tx receipt".to_string()))?;
             let commit_gas_used = commit_tx_receipt.tx_info.gas_used.try_into()?;
             METRICS.set_batch_commitment_gas(batch.number, commit_gas_used)?;
-            if !self.validium {
+            if !self.validium && !is_empty_batch {
                 let blob_gas_used = commit_tx_receipt.tx_info.blob_gas_used
                     .ok_or(CommitterError::UnexpectedError("no blob in rollup mode".to_string()))?
                     .try_into()?;
