@@ -446,7 +446,7 @@ contract OnChainProposer is
         bytes memory tdxSignature,
         // Custom program public values (only needed for programTypeId > 1)
         bytes memory customPublicValues
-    ) external override onlyOwner whenNotPaused {
+    ) external override whenNotPaused {
         require(
             !ALIGNED_MODE,
             "008" // Batch verification should be done via Aligned Layer. Call verifyBatchesAligned() instead.
