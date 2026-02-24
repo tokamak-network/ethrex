@@ -175,6 +175,96 @@ fn report_file_captures_json_failure_output() {
 }
 
 #[test]
+fn report_file_appends_across_multiple_json_failures() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-report-append");
+    let new_path = unique_test_path("new-report-append");
+    let report_path = unique_test_path("report-append").join("migration.jsonl");
+
+    for _ in 0..2 {
+        let output = Command::new(bin)
+            .args([
+                "libmdbx2rocksdb",
+                "--genesis",
+                "./does-not-exist-genesis.json",
+                "--store.old",
+                old_path.to_string_lossy().as_ref(),
+                "--store.new",
+                new_path.to_string_lossy().as_ref(),
+                "--json",
+                "--report-file",
+                report_path.to_string_lossy().as_ref(),
+            ])
+            .output()
+            .expect("failed to execute migrations binary");
+
+        assert!(!output.status.success());
+    }
+
+    let report_content =
+        fs::read_to_string(&report_path).expect("report file should be created and readable");
+    let lines: Vec<&str> = report_content.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "report file should append one json line per run"
+    );
+
+    for line in lines {
+        let payload: serde_json::Value =
+            serde_json::from_str(line).expect("report line should be valid json");
+        assert_eq!(payload["status"], "failed");
+    }
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
+    if let Some(parent) = report_path.parent() {
+        let _ = fs::remove_dir_all(parent);
+    }
+}
+
+#[test]
+fn report_file_appends_across_multiple_human_failures() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-report-append-human");
+    let new_path = unique_test_path("new-report-append-human");
+    let report_path = unique_test_path("report-append-human").join("migration.log");
+
+    for _ in 0..2 {
+        let output = Command::new(bin)
+            .args([
+                "libmdbx2rocksdb",
+                "--genesis",
+                "./does-not-exist-genesis.json",
+                "--store.old",
+                old_path.to_string_lossy().as_ref(),
+                "--store.new",
+                new_path.to_string_lossy().as_ref(),
+                "--report-file",
+                report_path.to_string_lossy().as_ref(),
+            ])
+            .output()
+            .expect("failed to execute migrations binary");
+
+        assert!(!output.status.success());
+    }
+
+    let report_content =
+        fs::read_to_string(&report_path).expect("report file should be created and readable");
+    let count = report_content.matches("Migration failed after").count();
+    assert_eq!(
+        count, 2,
+        "report file should append one failure line per run"
+    );
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
+    if let Some(parent) = report_path.parent() {
+        let _ = fs::remove_dir_all(parent);
+    }
+}
+
+#[test]
 fn report_file_captures_human_failure_output() {
     let bin = env!("CARGO_BIN_EXE_migrations");
     let old_path = unique_test_path("old-report-human");
