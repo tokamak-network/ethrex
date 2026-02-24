@@ -3,7 +3,8 @@
 	init-metrics down-metrics restart-metrics down-l2 restart-l2 rm-db-l2 \
 	init-prover-sp1 init-prover-risc0 init-prover-exec build-prover clean-tee clean-tee-contract-deps \
 	test integration-test integration-test-gpu state-diff-test \
-	init-guest-program down-guest-program
+	init-guest-program down-guest-program \
+	zk-dex-localnet zk-dex-localnet-no-prover zk-dex-localnet-stop zk-dex-localnet-status
 
 .DEFAULT_GOAL := help
 
@@ -267,6 +268,18 @@ init-prover-sp1-zk-dex: ## 🔐 Starts SP1 prover with ZK-DEX program
 	--proof-coordinators tcp://127.0.0.1:3900 \
 	--backend sp1 \
 	--programs-config programs-zk-dex.toml
+
+zk-dex-localnet: ## 🚀 Start ZK-DEX localnet (L1 + deploy + L2 + prover)
+	./scripts/zk-dex-localnet.sh start
+
+zk-dex-localnet-no-prover: ## 🚀 Start ZK-DEX localnet without prover
+	./scripts/zk-dex-localnet.sh start --no-prover
+
+zk-dex-localnet-stop: ## 🛑 Stop ZK-DEX localnet
+	./scripts/zk-dex-localnet.sh stop
+
+zk-dex-localnet-status: ## 📊 Show ZK-DEX localnet status
+	./scripts/zk-dex-localnet.sh status
 
 # ==============================================================================
 # Guest Programs
