@@ -141,7 +141,7 @@ do_start() {
     # Step 3: Wait for L1
     log_step 3 "Waiting for L1"
 
-    if ! wait_for_rpc "$L1_RPC_URL" "L1" 30; then
+    if ! wait_for_rpc "$L1_RPC_URL" "L1" 300; then
         cleanup
         exit 1
     fi
@@ -207,7 +207,7 @@ do_start() {
     # Step 6: Wait for L2
     log_step 6 "Waiting for L2"
 
-    if ! wait_for_rpc "http://localhost:$L2_PORT" "L2" 60; then
+    if ! wait_for_rpc "http://localhost:$L2_PORT" "L2" 600; then
         cleanup
         exit 1
     fi
@@ -237,23 +237,23 @@ do_start() {
     local sp1_verifier="${ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS:-N/A}"
     local timelock="${ETHREX_TIMELOCK_ADDRESS:-N/A}"
 
-    echo ""
-    echo "========================================"
-    echo "  ZK-DEX Localnet is running!"
-    echo "========================================"
-    echo "  L1 RPC:     http://localhost:$L1_PORT"
-    echo "  L2 RPC:     http://localhost:$L2_PORT"
-    echo "  Prover:     $prover_status"
-    echo ""
-    echo "  Contract Addresses:"
-    echo "    OnChainProposer: $on_chain_proposer"
-    echo "    Bridge:          $bridge"
-    echo "    SP1 Verifier:    $sp1_verifier"
-    echo "    Timelock:        $timelock"
-    echo ""
-    echo "  Logs:   $RUNDIR/*.log"
-    echo "  Stop:   ./scripts/zk-dex-localnet.sh stop"
-    echo "========================================"
+    printf '\n'
+    printf '========================================\n'
+    printf '  ZK-DEX Localnet is running!\n'
+    printf '========================================\n'
+    printf '  L1 RPC:     http://localhost:%s\n' "$L1_PORT"
+    printf '  L2 RPC:     http://localhost:%s\n' "$L2_PORT"
+    printf '  Prover:     %s\n' "$prover_status"
+    printf '\n'
+    printf '  Contract Addresses:\n'
+    printf '    OnChainProposer: %s\n' "$on_chain_proposer"
+    printf '    Bridge:          %s\n' "$bridge"
+    printf '    SP1 Verifier:    %s\n' "$sp1_verifier"
+    printf '    Timelock:        %s\n' "$timelock"
+    printf '\n'
+    printf '  Logs:   %s/*.log\n' "$RUNDIR"
+    printf '  Stop:   ./scripts/zk-dex-localnet.sh stop\n'
+    printf '========================================\n'
 }
 
 do_stop() {
