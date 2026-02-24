@@ -206,6 +206,41 @@ impl L1ProofSender {
             return Ok(());
         }
 
+        // ── Empty batch auto-verification ──
+        // Empty batches (0 non-privileged transactions) can be verified by the
+        // L1 contract without a ZK proof. Send verifyBatch with empty proof
+        // bytes and let the contract's _isEmptyBatch() check handle it.
+        // If the contract rejects (batch isn't actually empty), we fall through
+        // to the normal proof-waiting path on the next iteration.
+        let non_priv_count = self
+            .rollup_store
+            .get_non_privileged_transactions_by_batch(batch_to_send)
+            .await?;
+        if non_priv_count == Some(0) {
+            info!(
+                batch_number = batch_to_send,
+                "Empty batch detected, sending proof-free verification to L1"
+            );
+            match self
+                .send_proof_to_contract(batch_to_send, HashMap::new())
+                .await
+            {
+                Ok(()) => {
+                    self.rollup_store
+                        .set_latest_sent_batch_proof(batch_to_send)
+                        .await?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(
+                        batch_number = batch_to_send,
+                        "Empty batch auto-verification failed, will wait for proof: {e}"
+                    );
+                    // Fall through to normal proof-waiting path
+                }
+            }
+        }
+
         let mut proofs = HashMap::new();
         let mut missing_proof_types = Vec::new();
         for proof_type in &self.needed_proof_types {

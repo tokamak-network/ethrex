@@ -751,6 +751,23 @@ impl L1Committer {
                 Block::new(block_to_commit_header, block_to_commit_body)
             };
 
+            // ── Empty block fast-forward ──
+            // Empty blocks (0 transactions) don't change state, consume no blob
+            // space, and need no receipt/message processing. We skip all heavy
+            // processing and just track the block number and state root.
+            if potential_batch_block.body.transactions.is_empty() {
+                new_state_root = checkpoint_store
+                    .state_trie(potential_batch_block.hash())?
+                    .ok_or(CommitterError::FailedToGetInformationFromStorage(
+                        "Failed to get state root from storage".to_owned(),
+                    ))?
+                    .hash_no_commit();
+
+                last_added_block_number += 1;
+                acc_blocks.push((last_added_block_number, potential_batch_block.hash()));
+                continue;
+            }
+
             let current_block_gas_used = potential_batch_block.header.gas_used;
 
             // Check if adding this block would exceed the batch gas limit
@@ -958,20 +975,6 @@ impl L1Committer {
             return Ok(None);
         }
 
-        // Skip empty batches — no state change means no L1 commit needed.
-        // The first batch (batch 1) is always committed to establish the initial state root on L1.
-        // Skipped blocks are not lost: the next cycle retries with the same batch number,
-        // so empty blocks accumulate until a batch with real transactions is produced.
-        if batch_number > 1
-            && acc_non_privileged_transactions == 0
-            && l1_in_message_hashes.is_empty()
-            && l2_in_message_hashes.is_empty()
-        {
-            debug!(
-                "Batch {batch_number} contains only empty blocks (no transactions), skipping commit"
-            );
-            return Ok(None);
-        }
 
         metrics!(if let (Ok(privileged_transaction_count), Ok(messages_count)) = (
                 l1_in_message_hashes.len().try_into(),
@@ -1328,9 +1331,14 @@ impl L1Committer {
             self.on_chain_proposer_address
         };
 
+        // Determine if this is an empty batch (no transactions, no messages).
+        // Empty batches don't need blob data availability.
+        let is_empty_batch = batch.is_empty_batch();
+
         // Validium: EIP1559 Transaction.
         // Rollup: EIP4844 Transaction -> For on-chain Data Availability.
-        let tx = if !self.validium {
+        // Empty batches: EIP1559 Transaction (no blob needed).
+        let tx = if !self.validium && !is_empty_batch {
             info!("L2 is in rollup mode, sending EIP-4844 (including blob) tx to commit block");
             let le_bytes = estimate_blob_gas(
                 &self.eth_client,
@@ -1361,7 +1369,11 @@ impl L1Committer {
             .await
             .map_err(CommitterError::from)?
         } else {
-            info!("L2 is in validium mode, sending EIP-1559 (no blob) tx to commit block");
+            if is_empty_batch {
+                info!("Empty batch detected, sending EIP-1559 (no blob) tx to commit block");
+            } else {
+                info!("L2 is in validium mode, sending EIP-1559 (no blob) tx to commit block");
+            }
             build_generic_tx(
                 &self.eth_client,
                 TxType::EIP1559,
