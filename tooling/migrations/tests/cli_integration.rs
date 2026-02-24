@@ -129,3 +129,82 @@ fn clap_validation_failure_reports_retry_base_delay_error() {
         "retry-base-delay-ms",
     );
 }
+
+#[test]
+fn report_file_captures_json_failure_output() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-report-json");
+    let new_path = unique_test_path("new-report-json");
+    let report_path = unique_test_path("report-json").join("migration.jsonl");
+
+    let output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--json",
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary");
+
+    assert!(!output.status.success());
+
+    let report_content =
+        fs::read_to_string(&report_path).expect("report file should be created and readable");
+    let line = report_content
+        .lines()
+        .next()
+        .expect("report file should contain one line");
+    let payload: serde_json::Value =
+        serde_json::from_str(line).expect("report line should be valid json");
+
+    assert_eq!(payload["status"], "failed");
+    assert!(payload.get("retryable").is_some());
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
+    if let Some(parent) = report_path.parent() {
+        let _ = fs::remove_dir_all(parent);
+    }
+}
+
+#[test]
+fn report_file_captures_human_failure_output() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-report-human");
+    let new_path = unique_test_path("new-report-human");
+    let report_path = unique_test_path("report-human").join("migration.log");
+
+    let output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary");
+
+    assert!(!output.status.success());
+
+    let report_content =
+        fs::read_to_string(&report_path).expect("report file should be created and readable");
+    assert!(report_content.contains("Migration failed after"));
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
+    if let Some(parent) = report_path.parent() {
+        let _ = fs::remove_dir_all(parent);
+    }
+}
