@@ -373,6 +373,14 @@ fn read_resume_block_from_checkpoint(path: &Path) -> Result<u64> {
         ));
     }
 
+    if checkpoint.target_head > checkpoint.source_head {
+        return Err(eyre::eyre!(
+            "Invalid checkpoint in {path:?}: target_head ({}) cannot exceed source_head ({})",
+            checkpoint.target_head,
+            checkpoint.source_head
+        ));
+    }
+
     checkpoint
         .target_head
         .checked_add(1)
@@ -1137,6 +1145,36 @@ mod tests {
         let error =
             read_resume_block_from_checkpoint(&checkpoint_path).expect_err("overflow should fail");
         assert!(error.to_string().contains("target_head overflow"));
+
+        if let Some(parent) = checkpoint_path.parent() {
+            let root = parent.parent().unwrap_or(parent);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn read_resume_block_from_checkpoint_rejects_target_above_source() {
+        let checkpoint_path =
+            unique_test_path("checkpoint-read-target-above-source").join("state/checkpoint.json");
+        let checkpoint = json!({
+            "schema_version": 1,
+            "source_head": 50,
+            "target_head": 51,
+            "imported_blocks": 51,
+            "skipped_blocks": 0,
+            "retry_attempts": 3,
+            "retries_performed": 1,
+            "elapsed_ms": 44
+        });
+
+        if let Some(parent) = checkpoint_path.parent() {
+            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
+        }
+        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
+
+        let error = read_resume_block_from_checkpoint(&checkpoint_path)
+            .expect_err("target_head above source_head should fail");
+        assert!(error.to_string().contains("cannot exceed source_head"));
 
         if let Some(parent) = checkpoint_path.parent() {
             let root = parent.parent().unwrap_or(parent);
