@@ -73,9 +73,16 @@ impl GuestProgram for ZkDexGuestProgram {
             rkyv::from_bytes::<ProgramInput, RkyvError>(raw_input)
                 .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
 
-        // 2. Determine needed accounts and storage slots from transactions.
-        let (accounts, storage_slots) =
-            analyze_zk_dex_transactions(&program_input.blocks, DEX_CONTRACT_ADDRESS)
+            // 2. Determine needed accounts and storage slots from transactions.
+            let (accounts, storage_slots) = analyze_zk_dex_transactions(
+                &program_input.blocks,
+                DEX_CONTRACT_ADDRESS,
+                &program_input.fee_configs,
+            )
+            .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
+
+            // 3. Convert to AppProgramInput.
+            let app_input = convert_to_app_input(program_input, &accounts, &storage_slots)
                 .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
 
         // 3. Convert to AppProgramInput.
@@ -118,6 +125,7 @@ impl GuestProgram for ZkDexGuestProgram {
 fn analyze_zk_dex_transactions(
     blocks: &[ethrex_common::types::Block],
     dex_contract: ethrex_common::Address,
+    fee_configs: &[ethrex_common::types::l2::fee_config::FeeConfig],
 ) -> Result<
     (
         Vec<ethrex_common::Address>,
@@ -129,9 +137,10 @@ fn analyze_zk_dex_transactions(
 
     use ethrex_common::types::TxKind;
 
-    use crate::common::app_execution::{
-        COMMON_BRIDGE_L2_ADDRESS, FEE_TOKEN_RATIO_ADDRESS, FEE_TOKEN_REGISTRY_ADDRESS,
-        L2_TO_L1_MESSENGER_ADDRESS,
+    use crate::common::handlers::constants::{
+        BURN_ADDRESS, COMMON_BRIDGE_L2_ADDRESS, FEE_TOKEN_RATIO_ADDRESS,
+        FEE_TOKEN_REGISTRY_ADDRESS, L2_TO_L1_MESSENGER_ADDRESS,
+        MESSENGER_LAST_MESSAGE_ID_SLOT,
     };
 
     let mut accounts: BTreeSet<ethrex_common::Address> = BTreeSet::new();
@@ -147,6 +156,15 @@ fn analyze_zk_dex_transactions(
             if tx.is_privileged() {
                 if let TxKind::Call(to) = tx.to() {
                     accounts.insert(to);
+                    // Parse the actual deposit recipient from calldata:
+                    //   data[0..4]  = function selector
+                    //   data[16..36] = recipient address (ABI-encoded)
+                    let data = tx.data();
+                    if to == COMMON_BRIDGE_L2_ADDRESS && data.len() >= 36 {
+                        let recipient =
+                            ethrex_common::Address::from_slice(&data[16..36]);
+                        accounts.insert(recipient);
+                    }
                 }
                 continue;
             }
@@ -197,6 +215,27 @@ fn analyze_zk_dex_transactions(
                     }
                 }
             }
+        }
+    }
+
+    // ── Withdrawal-required accounts/storage ──
+    // The withdrawal handler credits BURN_ADDRESS and updates
+    // L2_TO_L1_MESSENGER_ADDRESS.lastMessageId (slot 0).
+    accounts.insert(BURN_ADDRESS);
+    accounts.insert(L2_TO_L1_MESSENGER_ADDRESS);
+    storage_slots.insert((L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT));
+
+    // ── Gas fee distribution accounts ──
+    // coinbase receives priority fees; fee vaults receive base/operator fees.
+    for block in blocks {
+        accounts.insert(block.header.coinbase);
+    }
+    for fc in fee_configs {
+        if let Some(vault) = fc.base_fee_vault {
+            accounts.insert(vault);
+        }
+        if let Some(op) = fc.operator_fee_config {
+            accounts.insert(op.operator_fee_vault);
         }
     }
 
