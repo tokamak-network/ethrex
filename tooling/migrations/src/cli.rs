@@ -687,7 +687,7 @@ mod tests {
 
     use super::{
         CLI, DEFAULT_RETRY_BASE_DELAY_MS, MAX_RETRY_ATTEMPTS, MigrationErrorReport, MigrationPlan,
-        MigrationReport, REPORT_SCHEMA_VERSION, RetryFailure, Subcommand,
+        MigrationReport, REPORT_SCHEMA_VERSION, RetryFailure, Subcommand, append_report_line,
         build_migration_error_report, build_migration_plan, classify_error_from_message,
         classify_error_from_report, classify_io_error_kind, compute_backoff_delay,
         emit_error_report, emit_report, retry_async, retry_sync,
@@ -823,6 +823,29 @@ mod tests {
         if let Some(parent) = report_path.parent() {
             let _ = fs::remove_dir_all(parent);
         }
+    }
+
+    #[test]
+    fn append_report_line_creates_parent_dirs_and_appends() {
+        let report_path = unique_test_path("append-lines").join("nested/reports/output.log");
+
+        append_report_line(Some(&report_path), "first line").expect("first write should succeed");
+        append_report_line(Some(&report_path), "second line").expect("second write should succeed");
+
+        let file_content =
+            fs::read_to_string(&report_path).expect("report file should be readable");
+        let lines: Vec<&str> = file_content.lines().collect();
+        assert_eq!(lines, vec!["first line", "second line"]);
+
+        if let Some(parent) = report_path.parent() {
+            let root = parent.parent().and_then(|p| p.parent()).unwrap_or(parent);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn append_report_line_is_noop_without_file_path() {
+        append_report_line(None, "ignored line").expect("none path should be no-op success");
     }
 
     #[test]

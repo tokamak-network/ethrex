@@ -74,6 +74,7 @@ Retry handling is applied during source LibMDBX store open, source state reads, 
 `--json` prints a structured migration report (`status`, `phase`, source/target heads, plan, dry-run flag, imported blocks, elapsed runtime) suitable for scripting and CI logs.
 When execution fails with `--json`, the CLI emits a structured failure object including `error_type` and `retryable` for automation parsing.
 `--report-file` appends emitted reports to a file (JSONL in `--json` mode; human-readable lines otherwise), including failure reports.
+Parent directories are created automatically when needed, and each emitted report is written as a single appended line.
 
 ## JSON output contract (stable)
 
