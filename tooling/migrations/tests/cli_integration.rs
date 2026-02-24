@@ -418,6 +418,70 @@ fn report_file_appends_across_multiple_human_failures() {
 }
 
 #[test]
+fn report_file_preserves_append_order_across_json_then_human_runs() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-report-mixed");
+    let new_path = unique_test_path("new-report-mixed");
+    let report_path = unique_test_path("report-mixed").join("migration.log");
+
+    let json_output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--json",
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary (json run)");
+    assert!(!json_output.status.success());
+
+    let human_output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary (human run)");
+    assert!(!human_output.status.success());
+
+    let report_content =
+        fs::read_to_string(&report_path).expect("report file should be created and readable");
+    let lines: Vec<&str> = report_content.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "report file should contain two appended lines"
+    );
+
+    let first_payload: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("first line should be valid json from --json run");
+    assert_eq!(first_payload["status"], "failed");
+    assert!(
+        lines[1].contains("Migration failed after"),
+        "second line should be human-readable failure output"
+    );
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
+    if let Some(parent) = report_path.parent() {
+        let _ = fs::remove_dir_all(parent);
+    }
+}
+
+#[test]
 fn report_file_captures_human_failure_output() {
     let bin = env!("CARGO_BIN_EXE_migrations");
     let old_path = unique_test_path("old-report-human");
