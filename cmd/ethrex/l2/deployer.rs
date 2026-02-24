@@ -1612,6 +1612,9 @@ async fn initialize_contracts(
         tx_hashes.push(register_tx_hash);
 
         // 2. Register VK for this program if SP1 is enabled.
+        // OnChainProposer.upgradeVerificationKey() is onlyOwner (owner = Timelock).
+        // We call Timelock.upgradeVerificationKey() which forwards to OnChainProposer.
+        // Requires SECURITY_COUNCIL role (= bridge_owner / on_chain_proposer_owner).
         if opts.sp1 {
             let vk = get_vk_for_program(program_id, opts)?;
             if vk.is_empty() {
@@ -1619,15 +1622,23 @@ async fn initialize_contracts(
                 continue;
             }
 
-            let vk_nonce = eth_client
-                .get_nonce(
-                    deployer_address,
-                    BlockIdentifier::Tag(BlockTag::Pending),
-                )
-                .await?;
+            let timelock_address = contract_addresses.timelock_address.ok_or(
+                DeployerError::InternalError(
+                    "Timelock address required for VK registration".to_string(),
+                ),
+            )?;
+
+            let security_council_pk = opts.bridge_owner_pk.ok_or(
+                DeployerError::ConfigValueNotSet(
+                    "--bridge-owner-pk (needed as security council for VK registration)"
+                        .to_string(),
+                ),
+            )?;
+            let security_council_signer: Signer =
+                LocalSigner::new(security_council_pk).into();
 
             const SP1_VERIFIER_ID: u8 = 1;
-            let upgrade_vk_calldata = encode_calldata(
+            let vk_calldata = encode_calldata(
                 UPGRADE_VERIFICATION_KEY_SIGNATURE,
                 &[
                     Value::FixedBytes(commit_hash.0.to_vec().into()),
@@ -1636,14 +1647,21 @@ async fn initialize_contracts(
                     Value::FixedBytes(vk.to_vec().into()),
                 ],
             )?;
-            let upgrade_vk_tx = build_generic_tx(
+
+            let sc_nonce = eth_client
+                .get_nonce(
+                    security_council_signer.address(),
+                    BlockIdentifier::Tag(BlockTag::Pending),
+                )
+                .await?;
+            let vk_tx = build_generic_tx(
                 eth_client,
                 TxType::EIP1559,
-                contract_addresses.on_chain_proposer_address,
-                deployer_address,
-                upgrade_vk_calldata.into(),
+                timelock_address,
+                security_council_signer.address(),
+                vk_calldata.into(),
                 Overrides {
-                    nonce: Some(vk_nonce),
+                    nonce: Some(sc_nonce),
                     gas_limit: Some(TRANSACTION_GAS_LIMIT),
                     max_fee_per_gas: Some(gas_price),
                     max_priority_fee_per_gas: Some(gas_price),
@@ -1651,13 +1669,17 @@ async fn initialize_contracts(
                 },
             )
             .await?;
-            let vk_tx_hash =
-                send_generic_transaction(eth_client, upgrade_vk_tx, initializer).await?;
+            let vk_tx_hash = send_generic_transaction(
+                eth_client,
+                vk_tx,
+                &security_council_signer,
+            )
+            .await?;
             info!(
                 tx_hash = %format!("{vk_tx_hash:#x}"),
                 program_id,
                 program_type_id,
-                "SP1 verification key registered for guest program"
+                "SP1 verification key registered via Timelock"
             );
             tx_hashes.push(vk_tx_hash);
         }
