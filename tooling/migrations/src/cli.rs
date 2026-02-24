@@ -266,6 +266,10 @@ struct MigrationErrorReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MigrationCheckpoint {
     schema_version: u32,
+    #[serde(default)]
+    genesis_path: Option<String>,
+    #[serde(default)]
+    source_store_path: Option<String>,
     source_head: u64,
     target_head: u64,
     imported_blocks: u64,
@@ -359,7 +363,11 @@ fn append_report_line(report_file: Option<&Path>, line: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_resume_block_from_checkpoint(path: &Path) -> Result<u64> {
+fn read_resume_block_from_checkpoint(
+    path: &Path,
+    expected_genesis_path: &Path,
+    expected_source_store_path: &Path,
+) -> Result<u64> {
     let content = fs::read_to_string(path)
         .wrap_err_with(|| format!("Cannot read checkpoint file {path:?}"))?;
     let checkpoint: MigrationCheckpoint = serde_json::from_str(&content)
@@ -370,6 +378,28 @@ fn read_resume_block_from_checkpoint(path: &Path) -> Result<u64> {
             "Unsupported checkpoint schema_version={} in {path:?}; expected {}",
             checkpoint.schema_version,
             REPORT_SCHEMA_VERSION
+        ));
+    }
+
+    let expected_genesis = expected_genesis_path.to_string_lossy();
+    let expected_source = expected_source_store_path.to_string_lossy();
+    if let Some(checkpoint_genesis) = checkpoint.genesis_path.as_deref()
+        && checkpoint_genesis != expected_genesis
+    {
+        return Err(eyre::eyre!(
+            "Checkpoint genesis_path mismatch in {path:?}: expected {:?}, got {:?}",
+            expected_genesis,
+            checkpoint_genesis
+        ));
+    }
+
+    if let Some(checkpoint_source) = checkpoint.source_store_path.as_deref()
+        && checkpoint_source != expected_source
+    {
+        return Err(eyre::eyre!(
+            "Checkpoint source_store_path mismatch in {path:?}: expected {:?}, got {:?}",
+            expected_source,
+            checkpoint_source
         ));
     }
 
@@ -387,7 +417,12 @@ fn read_resume_block_from_checkpoint(path: &Path) -> Result<u64> {
         .ok_or_else(|| eyre::eyre!("Invalid checkpoint target_head overflow in {path:?}"))
 }
 
-fn write_checkpoint_file(path: Option<&Path>, report: &MigrationReport) -> Result<()> {
+fn write_checkpoint_file(
+    path: Option<&Path>,
+    report: &MigrationReport,
+    genesis_path: &Path,
+    source_store_path: &Path,
+) -> Result<()> {
     let Some(path) = path else {
         return Ok(());
     };
@@ -401,6 +436,8 @@ fn write_checkpoint_file(path: Option<&Path>, report: &MigrationReport) -> Resul
 
     let checkpoint = MigrationCheckpoint {
         schema_version: REPORT_SCHEMA_VERSION,
+        genesis_path: Some(genesis_path.to_string_lossy().to_string()),
+        source_store_path: Some(source_store_path.to_string_lossy().to_string()),
         source_head: report.source_head,
         target_head: report.target_head,
         imported_blocks: report.imported_blocks,
@@ -613,7 +650,11 @@ async fn migrate_libmdbx_to_rocksdb(
 
     let resume_override = match (resume_from_block, resume_from_checkpoint) {
         (Some(block), None) => Some(block),
-        (None, Some(path)) => Some(read_resume_block_from_checkpoint(path)?),
+        (None, Some(path)) => Some(read_resume_block_from_checkpoint(
+            path,
+            genesis_path,
+            old_storage_path,
+        )?),
         (None, None) => None,
         (Some(_), Some(_)) => unreachable!("clap conflict validation should prevent this"),
     };
@@ -810,7 +851,7 @@ async fn migrate_libmdbx_to_rocksdb(
         retries_performed,
     };
     emit_report(&report, json, report_file)?;
-    write_checkpoint_file(checkpoint_file, &report)?;
+    write_checkpoint_file(checkpoint_file, &report, genesis_path, old_storage_path)?;
 
     Ok(())
 }
@@ -1078,8 +1119,12 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
-        let resume_block = read_resume_block_from_checkpoint(&checkpoint_path)
-            .expect("resume block should be readable");
+        let resume_block = read_resume_block_from_checkpoint(
+            &checkpoint_path,
+            std::path::Path::new("genesis.json"),
+            std::path::Path::new("old-store"),
+        )
+        .expect("resume block should be readable");
         assert_eq!(resume_block, 99);
 
         if let Some(parent) = checkpoint_path.parent() {
@@ -1108,8 +1153,12 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
-        let error = read_resume_block_from_checkpoint(&checkpoint_path)
-            .expect_err("schema mismatch should fail");
+        let error = read_resume_block_from_checkpoint(
+            &checkpoint_path,
+            std::path::Path::new("genesis.json"),
+            std::path::Path::new("old-store"),
+        )
+        .expect_err("schema mismatch should fail");
         assert!(
             error
                 .to_string()
@@ -1142,8 +1191,12 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
-        let error =
-            read_resume_block_from_checkpoint(&checkpoint_path).expect_err("overflow should fail");
+        let error = read_resume_block_from_checkpoint(
+            &checkpoint_path,
+            std::path::Path::new("genesis.json"),
+            std::path::Path::new("old-store"),
+        )
+        .expect_err("overflow should fail");
         assert!(error.to_string().contains("target_head overflow"));
 
         if let Some(parent) = checkpoint_path.parent() {
@@ -1172,9 +1225,85 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
-        let error = read_resume_block_from_checkpoint(&checkpoint_path)
-            .expect_err("target_head above source_head should fail");
+        let error = read_resume_block_from_checkpoint(
+            &checkpoint_path,
+            std::path::Path::new("genesis.json"),
+            std::path::Path::new("old-store"),
+        )
+        .expect_err("target_head above source_head should fail");
         assert!(error.to_string().contains("cannot exceed source_head"));
+
+        if let Some(parent) = checkpoint_path.parent() {
+            let root = parent.parent().unwrap_or(parent);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn read_resume_block_from_checkpoint_rejects_genesis_path_mismatch() {
+        let checkpoint_path =
+            unique_test_path("checkpoint-read-genesis-mismatch").join("state/checkpoint.json");
+        let checkpoint = json!({
+            "schema_version": 1,
+            "genesis_path": "other-genesis.json",
+            "source_store_path": "old-store",
+            "source_head": 100,
+            "target_head": 98,
+            "imported_blocks": 98,
+            "skipped_blocks": 0,
+            "retry_attempts": 3,
+            "retries_performed": 1,
+            "elapsed_ms": 44
+        });
+
+        if let Some(parent) = checkpoint_path.parent() {
+            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
+        }
+        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
+
+        let error = read_resume_block_from_checkpoint(
+            &checkpoint_path,
+            std::path::Path::new("genesis.json"),
+            std::path::Path::new("old-store"),
+        )
+        .expect_err("genesis mismatch should fail");
+        assert!(error.to_string().contains("genesis_path mismatch"));
+
+        if let Some(parent) = checkpoint_path.parent() {
+            let root = parent.parent().unwrap_or(parent);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn read_resume_block_from_checkpoint_rejects_source_store_path_mismatch() {
+        let checkpoint_path =
+            unique_test_path("checkpoint-read-source-mismatch").join("state/checkpoint.json");
+        let checkpoint = json!({
+            "schema_version": 1,
+            "genesis_path": "genesis.json",
+            "source_store_path": "other-old-store",
+            "source_head": 100,
+            "target_head": 98,
+            "imported_blocks": 98,
+            "skipped_blocks": 0,
+            "retry_attempts": 3,
+            "retries_performed": 1,
+            "elapsed_ms": 44
+        });
+
+        if let Some(parent) = checkpoint_path.parent() {
+            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
+        }
+        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
+
+        let error = read_resume_block_from_checkpoint(
+            &checkpoint_path,
+            std::path::Path::new("genesis.json"),
+            std::path::Path::new("old-store"),
+        )
+        .expect_err("source store mismatch should fail");
+        assert!(error.to_string().contains("source_store_path mismatch"));
 
         if let Some(parent) = checkpoint_path.parent() {
             let root = parent.parent().unwrap_or(parent);
@@ -1203,13 +1332,20 @@ mod tests {
             retries_performed: 4,
         };
 
-        write_checkpoint_file(Some(&checkpoint_path), &report)
-            .expect("checkpoint file write should succeed");
+        write_checkpoint_file(
+            Some(&checkpoint_path),
+            &report,
+            std::path::Path::new("genesis.json"),
+            std::path::Path::new("old-store"),
+        )
+        .expect("checkpoint file write should succeed");
 
         let content = fs::read_to_string(&checkpoint_path).expect("checkpoint should be readable");
         let payload: Value = serde_json::from_str(&content).expect("checkpoint should be json");
 
         assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["genesis_path"], "genesis.json");
+        assert_eq!(payload["source_store_path"], "old-store");
         assert_eq!(payload["source_head"], 100);
         assert_eq!(payload["target_head"], 98);
         assert_eq!(payload["imported_blocks"], 98);

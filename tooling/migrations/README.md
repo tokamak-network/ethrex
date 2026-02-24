@@ -80,7 +80,7 @@ Retry handling is applied during source LibMDBX store open, source state reads, 
 
 `--resume-from-block` overrides the computed start block and is validated against discovered heads (`target_head < resume_from_block <= source_head`). This is useful for operator-driven resume after a partial migration.
 
-`--resume-from-checkpoint` derives resume start from a checkpoint file (`resume_start = checkpoint.target_head + 1`) and applies the same head validation. The checkpoint must match the current `schema_version`, and `target_head` must not exceed `source_head`; invalid checkpoints are rejected explicitly. `--resume-from-block` and `--resume-from-checkpoint` are mutually exclusive.
+`--resume-from-checkpoint` derives resume start from a checkpoint file (`resume_start = checkpoint.target_head + 1`) and applies the same head validation. The checkpoint must match the current `schema_version`, `target_head` must not exceed `source_head`, and (when present) checkpoint provenance fields (`genesis_path`, `source_store_path`) must match the current run inputs; invalid checkpoints are rejected explicitly. `--resume-from-block` and `--resume-from-checkpoint` are mutually exclusive.
 
 `--checkpoint-file` writes a JSON checkpoint after successful completion with migration head/volume metadata (`source_head`, `target_head`, `imported_blocks`, `skipped_blocks`, retry counters, elapsed time).
 
