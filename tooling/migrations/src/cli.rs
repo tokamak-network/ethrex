@@ -63,6 +63,9 @@ pub enum Subcommand {
         #[arg(long = "retry-base-delay-ms", default_value_t = DEFAULT_RETRY_BASE_DELAY_MS, value_parser = clap::value_parser!(u64).range(0..=MAX_RETRY_BASE_DELAY_MS))]
         /// Initial retry backoff delay in milliseconds (0-60000)
         retry_base_delay_ms: u64,
+        #[arg(long = "continue-on-error", default_value_t = false)]
+        /// Continue migrating subsequent blocks when a block-level import fails
+        continue_on_error: bool,
     },
 }
 
@@ -403,6 +406,7 @@ impl Subcommand {
                 json,
                 retry_attempts,
                 retry_base_delay_ms,
+                continue_on_error,
                 report_file,
             } => {
                 migrate_libmdbx_to_rocksdb(
@@ -413,6 +417,7 @@ impl Subcommand {
                     *json,
                     *retry_attempts,
                     Duration::from_millis(*retry_base_delay_ms),
+                    *continue_on_error,
                     report_file.as_deref(),
                 )
                 .await
@@ -429,6 +434,7 @@ async fn migrate_libmdbx_to_rocksdb(
     json: bool,
     retry_attempts: u32,
     retry_base_delay: Duration,
+    continue_on_error: bool,
     report_file: Option<&Path>,
 ) -> Result<()> {
     let started_at = Instant::now();
@@ -583,8 +589,9 @@ async fn migrate_libmdbx_to_rocksdb(
     retries_performed += attempts.saturating_sub(1);
 
     let mut added_blocks = Vec::new();
+    let mut skipped_blocks = 0u64;
     for (block_number, body) in (plan.start_block..=plan.end_block).zip(block_bodies) {
-        let (header, attempts) = retry_sync(
+        let header_result = retry_sync(
             || {
                 old_store
                     .get_block_header(block_number)
@@ -597,7 +604,19 @@ async fn migrate_libmdbx_to_rocksdb(
             },
             retry_attempts,
             retry_base_delay,
-        )?;
+        );
+
+        let (header, attempts) = match header_result {
+            Ok(value) => value,
+            Err(error) if continue_on_error => {
+                skipped_blocks += 1;
+                eprintln!(
+                    "Warning: skipping block #{block_number} after header read failure: {error:#}"
+                );
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         retries_performed += attempts.saturating_sub(1);
 
         let header = migrate_block_header(header);
@@ -605,7 +624,7 @@ async fn migrate_libmdbx_to_rocksdb(
         let block = Block::new(header, body);
 
         let block_hash = block.hash();
-        let (_, attempts) = retry_sync(
+        let add_result = retry_sync(
             || {
                 blockchain
                     .add_block_pipeline(block.clone())
@@ -613,30 +632,43 @@ async fn migrate_libmdbx_to_rocksdb(
             },
             retry_attempts,
             retry_base_delay,
-        )?;
+        );
+
+        let (_, attempts) = match add_result {
+            Ok(value) => value,
+            Err(error) if continue_on_error => {
+                skipped_blocks += 1;
+                eprintln!(
+                    "Warning: skipping block #{block_number} after import failure: {error:#}"
+                );
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         retries_performed += attempts.saturating_sub(1);
 
         added_blocks.push((block_number, block_hash));
     }
 
-    let (last_block, attempts) = retry_sync(
-        || {
-            old_store
-                .get_block_header(plan.end_block)
-                .wrap_err_with(|| format!("Cannot fetch last block header #{}", plan.end_block))?
-                .ok_or_else(|| eyre::eyre!("Missing block header #{}", plan.end_block))
-        },
-        retry_attempts,
-        retry_base_delay,
-    )?;
-    retries_performed += attempts.saturating_sub(1);
+    if added_blocks.is_empty() {
+        return Err(eyre::eyre!(
+            "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
+            plan.start_block,
+            plan.end_block
+        ));
+    }
+
+    let (head_block_number, head_block_hash) = *added_blocks
+        .last()
+        .ok_or_else(|| eyre::eyre!("Cannot determine migrated chain head"))?;
+
     let (_, attempts) = retry_async(
         || async {
             new_store
                 .forkchoice_update(
                     added_blocks.clone(),
-                    last_block.number,
-                    last_block.hash(),
+                    head_block_number,
+                    head_block_hash,
                     None,
                     None,
                 )
@@ -649,15 +681,21 @@ async fn migrate_libmdbx_to_rocksdb(
     .await?;
     retries_performed += attempts.saturating_sub(1);
 
+    if skipped_blocks > 0 {
+        eprintln!(
+            "Warning: migration completed with {skipped_blocks} skipped block(s) due to --continue-on-error"
+        );
+    }
+
     let report = MigrationReport {
         schema_version: REPORT_SCHEMA_VERSION,
         status: "completed",
         phase: "execution",
         source_head: last_block_number,
-        target_head: plan.end_block,
+        target_head: head_block_number,
         plan: Some(plan),
         dry_run: false,
-        imported_blocks: plan.block_count(),
+        imported_blocks: added_blocks.len() as u64,
         elapsed_ms: elapsed_ms(started_at),
         retry_attempts,
         retries_performed,
@@ -1033,6 +1071,7 @@ mod tests {
                 report_file,
                 retry_attempts,
                 retry_base_delay_ms,
+                continue_on_error,
             } => {
                 assert_eq!(genesis_path, std::path::PathBuf::from("genesis.json"));
                 assert_eq!(old_storage_path, std::path::PathBuf::from("old-db"));
@@ -1042,6 +1081,7 @@ mod tests {
                 assert!(report_file.is_none());
                 assert_eq!(retry_attempts, MAX_RETRY_ATTEMPTS);
                 assert_eq!(retry_base_delay_ms, DEFAULT_RETRY_BASE_DELAY_MS);
+                assert!(!continue_on_error);
             }
         }
     }
@@ -1148,6 +1188,29 @@ mod tests {
                 ..
             } => {
                 assert_eq!(retry_base_delay_ms, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn parses_continue_on_error_flag() {
+        let cli = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--continue-on-error",
+        ]);
+
+        match cli.command {
+            Subcommand::Libmdbx2Rocksdb {
+                continue_on_error, ..
+            } => {
+                assert!(continue_on_error);
             }
         }
     }

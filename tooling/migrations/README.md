@@ -52,7 +52,7 @@ Finally restart your ethrex node pointing `--datadir` to the path of the migrate
 ```
 Migrate a libmdbx database to rocksdb
 
-Usage: migrations libmdbx2rocksdb --genesis <GENESIS_PATH> --store.old <OLD_STORAGE_PATH> --store.new <NEW_STORAGE_PATH> [--dry-run] [--json] [--report-file <REPORT_FILE>] [--retry-attempts <RETRY_ATTEMPTS>] [--retry-base-delay-ms <RETRY_BASE_DELAY_MS>]
+Usage: migrations libmdbx2rocksdb --genesis <GENESIS_PATH> --store.old <OLD_STORAGE_PATH> --store.new <NEW_STORAGE_PATH> [--dry-run] [--json] [--report-file <REPORT_FILE>] [--retry-attempts <RETRY_ATTEMPTS>] [--retry-base-delay-ms <RETRY_BASE_DELAY_MS>] [--continue-on-error]
 
 Options:
       --genesis <GENESIS_PATH>                      Path to the genesis file for the genesis block of store.old
@@ -63,6 +63,7 @@ Options:
       --report-file <REPORT_FILE>                   Optional path to append emitted reports (JSON lines in --json mode)
       --retry-attempts <RETRY_ATTEMPTS>             Retry budget for retryable operations (1-10, inclusive) [default: 3]
       --retry-base-delay-ms <RETRY_BASE_DELAY_MS>   Initial retry backoff delay in milliseconds (0-60000) [default: 1000]
+      --continue-on-error                           Continue migrating subsequent blocks when a block-level import fails
   -h, --help                                        Print help
 ```
 
@@ -70,6 +71,8 @@ Options:
 
 `--retry-attempts` and `--retry-base-delay-ms` tune retry policy for retryable operations.
 Retry handling is applied during source LibMDBX store open, source state reads, source/target store head discovery, target RocksDB store open/creation, per-block header fetches, per-block imports, and final forkchoice update.
+
+`--continue-on-error` enables degraded execution for block-level failures during migration execution: failed block header reads/imports are skipped with warnings, and migration proceeds using successfully imported blocks.
 
 `--json` prints a structured migration report (`status`, `phase`, source/target heads, plan, dry-run flag, imported blocks, elapsed runtime) suitable for scripting and CI logs.
 When execution fails with `--json`, the CLI emits a structured failure object including `error_type` and `retryable` for automation parsing.

@@ -92,6 +92,43 @@ fn help_command_succeeds_and_lists_core_flags() {
     assert!(stdout.contains("--report-file"));
     assert!(stdout.contains("--retry-attempts"));
     assert!(stdout.contains("--retry-base-delay-ms"));
+    assert!(stdout.contains("--continue-on-error"));
+}
+
+#[test]
+fn continue_on_error_flag_is_accepted() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-continue-on-error");
+    let new_path = unique_test_path("new-continue-on-error");
+
+    let output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--continue-on-error",
+            "--json",
+        ])
+        .output()
+        .expect("failed to execute migrations binary");
+
+    assert!(
+        !output.status.success(),
+        "command should still fail for invalid/non-existent stores"
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    let payload: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON");
+
+    assert_eq!(payload["status"], "failed");
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
 }
 
 #[test]
@@ -553,6 +590,98 @@ fn report_file_preserves_append_order_across_human_then_json_runs() {
     let second_payload: serde_json::Value =
         serde_json::from_str(lines[1]).expect("second line should be valid json from --json run");
     assert_eq!(second_payload["status"], "failed");
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
+    if let Some(parent) = report_path.parent() {
+        let _ = fs::remove_dir_all(parent);
+    }
+}
+
+#[test]
+fn report_file_preserves_append_order_across_json_human_json_runs() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-report-mixed-jhj");
+    let new_path = unique_test_path("new-report-mixed-jhj");
+    let report_path = unique_test_path("report-mixed-jhj").join("migration.log");
+
+    let json_output_1 = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--json",
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary (first json run)");
+    assert!(!json_output_1.status.success());
+
+    let human_output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary (human run)");
+    assert!(!human_output.status.success());
+
+    let json_output_2 = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--json",
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary (second json run)");
+    assert!(!json_output_2.status.success());
+
+    let json_stdout_1 = String::from_utf8(json_output_1.stdout).expect("stdout should be utf-8");
+    let human_stderr = String::from_utf8(human_output.stderr).expect("stderr should be utf-8");
+    let human_stderr_line = human_stderr
+        .lines()
+        .find(|line| line.contains("Migration failed after"))
+        .expect("human run stderr should contain migration failure line");
+    let json_stdout_2 = String::from_utf8(json_output_2.stdout).expect("stdout should be utf-8");
+
+    let report_content =
+        fs::read_to_string(&report_path).expect("report file should be created and readable");
+    let lines: Vec<&str> = report_content.lines().collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "report file should contain three appended lines"
+    );
+
+    assert_eq!(lines[0], json_stdout_1.trim());
+    assert_eq!(lines[1], human_stderr_line);
+    assert_eq!(lines[2], json_stdout_2.trim());
+
+    let first_payload: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("first line should be valid json");
+    let third_payload: serde_json::Value =
+        serde_json::from_str(lines[2]).expect("third line should be valid json");
+    assert_eq!(first_payload["status"], "failed");
+    assert_eq!(third_payload["status"], "failed");
 
     let _ = fs::remove_dir_all(&old_path);
     let _ = fs::remove_dir_all(&new_path);
