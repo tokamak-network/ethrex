@@ -251,40 +251,30 @@ fn resume_from_checkpoint_flag_is_accepted() {
 #[test]
 fn resume_from_block_and_checkpoint_are_mutually_exclusive() {
     let bin = env!("CARGO_BIN_EXE_migrations");
-    let old_path = unique_test_path("old-mutual-exclusion");
-    let new_path = unique_test_path("new-mutual-exclusion");
-    let checkpoint_path = unique_test_path("mutual-exclusion").join("state/checkpoint.json");
 
     let output = Command::new(bin)
         .args([
             "libmdbx2rocksdb",
             "--genesis",
-            "./does-not-exist-genesis.json",
+            "g.json",
             "--store.old",
-            old_path.to_string_lossy().as_ref(),
+            "old",
             "--store.new",
-            new_path.to_string_lossy().as_ref(),
+            "new",
             "--resume-from-block",
             "10",
             "--resume-from-checkpoint",
-            checkpoint_path.to_string_lossy().as_ref(),
-            "--json",
+            "state/checkpoint.json",
         ])
         .output()
         .expect("failed to execute migrations binary");
 
-    assert!(!output.status.success());
-    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
-    let payload: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON");
-    assert_eq!(payload["status"], "failed");
-    assert!(payload.get("error").is_some());
+    assert!(!output.status.success(), "command should fail clap validation");
 
-    let _ = fs::remove_dir_all(&old_path);
-    let _ = fs::remove_dir_all(&new_path);
-    if let Some(parent) = checkpoint_path.parent() {
-        let _ = fs::remove_dir_all(parent);
-    }
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(stderr.contains("resume-from-checkpoint"));
+    assert!(stderr.contains("resume-from-block"));
+    assert!(stderr.contains("cannot be used with") || stderr.contains("conflicts with"));
 }
 
 #[test]

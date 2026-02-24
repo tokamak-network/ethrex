@@ -66,13 +66,13 @@ pub enum Subcommand {
         #[arg(long = "continue-on-error", default_value_t = false)]
         /// Continue migrating subsequent blocks when a block-level import fails
         continue_on_error: bool,
-        #[arg(long = "resume-from-block")]
+        #[arg(long = "resume-from-block", conflicts_with = "resume_from_checkpoint")]
         /// Force migration start block (must be > current target head and <= source head)
         resume_from_block: Option<u64>,
         #[arg(long = "checkpoint-file")]
         /// Optional path to write migration checkpoint metadata after successful completion
         checkpoint_file: Option<PathBuf>,
-        #[arg(long = "resume-from-checkpoint")]
+        #[arg(long = "resume-from-checkpoint", conflicts_with = "resume_from_block")]
         /// Optional path to a checkpoint file whose target_head is used as migration start
         resume_from_checkpoint: Option<PathBuf>,
     },
@@ -591,17 +591,11 @@ async fn migrate_libmdbx_to_rocksdb(
     .await?;
     retries_performed += attempts.saturating_sub(1);
 
-    if resume_from_block.is_some() && resume_from_checkpoint.is_some() {
-        return Err(eyre::eyre!(
-            "--resume-from-block and --resume-from-checkpoint are mutually exclusive"
-        ));
-    }
-
     let resume_override = match (resume_from_block, resume_from_checkpoint) {
         (Some(block), None) => Some(block),
         (None, Some(path)) => Some(read_resume_block_from_checkpoint(path)?),
         (None, None) => None,
-        (Some(_), Some(_)) => unreachable!("mutual exclusion validated above"),
+        (Some(_), Some(_)) => unreachable!("clap conflict validation should prevent this"),
     };
 
     let Some(plan) = build_migration_plan(last_known_block, last_block_number, resume_override)?
@@ -1553,6 +1547,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn rejects_conflicting_resume_flags() {
+        let parsed = CLI::try_parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--resume-from-block",
+            "10",
+            "--resume-from-checkpoint",
+            "state/checkpoint.json",
+        ]);
+
+        assert!(parsed.is_err());
+        let rendered = parsed.err().expect("must be clap error").to_string();
+        assert!(rendered.contains("--resume-from-block"));
+        assert!(rendered.contains("--resume-from-checkpoint"));
     }
 
     #[test]
