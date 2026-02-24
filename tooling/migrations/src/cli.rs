@@ -364,7 +364,19 @@ fn read_resume_block_from_checkpoint(path: &Path) -> Result<u64> {
         .wrap_err_with(|| format!("Cannot read checkpoint file {path:?}"))?;
     let checkpoint: MigrationCheckpoint = serde_json::from_str(&content)
         .wrap_err_with(|| format!("Cannot parse checkpoint file {path:?}"))?;
-    Ok(checkpoint.target_head.saturating_add(1))
+
+    if checkpoint.schema_version != REPORT_SCHEMA_VERSION {
+        return Err(eyre::eyre!(
+            "Unsupported checkpoint schema_version={} in {path:?}; expected {}",
+            checkpoint.schema_version,
+            REPORT_SCHEMA_VERSION
+        ));
+    }
+
+    checkpoint
+        .target_head
+        .checked_add(1)
+        .ok_or_else(|| eyre::eyre!("Invalid checkpoint target_head overflow in {path:?}"))
 }
 
 fn write_checkpoint_file(path: Option<&Path>, report: &MigrationReport) -> Result<()> {
@@ -1061,6 +1073,70 @@ mod tests {
         let resume_block = read_resume_block_from_checkpoint(&checkpoint_path)
             .expect("resume block should be readable");
         assert_eq!(resume_block, 99);
+
+        if let Some(parent) = checkpoint_path.parent() {
+            let root = parent.parent().unwrap_or(parent);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn read_resume_block_from_checkpoint_rejects_schema_mismatch() {
+        let checkpoint_path =
+            unique_test_path("checkpoint-read-schema-mismatch").join("state/checkpoint.json");
+        let checkpoint = json!({
+            "schema_version": 999,
+            "source_head": 100,
+            "target_head": 98,
+            "imported_blocks": 98,
+            "skipped_blocks": 0,
+            "retry_attempts": 3,
+            "retries_performed": 1,
+            "elapsed_ms": 44
+        });
+
+        if let Some(parent) = checkpoint_path.parent() {
+            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
+        }
+        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
+
+        let error = read_resume_block_from_checkpoint(&checkpoint_path)
+            .expect_err("schema mismatch should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Unsupported checkpoint schema_version")
+        );
+
+        if let Some(parent) = checkpoint_path.parent() {
+            let root = parent.parent().unwrap_or(parent);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn read_resume_block_from_checkpoint_rejects_target_head_overflow() {
+        let checkpoint_path =
+            unique_test_path("checkpoint-read-overflow").join("state/checkpoint.json");
+        let checkpoint = json!({
+            "schema_version": 1,
+            "source_head": u64::MAX,
+            "target_head": u64::MAX,
+            "imported_blocks": 0,
+            "skipped_blocks": 0,
+            "retry_attempts": 3,
+            "retries_performed": 1,
+            "elapsed_ms": 44
+        });
+
+        if let Some(parent) = checkpoint_path.parent() {
+            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
+        }
+        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
+
+        let error =
+            read_resume_block_from_checkpoint(&checkpoint_path).expect_err("overflow should fail");
+        assert!(error.to_string().contains("target_head overflow"));
 
         if let Some(parent) = checkpoint_path.parent() {
             let root = parent.parent().unwrap_or(parent);

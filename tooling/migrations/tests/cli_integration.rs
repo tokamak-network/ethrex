@@ -269,7 +269,10 @@ fn resume_from_block_and_checkpoint_are_mutually_exclusive() {
         .output()
         .expect("failed to execute migrations binary");
 
-    assert!(!output.status.success(), "command should fail clap validation");
+    assert!(
+        !output.status.success(),
+        "command should fail clap validation"
+    );
 
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
     assert!(stderr.contains("resume-from-checkpoint"));
