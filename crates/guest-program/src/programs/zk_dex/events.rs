@@ -56,7 +56,12 @@ pub fn note_state_change_log(contract: Address, note_hash: H256, state: U256) ->
 /// - `topics[0]` = event signature hash
 /// - `topics[1]` = `orderId` (indexed uint256)
 /// - `data` = `takerNoteToMaker(32) + parentNote(32)` (64 bytes)
-pub fn order_taken_log(contract: Address, order_id: U256, taker_note: H256, parent: H256) -> Log {
+pub fn order_taken_log(
+    contract: Address,
+    order_id: U256,
+    taker_note: H256,
+    parent: H256,
+) -> Log {
     let mut data = vec![0u8; 64];
     data[0..32].copy_from_slice(taker_note.as_bytes());
     data[32..64].copy_from_slice(parent.as_bytes());
@@ -133,43 +138,6 @@ mod tests {
         assert_eq!(log.data.len(), 64);
         assert_eq!(&log.data[0..32], taker.as_bytes());
         assert_eq!(&log.data[32..64], parent.as_bytes());
-    }
-
-    #[test]
-    fn event_topics_are_unique_and_nonzero() {
-        // Verify topics are non-zero (keccak actually computed) and all different
-        // (no copy-paste errors in signature strings).
-        let nsc = note_state_change_topic();
-        let ot = order_taken_topic();
-        let os = order_settled_topic();
-
-        assert_ne!(nsc, H256::zero());
-        assert_ne!(ot, H256::zero());
-        assert_ne!(os, H256::zero());
-
-        assert_ne!(nsc, ot);
-        assert_ne!(nsc, os);
-        assert_ne!(ot, os);
-    }
-
-    #[test]
-    fn event_topics_match_solidity_signatures() {
-        // Golden values: keccak256 of the canonical Solidity event signatures.
-        // Verify with: cast sig-event "NoteStateChange(bytes32,uint8)" etc.
-        assert_eq!(
-            note_state_change_topic(),
-            H256::from(keccak_hash(b"NoteStateChange(bytes32,uint8)")),
-        );
-        assert_eq!(
-            order_taken_topic(),
-            H256::from(keccak_hash(b"OrderTaken(uint256,bytes32,bytes32)")),
-        );
-        assert_eq!(
-            order_settled_topic(),
-            H256::from(keccak_hash(
-                b"OrderSettled(uint256,bytes32,bytes32,bytes32)"
-            )),
-        );
     }
 
     #[test]

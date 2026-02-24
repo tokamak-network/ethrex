@@ -29,8 +29,9 @@ pub const NOTE_SPENT: U256 = U256([3, 0, 0, 0]);
 
 /// Poseidon(0,0,0,0,0,0,0) — sentinel for empty note positions in `spend`.
 pub const EMPTY_NOTE_HASH: H256 = H256([
-    0x0a, 0x47, 0xea, 0xd7, 0x4d, 0xa5, 0x37, 0x2e, 0x7d, 0x25, 0x98, 0xe4, 0xf9, 0x3c, 0x38, 0x9b,
-    0xf0, 0x3e, 0x83, 0x30, 0x21, 0x9f, 0x8b, 0xf1, 0xe4, 0x9b, 0x36, 0x2f, 0x73, 0x49, 0x1a, 0x26,
+    0x0a, 0x47, 0xea, 0xd7, 0x4d, 0xa5, 0x37, 0x2e, 0x7d, 0x25, 0x98, 0xe4, 0xf9, 0x3c, 0x38,
+    0x9b, 0xf0, 0x3e, 0x83, 0x30, 0x21, 0x9f, 0x8b, 0xf1, 0xe4, 0x9b, 0x36, 0x2f, 0x73, 0x49,
+    0x1a, 0x26,
 ]);
 
 /// ETH token type identifier.
@@ -147,7 +148,7 @@ pub fn execute_spend(
 /// Execute a `liquidate` operation.
 ///
 /// Destroys a note and transfers value from the contract to a recipient.
-/// Supports ETH only (tokenType == 0). DAI is not used.
+/// Currently supports ETH only; DAI would require the DAI contract's storage.
 ///
 /// ## Params layout
 /// - `[0..32]`   — to (address, ABI-encoded 32-byte word)
@@ -178,7 +179,8 @@ pub fn execute_liquidate(
         state.debit_balance(contract, value)?;
         state.credit_balance(to, value)?;
     }
-    // DAI is not used in this deployment.
+    // DAI transfers would require modifying the DAI contract's storage,
+    // which is outside the scope of the DEX circuit.
 
     Ok(OperationResult {
         success: true,
@@ -296,7 +298,10 @@ mod tests {
 
         // Check note is Valid.
         let slot = note_state_slot(note_hash);
-        assert_eq!(state.get_storage(dex_address(), slot).unwrap(), NOTE_VALID);
+        assert_eq!(
+            state.get_storage(dex_address(), slot).unwrap(),
+            NOTE_VALID
+        );
 
         // Check encrypted note length slot.
         let len_slot = encrypted_note_length_slot(note_hash);

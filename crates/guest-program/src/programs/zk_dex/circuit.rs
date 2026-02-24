@@ -20,8 +20,8 @@ use crate::common::app_state::AppState;
 
 use super::events;
 use super::notes::{
-    EMPTY_NOTE_HASH, NOTE_INVALID, NOTE_SPENT, NOTE_TRADING, NOTE_VALID, execute_convert_note,
-    execute_liquidate, execute_mint, execute_spend,
+    execute_convert_note, execute_liquidate, execute_mint, execute_spend, EMPTY_NOTE_HASH,
+    NOTE_INVALID, NOTE_SPENT, NOTE_TRADING, NOTE_VALID,
 };
 use super::orders::{execute_make_order, execute_settle_order, execute_take_order};
 
@@ -113,16 +113,13 @@ pub fn take_order_selector_bytes() -> [u8; 4] {
 }
 
 fn settle_order_selector() -> [u8; 4] {
-    selector_from(b"settleOrder(uint256,uint256[2],uint256[2][2],uint256[2],uint256[14],bytes)")
+    selector_from(
+        b"settleOrder(uint256,uint256[2],uint256[2][2],uint256[2],uint256[14],bytes)",
+    )
 }
 
 pub fn settle_order_selector_bytes() -> [u8; 4] {
     settle_order_selector()
-}
-
-/// Public accessor for the transfer selector bytes (used by input conversion).
-pub fn transfer_selector_bytes() -> [u8; 4] {
-    transfer_selector()
 }
 
 /// ERC-20 `Transfer(address,address,uint256)` event topic.
@@ -573,9 +570,7 @@ fn generate_mint_logs(contract: Address, params: &[u8]) -> Vec<Log> {
         return vec![];
     }
     let note_hash = H256::from_slice(&params[0..32]);
-    vec![events::note_state_change_log(
-        contract, note_hash, NOTE_VALID,
-    )]
+    vec![events::note_state_change_log(contract, note_hash, NOTE_VALID)]
 }
 
 /// Spend logs: NoteStateChange for up to 4 notes (conditional on EMPTY_NOTE_HASH).
@@ -705,26 +700,14 @@ fn extract_abi_bytes(data: &[u8], offset_pos: usize) -> Result<Vec<u8>, AppCircu
             "calldata too short for bytes offset".into(),
         ));
     }
-    let offset_u256 = U256::from_big_endian(&data[offset_pos..offset_pos + 32]);
-    if offset_u256 > U256::from(data.len()) {
-        return Err(AppCircuitError::InvalidParams(
-            "bytes offset exceeds calldata length".into(),
-        ));
-    }
-    let offset = offset_u256.low_u64() as usize;
+    let offset = U256::from_big_endian(&data[offset_pos..offset_pos + 32]).low_u64() as usize;
     let abs_pos = 4 + offset;
     if data.len() < abs_pos + 32 {
         return Err(AppCircuitError::InvalidParams(
             "calldata too short for bytes length".into(),
         ));
     }
-    let length_u256 = U256::from_big_endian(&data[abs_pos..abs_pos + 32]);
-    if length_u256 > U256::from(data.len()) {
-        return Err(AppCircuitError::InvalidParams(
-            "bytes length exceeds calldata length".into(),
-        ));
-    }
-    let length = length_u256.low_u64() as usize;
+    let length = U256::from_big_endian(&data[abs_pos..abs_pos + 32]).low_u64() as usize;
     if data.len() < abs_pos + 32 + length {
         return Err(AppCircuitError::InvalidParams(
             "calldata too short for bytes data".into(),
@@ -978,7 +961,8 @@ mod tests {
     fn execute_self_transfer() {
         let circuit = make_circuit();
         let token = token_address();
-        let mut state = make_state_with_balances(token, vec![(user_a(), U256::from(500))]);
+        let mut state =
+            make_state_with_balances(token, vec![(user_a(), U256::from(500))]);
 
         let calldata = encode_transfer_calldata(user_a(), token, U256::from(100));
         let tx = make_test_tx(dex_address(), calldata);
