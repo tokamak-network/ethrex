@@ -91,6 +91,7 @@ struct MigrationReport {
     plan: Option<MigrationPlan>,
     dry_run: bool,
     imported_blocks: u64,
+    skipped_blocks: u64,
     elapsed_ms: u64,
     retry_attempts: u32,
     retries_performed: u32,
@@ -372,6 +373,15 @@ fn emit_report(report: &MigrationReport, json: bool, report_file: Option<&Path>)
         );
         println!("{line}");
         append_report_line(report_file, &line)?;
+
+        if report.skipped_blocks > 0 {
+            let skipped_line = format!(
+                "Migration skipped {} block(s) due to --continue-on-error.",
+                report.skipped_blocks
+            );
+            println!("{skipped_line}");
+            append_report_line(report_file, &skipped_line)?;
+        }
     }
 
     Ok(())
@@ -524,6 +534,7 @@ async fn migrate_libmdbx_to_rocksdb(
             plan: None,
             dry_run,
             imported_blocks: 0,
+            skipped_blocks: 0,
             elapsed_ms: elapsed_ms(started_at),
             retry_attempts,
             retries_performed,
@@ -542,6 +553,7 @@ async fn migrate_libmdbx_to_rocksdb(
             plan: Some(plan),
             dry_run: true,
             imported_blocks: 0,
+            skipped_blocks: 0,
             elapsed_ms: elapsed_ms(started_at),
             retry_attempts,
             retries_performed,
@@ -560,6 +572,7 @@ async fn migrate_libmdbx_to_rocksdb(
             plan: Some(plan),
             dry_run: false,
             imported_blocks: 0,
+            skipped_blocks: 0,
             elapsed_ms: elapsed_ms(started_at),
             retry_attempts,
             retries_performed,
@@ -696,6 +709,7 @@ async fn migrate_libmdbx_to_rocksdb(
         plan: Some(plan),
         dry_run: false,
         imported_blocks: added_blocks.len() as u64,
+        skipped_blocks,
         elapsed_ms: elapsed_ms(started_at),
         retry_attempts,
         retries_performed,
@@ -756,6 +770,7 @@ mod tests {
             }),
             dry_run: true,
             imported_blocks: 0,
+            skipped_blocks: 0,
             elapsed_ms: 3,
             retry_attempts: 3,
             retries_performed: 0,
@@ -791,6 +806,7 @@ mod tests {
             plan: None,
             dry_run: false,
             imported_blocks: 0,
+            skipped_blocks: 0,
             elapsed_ms: 4,
             retry_attempts: 3,
             retries_performed: 0,
@@ -830,6 +846,7 @@ mod tests {
             }),
             dry_run: true,
             imported_blocks: 0,
+            skipped_blocks: 0,
             elapsed_ms: 3,
             retry_attempts: 3,
             retries_performed: 0,
@@ -867,6 +884,7 @@ mod tests {
             }),
             dry_run: false,
             imported_blocks: 8,
+            skipped_blocks: 0,
             elapsed_ms: 10,
             retry_attempts: 3,
             retries_performed: 1,
@@ -879,6 +897,40 @@ mod tests {
             fs::read_to_string(&report_path).expect("report file should be readable");
         assert!(file_content.contains("Migration plan: 8 block(s), from #13, to #20"));
         assert!(file_content.contains("Migration completed successfully: imported 8 block(s)."));
+
+        if let Some(parent) = report_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn emit_report_writes_skipped_blocks_marker_to_report_file() {
+        let report_path = unique_test_path("human-report-skipped").join("report.log");
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "completed",
+            phase: "execution",
+            source_head: 20,
+            target_head: 18,
+            plan: Some(MigrationPlan {
+                start_block: 13,
+                end_block: 20,
+            }),
+            dry_run: false,
+            imported_blocks: 6,
+            skipped_blocks: 2,
+            elapsed_ms: 10,
+            retry_attempts: 3,
+            retries_performed: 1,
+        };
+
+        emit_report(&report, false, Some(&report_path))
+            .expect("human report emission should succeed");
+
+        let file_content =
+            fs::read_to_string(&report_path).expect("report file should be readable");
+        assert!(file_content.contains("Migration completed successfully: imported 6 block(s)."));
+        assert!(file_content.contains("Migration skipped 2 block(s) due to --continue-on-error."));
 
         if let Some(parent) = report_path.parent() {
             let _ = fs::remove_dir_all(parent);
@@ -971,6 +1023,7 @@ mod tests {
             plan: None,
             dry_run: false,
             imported_blocks: 0,
+            skipped_blocks: 0,
             elapsed_ms: 2,
             retry_attempts: 3,
             retries_performed: 0,
@@ -1008,6 +1061,7 @@ mod tests {
             }),
             dry_run: true,
             imported_blocks: 0,
+            skipped_blocks: 0,
             elapsed_ms: 5,
             retry_attempts: 3,
             retries_performed: 0,
@@ -1307,6 +1361,7 @@ mod tests {
             }),
             dry_run: true,
             imported_blocks: 0,
+            skipped_blocks: 0,
             elapsed_ms: 7,
             retry_attempts: 3,
             retries_performed: 1,
@@ -1325,6 +1380,7 @@ mod tests {
             },
             "dry_run": true,
             "imported_blocks": 0,
+            "skipped_blocks": 0,
             "elapsed_ms": 7,
             "retry_attempts": 3,
             "retries_performed": 1
@@ -1343,6 +1399,7 @@ mod tests {
             plan: None,
             dry_run: false,
             imported_blocks: 0,
+            skipped_blocks: 0,
             elapsed_ms: 3,
             retry_attempts: 3,
             retries_performed: 0,
@@ -1358,6 +1415,7 @@ mod tests {
             "plan": Value::Null,
             "dry_run": false,
             "imported_blocks": 0,
+            "skipped_blocks": 0,
             "elapsed_ms": 3,
             "retry_attempts": 3,
             "retries_performed": 0
@@ -1379,6 +1437,7 @@ mod tests {
             }),
             dry_run: false,
             imported_blocks: 10,
+            skipped_blocks: 0,
             elapsed_ms: 55,
             retry_attempts: 3,
             retries_performed: 1,
@@ -1395,6 +1454,7 @@ mod tests {
             "plan",
             "dry_run",
             "imported_blocks",
+            "skipped_blocks",
             "elapsed_ms",
             "retry_attempts",
             "retries_performed",
@@ -1404,6 +1464,32 @@ mod tests {
         for key in expected_keys {
             assert!(object.contains_key(key), "missing key: {key}");
         }
+    }
+
+    #[test]
+    fn serializes_completed_report_with_skipped_blocks() {
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "completed",
+            phase: "execution",
+            source_head: 42,
+            target_head: 40,
+            plan: Some(MigrationPlan {
+                start_block: 11,
+                end_block: 42,
+            }),
+            dry_run: false,
+            imported_blocks: 30,
+            skipped_blocks: 2,
+            elapsed_ms: 12,
+            retry_attempts: 3,
+            retries_performed: 1,
+        };
+
+        let encoded = serde_json::to_value(&report).expect("report should serialize");
+        assert_eq!(encoded["status"], "completed");
+        assert_eq!(encoded["imported_blocks"], 30);
+        assert_eq!(encoded["skipped_blocks"], 2);
     }
 
     #[test]
