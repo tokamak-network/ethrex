@@ -224,6 +224,89 @@ fn report_file_appends_across_multiple_json_failures() {
 }
 
 #[test]
+fn report_file_creates_parent_directories_for_json_failure() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-report-parent-dirs");
+    let new_path = unique_test_path("new-report-parent-dirs");
+    let report_root = unique_test_path("report-parent-dirs");
+    let report_path = report_root.join("nested/reports/migration.jsonl");
+
+    let output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--json",
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary");
+
+    assert!(!output.status.success());
+    assert!(
+        report_path.exists(),
+        "report file should be created with parent directories"
+    );
+
+    let report_content =
+        fs::read_to_string(&report_path).expect("report file should be created and readable");
+    let line = report_content
+        .lines()
+        .next()
+        .expect("report file should contain one line");
+    let payload: serde_json::Value =
+        serde_json::from_str(line).expect("report line should be valid json");
+    assert_eq!(payload["status"], "failed");
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
+    let _ = fs::remove_dir_all(&report_root);
+}
+
+#[test]
+fn report_file_creates_parent_directories_for_human_failure() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-report-parent-dirs-human");
+    let new_path = unique_test_path("new-report-parent-dirs-human");
+    let report_root = unique_test_path("report-parent-dirs-human");
+    let report_path = report_root.join("nested/reports/migration.log");
+
+    let output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary");
+
+    assert!(!output.status.success());
+    assert!(
+        report_path.exists(),
+        "report file should be created with parent directories"
+    );
+
+    let report_content =
+        fs::read_to_string(&report_path).expect("report file should be created and readable");
+    assert!(report_content.contains("Migration failed after"));
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
+    let _ = fs::remove_dir_all(&report_root);
+}
+
+#[test]
 fn report_file_appends_across_multiple_human_failures() {
     let bin = env!("CARGO_BIN_EXE_migrations");
     let old_path = unique_test_path("old-report-append-human");
