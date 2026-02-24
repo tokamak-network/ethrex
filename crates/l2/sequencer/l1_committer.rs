@@ -958,6 +958,21 @@ impl L1Committer {
             return Ok(None);
         }
 
+        // Skip empty batches — no state change means no L1 commit needed.
+        // The first batch (batch 1) is always committed to establish the initial state root on L1.
+        // Skipped blocks are not lost: the next cycle retries with the same batch number,
+        // so empty blocks accumulate until a batch with real transactions is produced.
+        if batch_number > 1
+            && acc_non_privileged_transactions == 0
+            && l1_in_message_hashes.is_empty()
+            && l2_in_message_hashes.is_empty()
+        {
+            debug!(
+                "Batch {batch_number} contains only empty blocks (no transactions), skipping commit"
+            );
+            return Ok(None);
+        }
+
         metrics!(if let (Ok(privileged_transaction_count), Ok(messages_count)) = (
                 l1_in_message_hashes.len().try_into(),
                 l1_out_message_hashes.len().try_into()
