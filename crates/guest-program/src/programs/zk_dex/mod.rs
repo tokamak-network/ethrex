@@ -335,14 +335,19 @@ fn analyze_zk_dex_transactions(
                             order_id,
                         );
 
-                        // Old notes from order (we don't know the hashes yet,
-                        // but we need the order fields to read them).
-                        // The execute function will read them from order storage.
-                        // We need their note_state_slots too, but we can only know
-                        // them after reading the order. For now, we rely on the
-                        // execution witness containing all touched slots.
-                        // In practice, the L2 execution already touched these slots,
-                        // so they'll be in the ExecutionWitness.
+                        // Old notes: makerNote and takerStakeNote are available
+                        // as public inputs in calldata. parentNote is only in
+                        // order storage, so we rely on the ExecutionWitness for it.
+                        let maker_note_hash = H256::from_slice(&data[324..356]);
+                        let taker_stake_hash = H256::from_slice(&data[388..420]);
+                        storage_slots.insert((
+                            dex_contract,
+                            storage::note_state_slot(maker_note_hash),
+                        ));
+                        storage_slots.insert((
+                            dex_contract,
+                            storage::note_state_slot(taker_stake_hash),
+                        ));
                     }
                 }
             }
