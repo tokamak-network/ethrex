@@ -677,22 +677,153 @@ fn build_migration_plan(last_known_block: u64, last_source_block: u64) -> Option
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
-        time::Instant,
+        time::{Instant, SystemTime, UNIX_EPOCH},
     };
 
     use super::{
         CLI, DEFAULT_RETRY_BASE_DELAY_MS, MAX_RETRY_ATTEMPTS, MigrationErrorReport, MigrationPlan,
         MigrationReport, REPORT_SCHEMA_VERSION, RetryFailure, Subcommand,
         build_migration_error_report, build_migration_plan, classify_error_from_message,
-        classify_error_from_report, classify_io_error_kind, compute_backoff_delay, retry_async,
-        retry_sync,
+        classify_error_from_report, classify_io_error_kind, compute_backoff_delay,
+        emit_error_report, emit_report, retry_async, retry_sync,
     };
     use clap::Parser;
     use serde_json::{Value, json};
+
+    fn unique_test_path(suffix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("migrations-cli-unit-{suffix}-{nanos}"))
+    }
+
+    #[test]
+    fn emit_report_writes_json_line_to_report_file() {
+        let report_path = unique_test_path("json-report").join("report.jsonl");
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "planned",
+            phase: "planning",
+            source_head: 12,
+            target_head: 8,
+            plan: Some(MigrationPlan {
+                start_block: 9,
+                end_block: 12,
+            }),
+            dry_run: true,
+            imported_blocks: 0,
+            elapsed_ms: 3,
+            retry_attempts: 3,
+            retries_performed: 0,
+        };
+
+        emit_report(&report, true, Some(&report_path))
+            .expect("json report emission should succeed");
+
+        let file_content =
+            fs::read_to_string(&report_path).expect("report file should be readable");
+        let line = file_content
+            .lines()
+            .next()
+            .expect("report file should contain one line");
+        let parsed: Value = serde_json::from_str(line).expect("line should be valid json");
+        assert_eq!(parsed["status"], "planned");
+        assert_eq!(parsed["schema_version"], 1);
+
+        if let Some(parent) = report_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn emit_report_writes_human_lines_to_report_file() {
+        let report_path = unique_test_path("human-report").join("report.log");
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "completed",
+            phase: "execution",
+            source_head: 20,
+            target_head: 20,
+            plan: Some(MigrationPlan {
+                start_block: 13,
+                end_block: 20,
+            }),
+            dry_run: false,
+            imported_blocks: 8,
+            elapsed_ms: 10,
+            retry_attempts: 3,
+            retries_performed: 1,
+        };
+
+        emit_report(&report, false, Some(&report_path))
+            .expect("human report emission should succeed");
+
+        let file_content =
+            fs::read_to_string(&report_path).expect("report file should be readable");
+        assert!(file_content.contains("Migration plan: 8 block(s), from #13, to #20"));
+        assert!(file_content.contains("Migration completed successfully: imported 8 block(s)."));
+
+        if let Some(parent) = report_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn emit_error_report_writes_json_line_to_report_file() {
+        let report_path = unique_test_path("json-error-report").join("error.jsonl");
+        let error = eyre::eyre!("temporary EAGAIN failure");
+
+        emit_error_report(
+            true,
+            MAX_RETRY_ATTEMPTS,
+            Instant::now(),
+            &error,
+            Some(&report_path),
+        );
+
+        let file_content =
+            fs::read_to_string(&report_path).expect("report file should be readable");
+        let line = file_content
+            .lines()
+            .next()
+            .expect("report file should contain one line");
+        let parsed: Value = serde_json::from_str(line).expect("line should be valid json");
+        assert_eq!(parsed["status"], "failed");
+        assert_eq!(parsed["retryable"], true);
+
+        if let Some(parent) = report_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn emit_error_report_writes_human_line_to_report_file() {
+        let report_path = unique_test_path("human-error-report").join("error.log");
+        let error = eyre::eyre!("fatal corruption");
+
+        emit_error_report(
+            false,
+            MAX_RETRY_ATTEMPTS,
+            Instant::now(),
+            &error,
+            Some(&report_path),
+        );
+
+        let file_content =
+            fs::read_to_string(&report_path).expect("report file should be readable");
+        assert!(file_content.contains("Migration failed after"));
+        assert!(file_content.contains("fatal corruption"));
+
+        if let Some(parent) = report_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
 
     #[test]
     fn no_plan_when_target_is_up_to_date() {
