@@ -482,6 +482,86 @@ fn report_file_preserves_append_order_across_json_then_human_runs() {
 }
 
 #[test]
+fn report_file_preserves_append_order_across_human_then_json_runs() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-report-mixed-reverse");
+    let new_path = unique_test_path("new-report-mixed-reverse");
+    let report_path = unique_test_path("report-mixed-reverse").join("migration.log");
+
+    let human_output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary (human run)");
+    assert!(!human_output.status.success());
+    let human_stderr = String::from_utf8(human_output.stderr).expect("stderr should be utf-8");
+    let human_stderr_line = human_stderr
+        .lines()
+        .find(|line| line.contains("Migration failed after"))
+        .expect("human run stderr should contain migration failure line");
+
+    let json_output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--json",
+            "--report-file",
+            report_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("failed to execute migrations binary (json run)");
+    assert!(!json_output.status.success());
+    let json_stdout = String::from_utf8(json_output.stdout).expect("stdout should be utf-8");
+
+    let report_content =
+        fs::read_to_string(&report_path).expect("report file should be created and readable");
+    let lines: Vec<&str> = report_content.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "report file should contain two appended lines"
+    );
+
+    assert!(
+        lines[0].contains("Migration failed after"),
+        "first line should be human-readable failure output"
+    );
+    assert_eq!(
+        lines[0], human_stderr_line,
+        "first appended line should match human stderr failure line"
+    );
+
+    assert_eq!(
+        lines[1],
+        json_stdout.trim(),
+        "second appended line should match json stdout line"
+    );
+    let second_payload: serde_json::Value =
+        serde_json::from_str(lines[1]).expect("second line should be valid json from --json run");
+    assert_eq!(second_payload["status"], "failed");
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
+    if let Some(parent) = report_path.parent() {
+        let _ = fs::remove_dir_all(parent);
+    }
+}
+
+#[test]
 fn report_file_captures_human_failure_output() {
     let bin = env!("CARGO_BIN_EXE_migrations");
     let old_path = unique_test_path("old-report-human");
