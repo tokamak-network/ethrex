@@ -29,7 +29,8 @@ use crate::l2::messages::{compute_message_digests, get_batch_messages};
 use super::app_state::{AppState, AppStateError};
 use super::app_types::AppProgramInput;
 use super::handlers::{
-    constants::COMMON_BRIDGE_L2_ADDRESS, deposit, eth_transfer, gas_fee, system_call, withdrawal,
+    constants::COMMON_BRIDGE_L2_ADDRESS,
+    deposit, eth_transfer, gas_fee, system_call, withdrawal,
 };
 use super::incremental_mpt;
 
@@ -244,7 +245,12 @@ pub fn execute_app_circuit<C: AppCircuit>(
 
             // ── ETH transfer (no calldata) ── common
             if tx.data().is_empty() {
-                eth_transfer::handle_eth_transfer(&mut state, sender, to_address, tx.value())?;
+                let gas = eth_transfer::handle_eth_transfer(
+                    &mut state,
+                    sender,
+                    to_address,
+                    tx.value(),
+                )?;
                 cumulative_gas += gas;
                 gas_fee::apply_gas_fee_distribution(
                     &mut state,
@@ -266,7 +272,7 @@ pub fn execute_app_circuit<C: AppCircuit>(
 
             // ── Withdrawal (CommonBridgeL2) ── common
             if to_address == COMMON_BRIDGE_L2_ADDRESS {
-                let (_handler_gas, message_id) =
+                let (gas, message_id) =
                     withdrawal::handle_withdrawal(&mut state, tx, sender)?;
                 cumulative_gas += gas;
                 gas_fee::apply_gas_fee_distribution(
@@ -289,7 +295,8 @@ pub fn execute_app_circuit<C: AppCircuit>(
 
             // ── System contract calls ── common
             if system_call::is_system_contract(to_address) {
-                system_call::handle_system_call(&mut state, tx, sender, to_address)?;
+                let gas =
+                    system_call::handle_system_call(&mut state, tx, sender, to_address)?;
                 cumulative_gas += gas;
                 gas_fee::apply_gas_fee_distribution(
                     &mut state,
@@ -394,12 +401,12 @@ pub fn execute_app_circuit<C: AppCircuit>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethrex_common::H160;
+    use crate::common::handlers::system_call::is_system_contract;
     use crate::common::handlers::constants::{
         COMMON_BRIDGE_L2_ADDRESS, FEE_TOKEN_RATIO_ADDRESS, FEE_TOKEN_REGISTRY_ADDRESS,
         L2_TO_L1_MESSENGER_ADDRESS,
     };
-    use crate::common::handlers::system_call::is_system_contract;
-    use ethrex_common::H160;
 
     #[test]
     fn is_system_contract_checks() {
