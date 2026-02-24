@@ -127,10 +127,6 @@ impl ErrorKind {
     }
 }
 
-fn classify_error(message: &str) -> ErrorKind {
-    classify_error_from_message(message).0
-}
-
 fn classify_error_from_message(message: &str) -> (ErrorKind, &'static str) {
     let msg = message.to_ascii_lowercase();
     let transient_markers = ["eagain", "etimedout", "timed out", "enospc", "temporar"];
@@ -191,7 +187,7 @@ where
             Ok(value) => return Ok((value, attempts)),
             Err(error) => {
                 let message = format!("{error:#}");
-                let kind = classify_error(&message);
+                let (kind, _) = classify_error_from_report(&error);
                 if !kind.retryable() || attempts >= max_attempts {
                     return Err(eyre::Report::new(RetryFailure {
                         attempts_used: attempts,
@@ -202,6 +198,34 @@ where
                 }
 
                 tokio::time::sleep(compute_backoff_delay(base_delay, attempts)).await;
+            }
+        }
+    }
+}
+
+fn retry_sync<T, O>(mut operation: O, max_attempts: u32, base_delay: Duration) -> Result<(T, u32)>
+where
+    O: FnMut() -> Result<T>,
+{
+    let mut attempts = 0u32;
+
+    loop {
+        attempts += 1;
+        match operation() {
+            Ok(value) => return Ok((value, attempts)),
+            Err(error) => {
+                let message = format!("{error:#}");
+                let (kind, _) = classify_error_from_report(&error);
+                if !kind.retryable() || attempts >= max_attempts {
+                    return Err(eyre::Report::new(RetryFailure {
+                        attempts_used: attempts,
+                        max_attempts,
+                        kind,
+                        message,
+                    }));
+                }
+
+                std::thread::sleep(compute_backoff_delay(base_delay, attempts));
             }
         }
     }
@@ -360,9 +384,19 @@ async fn migrate_libmdbx_to_rocksdb(
     let old_path = old_storage_path
         .to_str()
         .wrap_err("Invalid UTF-8 in old storage path")?;
-    let old_store =
-        ethrex_storage_libmdbx::Store::new(old_path, ethrex_storage_libmdbx::EngineType::Libmdbx)
-            .wrap_err_with(|| format!("Cannot open libmdbx store at {old_storage_path:?}"))?;
+    let (old_store, attempts) = retry_sync(
+        || {
+            ethrex_storage_libmdbx::Store::new(
+                old_path,
+                ethrex_storage_libmdbx::EngineType::Libmdbx,
+            )
+            .wrap_err_with(|| format!("Cannot open libmdbx store at {old_storage_path:?}"))
+        },
+        retry_attempts,
+        retry_base_delay,
+    )?;
+    retries_performed += attempts.saturating_sub(1);
+
     let (_, attempts) = retry_async(
         || async {
             old_store
@@ -379,13 +413,21 @@ async fn migrate_libmdbx_to_rocksdb(
     let genesis = genesis_path
         .to_str()
         .wrap_err("Invalid UTF-8 in genesis path")?;
-    let new_store = ethrex_storage::Store::new_from_genesis(
-        new_storage_path,
-        ethrex_storage::EngineType::RocksDB,
-        genesis,
+    let (new_store, attempts) = retry_async(
+        || async {
+            ethrex_storage::Store::new_from_genesis(
+                new_storage_path,
+                ethrex_storage::EngineType::RocksDB,
+                genesis,
+            )
+            .await
+            .wrap_err_with(|| format!("Cannot create/open rocksdb store at {new_storage_path:?}"))
+        },
+        retry_attempts,
+        retry_base_delay,
     )
-    .await
-    .wrap_err_with(|| format!("Cannot create/open rocksdb store at {new_storage_path:?}"))?;
+    .await?;
+    retries_performed += attempts.saturating_sub(1);
 
     let (last_block_number, attempts) = retry_async(
         || async {
@@ -486,32 +528,54 @@ async fn migrate_libmdbx_to_rocksdb(
     .await?;
     retries_performed += attempts.saturating_sub(1);
 
-    let block_headers = (plan.start_block..=plan.end_block).map(|i| {
-        old_store
-            .get_block_header(i)
-            .wrap_err_with(|| format!("Cannot fetch block header #{i} from libmdbx store"))?
-            .ok_or_else(|| eyre::eyre!("Missing block header #{i} in libmdbx store"))
-    });
-
-    let blocks = block_headers.zip(block_bodies);
     let mut added_blocks = Vec::new();
-    for (header, body) in blocks {
-        let header = migrate_block_header(header?);
+    for (block_number, body) in (plan.start_block..=plan.end_block).zip(block_bodies) {
+        let (header, attempts) = retry_sync(
+            || {
+                old_store
+                    .get_block_header(block_number)
+                    .wrap_err_with(|| {
+                        format!("Cannot fetch block header #{block_number} from libmdbx store")
+                    })?
+                    .ok_or_else(|| {
+                        eyre::eyre!("Missing block header #{block_number} in libmdbx store")
+                    })
+            },
+            retry_attempts,
+            retry_base_delay,
+        )?;
+        retries_performed += attempts.saturating_sub(1);
+
+        let header = migrate_block_header(header);
         let body = migrate_block_body(body);
-        let block_number = header.number;
         let block = Block::new(header, body);
 
         let block_hash = block.hash();
-        blockchain
-            .add_block_pipeline(block)
-            .wrap_err_with(|| format!("Cannot add block {block_number} to rocksdb store"))?;
+        let (_, attempts) = retry_sync(
+            || {
+                blockchain
+                    .add_block_pipeline(block.clone())
+                    .wrap_err_with(|| format!("Cannot add block {block_number} to rocksdb store"))
+            },
+            retry_attempts,
+            retry_base_delay,
+        )?;
+        retries_performed += attempts.saturating_sub(1);
+
         added_blocks.push((block_number, block_hash));
     }
 
-    let last_block = old_store
-        .get_block_header(plan.end_block)
-        .wrap_err_with(|| format!("Cannot fetch last block header #{}", plan.end_block))?
-        .ok_or_else(|| eyre::eyre!("Missing block header #{}", plan.end_block))?;
+    let (last_block, attempts) = retry_sync(
+        || {
+            old_store
+                .get_block_header(plan.end_block)
+                .wrap_err_with(|| format!("Cannot fetch last block header #{}", plan.end_block))?
+                .ok_or_else(|| eyre::eyre!("Missing block header #{}", plan.end_block))
+        },
+        retry_attempts,
+        retry_base_delay,
+    )?;
+    retries_performed += attempts.saturating_sub(1);
     let (_, attempts) = retry_async(
         || async {
             new_store
@@ -569,8 +633,9 @@ mod tests {
     use super::{
         CLI, DEFAULT_RETRY_BASE_DELAY_MS, MAX_RETRY_ATTEMPTS, MigrationErrorReport, MigrationPlan,
         MigrationReport, REPORT_SCHEMA_VERSION, RetryFailure, Subcommand,
-        build_migration_error_report, build_migration_plan, classify_error,
+        build_migration_error_report, build_migration_plan, classify_error_from_message,
         classify_error_from_report, classify_io_error_kind, compute_backoff_delay, retry_async,
+        retry_sync,
     };
     use clap::Parser;
     use serde_json::{Value, json};
@@ -997,11 +1062,11 @@ mod tests {
     #[test]
     fn classifies_transient_error_markers() {
         assert_eq!(
-            classify_error("read failed: EAGAIN"),
+            classify_error_from_message("read failed: EAGAIN").0,
             super::ErrorKind::Transient
         );
         assert_eq!(
-            classify_error("operation timed out while reading"),
+            classify_error_from_message("operation timed out while reading").0,
             super::ErrorKind::Transient
         );
     }
@@ -1009,7 +1074,7 @@ mod tests {
     #[test]
     fn classifies_fatal_errors_by_default() {
         assert_eq!(
-            classify_error("leveldb corrupted block"),
+            classify_error_from_message("leveldb corrupted block").0,
             super::ErrorKind::Fatal
         );
     }
@@ -1046,6 +1111,16 @@ mod tests {
             classify_io_error_kind(std::io::ErrorKind::PermissionDenied),
             super::ErrorKind::Fatal
         );
+    }
+
+    #[test]
+    fn classify_error_from_report_marks_permission_denied_as_fatal_io_kind() {
+        let io_error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "no permission");
+        let report = eyre::Report::new(io_error);
+        let (kind, source) = classify_error_from_report(&report);
+
+        assert_eq!(kind, super::ErrorKind::Fatal);
+        assert_eq!(source, "io_kind");
     }
 
     #[test]
@@ -1093,6 +1168,21 @@ mod tests {
         assert_eq!(error_report.error_type, "transient");
         assert_eq!(error_report.error_classification, "retry_failure");
         assert_eq!(error_report.retry_attempts_used, Some(3));
+    }
+
+    #[test]
+    fn classify_error_from_report_prefers_retry_failure_over_wrapped_io() {
+        let wrapped = eyre::Report::new(RetryFailure {
+            attempts_used: 2,
+            max_attempts: 3,
+            kind: super::ErrorKind::Fatal,
+            message: std::io::Error::new(std::io::ErrorKind::TimedOut, "socket timed out")
+                .to_string(),
+        });
+        let (kind, source) = classify_error_from_report(&wrapped);
+
+        assert_eq!(kind, super::ErrorKind::Fatal);
+        assert_eq!(source, "retry_failure");
     }
 
     #[test]
@@ -1205,6 +1295,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_async_does_not_retry_fatal_io_error() {
+        let result = retry_async(
+            || async {
+                Err::<u64, _>(eyre::Report::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "permission denied",
+                )))
+            },
+            3,
+            std::time::Duration::from_millis(0),
+        )
+        .await;
+
+        let error = result.expect_err("fatal io error should not be retried");
+        let retry_failure = error
+            .downcast_ref::<RetryFailure>()
+            .expect("retry metadata should be attached");
+        assert_eq!(retry_failure.attempts_used, 1);
+        assert_eq!(retry_failure.max_attempts, 3);
+        assert_eq!(retry_failure.kind, super::ErrorKind::Fatal);
+    }
+
+    #[tokio::test]
+    async fn retry_async_retries_io_timeout_error_until_success() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_op = Arc::clone(&attempts);
+
+        let (value, total_attempts) = retry_async(
+            move || {
+                let attempts_for_op = Arc::clone(&attempts_for_op);
+                async move {
+                    let current = attempts_for_op.fetch_add(1, Ordering::SeqCst);
+                    if current == 0 {
+                        Err(eyre::Report::new(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "socket timed out",
+                        )))
+                    } else {
+                        Ok(7u64)
+                    }
+                }
+            },
+            3,
+            std::time::Duration::from_millis(0),
+        )
+        .await
+        .expect("io timeout should be retried and eventually succeed");
+
+        assert_eq!(value, 7);
+        assert_eq!(total_attempts, 2);
+    }
+
+    #[tokio::test]
     async fn retry_async_with_single_attempt_stops_immediately() {
         let result = retry_async(
             || async { Err::<u64, _>(eyre::eyre!("temporary EAGAIN failure")) },
@@ -1253,6 +1396,138 @@ mod tests {
             std::time::Duration::from_millis(0),
         )
         .await;
+
+        let error = result.expect_err("expected retry exhaustion at configured max attempts");
+        let retry_failure = error
+            .downcast_ref::<RetryFailure>()
+            .expect("retry failure metadata should be attached");
+
+        assert_eq!(retry_failure.attempts_used, 5);
+        assert_eq!(retry_failure.max_attempts, 5);
+        assert_eq!(retry_failure.kind, super::ErrorKind::Transient);
+    }
+
+    #[test]
+    fn retry_sync_retries_transient_error_until_success() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_op = Arc::clone(&attempts);
+
+        let (value, total_attempts) = retry_sync(
+            move || {
+                let current = attempts_for_op.fetch_add(1, Ordering::SeqCst);
+                if current == 0 {
+                    Err(eyre::eyre!("temporary EAGAIN failure"))
+                } else {
+                    Ok(42u64)
+                }
+            },
+            3,
+            std::time::Duration::from_millis(0),
+        )
+        .expect("retry should eventually succeed");
+
+        assert_eq!(value, 42);
+        assert_eq!(total_attempts, 2);
+    }
+
+    #[test]
+    fn retry_sync_does_not_retry_fatal_error() {
+        let result = retry_sync(
+            || Err::<u64, _>(eyre::eyre!("corrupted leveldb block")),
+            3,
+            std::time::Duration::from_millis(0),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn retry_sync_does_not_retry_fatal_io_error() {
+        let result = retry_sync(
+            || {
+                Err::<u64, _>(eyre::Report::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "permission denied",
+                )))
+            },
+            3,
+            std::time::Duration::from_millis(0),
+        );
+
+        let error = result.expect_err("fatal io error should not be retried");
+        let retry_failure = error
+            .downcast_ref::<RetryFailure>()
+            .expect("retry metadata should be attached");
+        assert_eq!(retry_failure.attempts_used, 1);
+        assert_eq!(retry_failure.max_attempts, 3);
+        assert_eq!(retry_failure.kind, super::ErrorKind::Fatal);
+    }
+
+    #[test]
+    fn retry_sync_retries_io_timeout_error_until_success() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_op = Arc::clone(&attempts);
+
+        let (value, total_attempts) = retry_sync(
+            move || {
+                let current = attempts_for_op.fetch_add(1, Ordering::SeqCst);
+                if current == 0 {
+                    Err(eyre::Report::new(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "socket timed out",
+                    )))
+                } else {
+                    Ok(11u64)
+                }
+            },
+            3,
+            std::time::Duration::from_millis(0),
+        )
+        .expect("io timeout should be retried and eventually succeed");
+
+        assert_eq!(value, 11);
+        assert_eq!(total_attempts, 2);
+    }
+
+    #[test]
+    fn retry_sync_failure_carries_typed_retry_metadata() {
+        let result = retry_sync(
+            || {
+                Err::<u64, _>(eyre::Report::new(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "socket timed out",
+                )))
+            },
+            3,
+            std::time::Duration::from_millis(0),
+        );
+
+        let error = result.expect_err("expected retry exhaustion failure");
+        let retry_failure = error
+            .downcast_ref::<RetryFailure>()
+            .expect("retry failure metadata should be attached");
+
+        assert_eq!(retry_failure.attempts_used, 3);
+        assert_eq!(retry_failure.max_attempts, 3);
+        assert_eq!(retry_failure.kind, super::ErrorKind::Transient);
+
+        let (kind, source) = classify_error_from_report(&error);
+        assert_eq!(kind, super::ErrorKind::Transient);
+        assert_eq!(source, "retry_failure");
+    }
+
+    #[test]
+    fn retry_sync_honors_custom_max_attempts() {
+        let result = retry_sync(
+            || {
+                Err::<u64, _>(eyre::Report::new(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "socket timed out",
+                )))
+            },
+            5,
+            std::time::Duration::from_millis(0),
+        );
 
         let error = result.expect_err("expected retry exhaustion at configured max attempts");
         let retry_failure = error

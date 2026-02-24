@@ -47,7 +47,9 @@ fn emits_json_failure_payload_for_runtime_error() {
     assert_eq!(payload["phase"], "execution");
     assert!(payload.get("error_type").is_some());
     assert!(payload.get("error_classification").is_some());
+    assert!(payload.get("retryable").is_some());
     assert!(payload.get("retry_attempts").is_some());
+    assert!(payload.get("retry_attempts_used").is_some());
     assert!(payload.get("error").is_some());
     assert!(payload.get("elapsed_ms").is_some());
 
@@ -63,7 +65,10 @@ fn run_and_expect_clap_validation_error(args: &[&str], expected_flag: &str) {
         .output()
         .expect("failed to execute migrations binary");
 
-    assert!(!output.status.success(), "command should fail clap validation");
+    assert!(
+        !output.status.success(),
+        "command should fail clap validation"
+    );
 
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
     assert!(stderr.contains(expected_flag));

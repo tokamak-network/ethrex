@@ -2,6 +2,37 @@
 
 This tool provides a way to migrate ethrex databases created with Libmdbx to RocksDB.
 
+## Development prerequisites
+
+- Rust toolchain matching the workspace (`rust-toolchain.toml`)
+- `libclang` available on the system for `bindgen` (required by `mdbx-sys`/`librocksdb-sys` during build/test)
+
+Quick check:
+
+```bash
+tooling/migrations/scripts/check-prereqs.sh
+```
+
+If `cargo test --manifest-path tooling/migrations/Cargo.toml` fails with
+`Unable to find libclang`, install your distro `libclang` package and/or set:
+
+```bash
+export LIBCLANG_PATH=/path/to/libclang
+```
+
+Common install examples:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get update && sudo apt-get install -y libclang-dev clang
+
+# Fedora
+sudo dnf install -y clang clang-devel
+
+# Arch Linux
+sudo pacman -S --needed clang
+```
+
 ## Instructions
 
 > [!IMPORTANT]
@@ -37,6 +68,7 @@ Options:
 `--dry-run` can be used in automation to verify source and target DB readability and to preview how many blocks would be imported before doing a real migration run.
 
 `--retry-attempts` and `--retry-base-delay-ms` tune retry policy for retryable operations.
+Retry handling is applied during source LibMDBX store open, source state reads, source/target store head discovery, target RocksDB store open/creation, per-block header fetches, per-block imports, and final forkchoice update.
 
 `--json` prints a structured migration report (`status`, `phase`, source/target heads, plan, dry-run flag, imported blocks, elapsed runtime) suitable for scripting and CI logs.
 When execution fails with `--json`, the CLI emits a structured failure object including `error_type` and `retryable` for automation parsing.
@@ -80,7 +112,7 @@ Notes:
 
 ### Retryability policy notes
 
-The current IO classification policy treats these as **transient** (retryable):
+The current IO classification policy treats these as **transient** (retryable), and this classification is used directly by both async and sync retry paths:
 - `WouldBlock`
 - `TimedOut`
 - `Interrupted`
@@ -90,7 +122,7 @@ The current IO classification policy treats these as **transient** (retryable):
 - `NotConnected`
 - `BrokenPipe`
 
-Other `std::io::ErrorKind` values are treated as **fatal** by default.
+Other `std::io::ErrorKind` values are treated as **fatal** by default (no retries; e.g. `PermissionDenied`).
 
 Failure shape:
 
