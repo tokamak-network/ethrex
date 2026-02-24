@@ -1,5 +1,7 @@
 use std::{
+    fs::OpenOptions,
     future::Future,
+    io::Write,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -52,6 +54,9 @@ pub enum Subcommand {
         #[arg(long = "json", default_value_t = false)]
         /// Emit machine-readable JSON output
         json: bool,
+        #[arg(long = "report-file")]
+        /// Optional path to append emitted reports (JSON lines in --json mode)
+        report_file: Option<PathBuf>,
         #[arg(long = "retry-attempts", default_value_t = MAX_RETRY_ATTEMPTS, value_parser = clap::value_parser!(u32).range(1..=10))]
         /// Retry budget for retryable operations (1-10, inclusive)
         retry_attempts: u32,
@@ -277,12 +282,20 @@ pub fn emit_error_report(
     retry_attempts: u32,
     started_at: Instant,
     error: &eyre::Report,
+    report_file: Option<&Path>,
 ) {
     if json {
         let report = build_migration_error_report(error, started_at, retry_attempts);
 
         match serde_json::to_string(&report) {
-            Ok(encoded) => println!("{encoded}"),
+            Ok(encoded) => {
+                println!("{encoded}");
+                if let Err(write_error) = append_report_line(report_file, &encoded) {
+                    eprintln!(
+                        "Migration failed: {error:#}\nCannot write report file: {write_error:#}"
+                    );
+                }
+            }
             Err(ser_error) => {
                 eprintln!("Migration failed: {error:#}\nReport encoding failed: {ser_error}")
             }
@@ -290,41 +303,72 @@ pub fn emit_error_report(
         return;
     }
 
-    eprintln!(
+    let line = format!(
         "Migration failed after {}ms: {error:#}",
         elapsed_ms(started_at)
     );
+    eprintln!("{line}");
+    if let Err(write_error) = append_report_line(report_file, &line) {
+        eprintln!("Cannot write report file: {write_error:#}");
+    }
 }
 
-fn emit_report(report: &MigrationReport, json: bool) -> Result<()> {
+fn append_report_line(report_file: Option<&Path>, line: &str) -> Result<()> {
+    let Some(path) = report_file else {
+        return Ok(());
+    };
+
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("Cannot create report directory {parent:?}"))?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .wrap_err_with(|| format!("Cannot open report file {path:?}"))?;
+    writeln!(file, "{line}").wrap_err_with(|| format!("Cannot write report file {path:?}"))?;
+    Ok(())
+}
+
+fn emit_report(report: &MigrationReport, json: bool, report_file: Option<&Path>) -> Result<()> {
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(report).wrap_err("Cannot serialize migration report")?
-        );
+        let encoded =
+            serde_json::to_string(report).wrap_err("Cannot serialize migration report")?;
+        println!("{encoded}");
+        append_report_line(report_file, &encoded)?;
         return Ok(());
     }
 
-    match report.plan {
-        Some(plan) => println!(
+    let summary = match report.plan {
+        Some(plan) => format!(
             "Migration plan: {} block(s), from #{}, to #{}",
             plan.block_count(),
             plan.start_block,
             plan.end_block
         ),
-        None => println!(
+        None => format!(
             "Rocksdb store is already up to date (target head: {}, source head: {})",
             report.target_head, report.source_head
         ),
-    }
+    };
+    println!("{summary}");
+    append_report_line(report_file, &summary)?;
 
     if report.dry_run {
-        println!("Dry-run complete: no data was written.");
+        let line = "Dry-run complete: no data was written.";
+        println!("{line}");
+        append_report_line(report_file, line)?;
     } else if report.imported_blocks > 0 {
-        println!(
+        let line = format!(
             "Migration completed successfully: imported {} block(s).",
             report.imported_blocks
         );
+        println!("{line}");
+        append_report_line(report_file, &line)?;
     }
 
     Ok(())
@@ -343,6 +387,12 @@ impl Subcommand {
         }
     }
 
+    pub fn report_file(&self) -> Option<&Path> {
+        match self {
+            Self::Libmdbx2Rocksdb { report_file, .. } => report_file.as_deref(),
+        }
+    }
+
     pub async fn run(&self) -> Result<()> {
         match self {
             Self::Libmdbx2Rocksdb {
@@ -353,6 +403,7 @@ impl Subcommand {
                 json,
                 retry_attempts,
                 retry_base_delay_ms,
+                report_file,
             } => {
                 migrate_libmdbx_to_rocksdb(
                     genesis_path,
@@ -362,6 +413,7 @@ impl Subcommand {
                     *json,
                     *retry_attempts,
                     Duration::from_millis(*retry_base_delay_ms),
+                    report_file.as_deref(),
                 )
                 .await
             }
@@ -377,6 +429,7 @@ async fn migrate_libmdbx_to_rocksdb(
     json: bool,
     retry_attempts: u32,
     retry_base_delay: Duration,
+    report_file: Option<&Path>,
 ) -> Result<()> {
     let started_at = Instant::now();
     let mut retries_performed = 0u32;
@@ -469,7 +522,7 @@ async fn migrate_libmdbx_to_rocksdb(
             retry_attempts,
             retries_performed,
         };
-        emit_report(&report, json)?;
+        emit_report(&report, json, report_file)?;
         return Ok(());
     };
 
@@ -487,7 +540,7 @@ async fn migrate_libmdbx_to_rocksdb(
             retry_attempts,
             retries_performed,
         };
-        emit_report(&report, json)?;
+        emit_report(&report, json, report_file)?;
         return Ok(());
     }
 
@@ -506,6 +559,7 @@ async fn migrate_libmdbx_to_rocksdb(
             retries_performed,
         },
         json,
+        report_file,
     )?;
 
     let blockchain_opts = BlockchainOptions {
@@ -608,7 +662,7 @@ async fn migrate_libmdbx_to_rocksdb(
         retry_attempts,
         retries_performed,
     };
-    emit_report(&report, json)?;
+    emit_report(&report, json, report_file)?;
 
     Ok(())
 }
@@ -682,6 +736,7 @@ mod tests {
                 new_storage_path,
                 dry_run,
                 json,
+                report_file,
                 retry_attempts,
                 retry_base_delay_ms,
             } => {
@@ -690,6 +745,7 @@ mod tests {
                 assert_eq!(new_storage_path, std::path::PathBuf::from("new-db"));
                 assert!(dry_run);
                 assert!(json);
+                assert!(report_file.is_none());
                 assert_eq!(retry_attempts, MAX_RETRY_ATTEMPTS);
                 assert_eq!(retry_base_delay_ms, DEFAULT_RETRY_BASE_DELAY_MS);
             }
@@ -818,6 +874,38 @@ mod tests {
         ]);
 
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn report_file_reflects_flag_value() {
+        let with_report_file = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--report-file",
+            "reports/migration.jsonl",
+        ]);
+        assert_eq!(
+            with_report_file.command.report_file(),
+            Some(std::path::Path::new("reports/migration.jsonl"))
+        );
+
+        let without_report_file = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+        ]);
+        assert!(without_report_file.command.report_file().is_none());
     }
 
     #[test]

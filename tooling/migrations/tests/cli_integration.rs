@@ -89,6 +89,7 @@ fn help_command_succeeds_and_lists_core_flags() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
     assert!(stdout.contains("--dry-run"));
     assert!(stdout.contains("--json"));
+    assert!(stdout.contains("--report-file"));
     assert!(stdout.contains("--retry-attempts"));
     assert!(stdout.contains("--retry-base-delay-ms"));
 }
