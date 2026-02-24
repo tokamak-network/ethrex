@@ -246,4 +246,90 @@ mod tests {
         let slots = encrypted_note_slots(hash, 32);
         assert_eq!(slots.len(), 2); // length slot + 1 data slot
     }
+
+    #[test]
+    fn write_encrypted_note_short_encoding() {
+        // 31 bytes: short format — data + length packed in one slot.
+        use crate::common::app_state::AppState;
+        use crate::common::app_types::{AccountProof, StorageProof};
+
+        let contract = ethrex_common::H160([0xDE; 20]);
+        let note = H256::from_low_u64_be(42);
+        let data = [0xAB_u8; 10]; // 10 bytes = short format
+
+        let length_slot = encrypted_note_length_slot(note);
+        let storage_proofs = vec![StorageProof {
+            address: contract,
+            slot: length_slot,
+            value: U256::zero(),
+            account_proof: vec![],
+            storage_proof: vec![],
+        }];
+        let account_proofs = vec![AccountProof {
+            address: contract,
+            nonce: 0,
+            balance: U256::zero(),
+            storage_root: H256::zero(),
+            code_hash: H256::zero(),
+            proof: vec![],
+        }];
+        let mut state = AppState::from_proofs(H256::zero(), account_proofs, storage_proofs);
+
+        write_encrypted_note(&mut state, contract, note, &data).unwrap();
+
+        let stored = state.get_storage(contract, length_slot).unwrap();
+        let stored_bytes = stored.to_big_endian();
+        // First 10 bytes should be 0xAB, rest zeros except last byte.
+        assert_eq!(&stored_bytes[..10], &[0xAB; 10]);
+        assert_eq!(&stored_bytes[10..31], &[0u8; 21]);
+        // Last byte = length * 2 = 20.
+        assert_eq!(stored_bytes[31], 20);
+    }
+
+    #[test]
+    fn write_encrypted_note_long_encoding() {
+        // 32 bytes: long format — length slot + 1 data chunk.
+        use crate::common::app_state::AppState;
+        use crate::common::app_types::{AccountProof, StorageProof};
+
+        let contract = ethrex_common::H160([0xDE; 20]);
+        let note = H256::from_low_u64_be(99);
+        let data = [0xCD_u8; 32]; // exactly 32 bytes = long format
+
+        let all_slots = encrypted_note_slots(note, 32);
+        assert_eq!(all_slots.len(), 2);
+
+        let mut storage_proofs: Vec<StorageProof> = all_slots
+            .iter()
+            .map(|s| StorageProof {
+                address: contract,
+                slot: *s,
+                value: U256::zero(),
+                account_proof: vec![],
+                storage_proof: vec![],
+            })
+            .collect();
+        // Deduplicate (shouldn't happen but be safe).
+        storage_proofs.dedup_by_key(|p| p.slot);
+
+        let account_proofs = vec![AccountProof {
+            address: contract,
+            nonce: 0,
+            balance: U256::zero(),
+            storage_root: H256::zero(),
+            code_hash: H256::zero(),
+            proof: vec![],
+        }];
+        let mut state = AppState::from_proofs(H256::zero(), account_proofs, storage_proofs);
+
+        write_encrypted_note(&mut state, contract, note, &data).unwrap();
+
+        // Length slot should be 2*32+1 = 65.
+        let length_val = state.get_storage(contract, all_slots[0]).unwrap();
+        assert_eq!(length_val, U256::from(65));
+
+        // Data slot should contain the full 32 bytes.
+        let data_val = state.get_storage(contract, all_slots[1]).unwrap();
+        assert_eq!(data_val.to_big_endian(), [0xCD_u8; 32]);
+    }
 }

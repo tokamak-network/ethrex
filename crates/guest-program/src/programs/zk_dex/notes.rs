@@ -148,7 +148,7 @@ pub fn execute_spend(
 /// Execute a `liquidate` operation.
 ///
 /// Destroys a note and transfers value from the contract to a recipient.
-/// Currently supports ETH only; DAI would require the DAI contract's storage.
+/// Supports ETH only (tokenType == 0). DAI is not used.
 ///
 /// ## Params layout
 /// - `[0..32]`   — to (address, ABI-encoded 32-byte word)
@@ -179,8 +179,7 @@ pub fn execute_liquidate(
         state.debit_balance(contract, value)?;
         state.credit_balance(to, value)?;
     }
-    // DAI transfers would require modifying the DAI contract's storage,
-    // which is outside the scope of the DEX circuit.
+    // DAI is not used in this deployment.
 
     Ok(OperationResult {
         success: true,
