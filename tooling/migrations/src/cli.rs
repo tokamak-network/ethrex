@@ -778,6 +778,43 @@ mod tests {
     }
 
     #[test]
+    fn emit_report_json_mode_appends_single_line_for_dry_run() {
+        let report_path = unique_test_path("json-dry-run-single-line").join("report.jsonl");
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "planned",
+            phase: "planning",
+            source_head: 12,
+            target_head: 8,
+            plan: Some(MigrationPlan {
+                start_block: 9,
+                end_block: 12,
+            }),
+            dry_run: true,
+            imported_blocks: 0,
+            elapsed_ms: 3,
+            retry_attempts: 3,
+            retries_performed: 0,
+        };
+
+        emit_report(&report, true, Some(&report_path))
+            .expect("json report emission should succeed");
+
+        let file_content =
+            fs::read_to_string(&report_path).expect("report file should be readable");
+        let lines: Vec<&str> = file_content.lines().collect();
+        assert_eq!(lines.len(), 1, "json mode should append exactly one line");
+
+        let parsed: Value = serde_json::from_str(lines[0]).expect("line should be valid json");
+        assert_eq!(parsed["status"], "planned");
+        assert_eq!(parsed["dry_run"], true);
+
+        if let Some(parent) = report_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
     fn emit_report_writes_human_lines_to_report_file() {
         let report_path = unique_test_path("human-report").join("report.log");
         let report = MigrationReport {
