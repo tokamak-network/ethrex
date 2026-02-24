@@ -150,6 +150,13 @@ fn analyze_zk_dex_transactions(
     // Transfer selector for classify_tx matching.
     let transfer_sel = circuit::transfer_selector_bytes();
 
+    // Track whether we have withdrawals or non-privileged txs so we only
+    // add their ancillary accounts when they are actually present in the
+    // batch.  This avoids requesting proofs for accounts whose trie paths
+    // may not be in the ExecutionWitness (empty-batch case).
+    let mut has_withdrawal = false;
+    let mut has_non_privileged = false;
+
     for block in blocks {
         for tx in &block.body.transactions {
             // Privileged (deposit) transactions.
@@ -171,6 +178,7 @@ fn analyze_zk_dex_transactions(
 
             // Sender always needed (nonce, balance for gas).
             if let Ok(sender) = tx.sender() {
+                has_non_privileged = true;
                 accounts.insert(sender);
 
                 let to_addr = match tx.to() {
@@ -182,6 +190,7 @@ fn analyze_zk_dex_transactions(
 
                 // Withdrawal via CommonBridgeL2.
                 if to_addr == COMMON_BRIDGE_L2_ADDRESS {
+                    has_withdrawal = true;
                     accounts.insert(COMMON_BRIDGE_L2_ADDRESS);
                     continue;
                 }
@@ -219,23 +228,29 @@ fn analyze_zk_dex_transactions(
     }
 
     // ── Withdrawal-required accounts/storage ──
+    // Only include when there are actual withdrawal transactions.
     // The withdrawal handler credits BURN_ADDRESS and updates
     // L2_TO_L1_MESSENGER_ADDRESS.lastMessageId (slot 0).
-    accounts.insert(BURN_ADDRESS);
-    accounts.insert(L2_TO_L1_MESSENGER_ADDRESS);
-    storage_slots.insert((L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT));
+    if has_withdrawal {
+        accounts.insert(BURN_ADDRESS);
+        accounts.insert(L2_TO_L1_MESSENGER_ADDRESS);
+        storage_slots.insert((L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT));
+    }
 
     // ── Gas fee distribution accounts ──
+    // Only include when there are non-privileged transactions that pay gas.
     // coinbase receives priority fees; fee vaults receive base/operator fees.
-    for block in blocks {
-        accounts.insert(block.header.coinbase);
-    }
-    for fc in fee_configs {
-        if let Some(vault) = fc.base_fee_vault {
-            accounts.insert(vault);
+    if has_non_privileged {
+        for block in blocks {
+            accounts.insert(block.header.coinbase);
         }
-        if let Some(op) = fc.operator_fee_config {
-            accounts.insert(op.operator_fee_vault);
+        for fc in fee_configs {
+            if let Some(vault) = fc.base_fee_vault {
+                accounts.insert(vault);
+            }
+            if let Some(op) = fc.operator_fee_config {
+                accounts.insert(op.operator_fee_vault);
+            }
         }
     }
 

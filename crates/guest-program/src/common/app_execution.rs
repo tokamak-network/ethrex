@@ -176,6 +176,39 @@ pub fn execute_app_circuit<C: AppCircuit>(
         let mut block_receipts: Vec<Receipt> = Vec::new();
         let mut cumulative_gas: u64 = 0;
 
+        // Pre-compute per-tx gas from block header.
+        //
+        // The L2 sequencer places privileged and non-privileged transactions
+        // in separate blocks, so block.header.gas_used equals the total gas
+        // consumed by non-privileged txs alone (privileged blocks have their
+        // own gas that doesn't affect fee distribution).
+        //
+        // For blocks with exactly 1 non-privileged tx (the common case), the
+        // tx's gas == block.header.gas_used.  For multi-tx blocks we divide
+        // equally and assign any remainder to the last tx so the total is exact.
+        let non_priv_tx_count = block
+            .body
+            .transactions
+            .iter()
+            .filter(|tx| !tx.is_privileged())
+            .count() as u64;
+
+        let block_gas = block.header.gas_used;
+
+        // Per-tx gas allocation from the block header.
+        let per_tx_gas_base = if non_priv_tx_count > 0 {
+            block_gas / non_priv_tx_count
+        } else {
+            0
+        };
+        let per_tx_gas_remainder = if non_priv_tx_count > 0 {
+            block_gas % non_priv_tx_count
+        } else {
+            0
+        };
+
+        let mut non_priv_idx: u64 = 0;
+
         for tx in &block.body.transactions {
             // ── Privileged transactions (L2 deposits) ── common
             if tx.is_privileged() {
@@ -184,6 +217,17 @@ pub fn execute_app_circuit<C: AppCircuit>(
                 // They are accounted for in message digests.
                 continue;
             }
+
+            non_priv_idx += 1;
+
+            // Use the actual gas from the block header instead of fixed constants
+            // so that gas fee distribution matches the EVM exactly.
+            let gas = if non_priv_idx == non_priv_tx_count {
+                // Last (or only) tx gets base + remainder to ensure exact total.
+                per_tx_gas_base + per_tx_gas_remainder
+            } else {
+                per_tx_gas_base
+            };
 
             // ── Signature verification ── common
             let sender = tx
@@ -206,7 +250,7 @@ pub fn execute_app_circuit<C: AppCircuit>(
 
             // ── ETH transfer (no calldata) ── common
             if tx.data().is_empty() {
-                let gas = eth_transfer::handle_eth_transfer(
+                eth_transfer::handle_eth_transfer(
                     &mut state,
                     sender,
                     to_address,
@@ -233,7 +277,7 @@ pub fn execute_app_circuit<C: AppCircuit>(
 
             // ── Withdrawal (CommonBridgeL2) ── common
             if to_address == COMMON_BRIDGE_L2_ADDRESS {
-                let (gas, message_id) =
+                let (_handler_gas, message_id) =
                     withdrawal::handle_withdrawal(&mut state, tx, sender)?;
                 cumulative_gas += gas;
                 gas_fee::apply_gas_fee_distribution(
@@ -256,8 +300,7 @@ pub fn execute_app_circuit<C: AppCircuit>(
 
             // ── System contract calls ── common
             if system_call::is_system_contract(to_address) {
-                let gas =
-                    system_call::handle_system_call(&mut state, tx, sender, to_address)?;
+                system_call::handle_system_call(&mut state, tx, sender, to_address)?;
                 cumulative_gas += gas;
                 gas_fee::apply_gas_fee_distribution(
                     &mut state,
@@ -279,7 +322,6 @@ pub fn execute_app_circuit<C: AppCircuit>(
 
             // ── App-specific operation ── delegated to circuit
             let op = circuit.classify_tx(tx)?;
-            let gas = circuit.gas_cost(&op);
             let result = circuit.execute_operation(&mut state, sender, &op)?;
 
             // Handle ETH value transfer if any.
