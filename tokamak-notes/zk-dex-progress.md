@@ -137,37 +137,117 @@
 - [x] SP1 벤치마크 바이너리
 - [x] Cycle-tracker 계측
 
+### Phase 2: L1/L2 환경 구성 + 배포 자동화 — 완료
+
+| 날짜 | 작업 | 커밋 |
+|------|------|------|
+| 2026-02-23 | L1 deployer에 ZK-DEX 게스트 프로그램 등록 파이프라인 추가 | `fe62d40` |
+| | - `--register-guest-programs` CLI 옵션 | |
+| | - GuestProgramRegistry 초기화 + 공식 프로그램 등록 | |
+| | - Timelock을 통한 SP1 VK 등록 | |
+| 2026-02-23 | SP1 게스트 크래시 수정 + Timelock VK 등록 수정 | `808d428` |
+| 2026-02-24 | **로컬 환경 자동 구축 스크립트** | `b31fed5`, `057383d` |
+| | - `crates/l2/scripts/zk-dex-localnet.sh` 신규 작성 | |
+| | - 한 명령으로 L1→배포→L2→프로버 자동 시작 | |
+| | - `start/stop/status/logs` 명령 + `--no-prover` 옵션 | |
+| | - Makefile 타겟 4개 추가 | |
+| | - 실제 로컬넷 구동 검증 완료 | |
+
 ### 아직 구현되지 않은 것
 
-- [ ] 실제 L1 네트워크에 컨트랙트 배포
-- [ ] 실제 L2 노드를 Guest Program과 함께 가동
-- [ ] End-to-end 증명 생성 및 L1 검증 (실 환경)
+- [x] ~~실제 L1 네트워크에 컨트랙트 배포~~ → 로컬 L1 (ethrex --dev) 배포 완료
+- [x] ~~실제 L2 노드를 Guest Program과 함께 가동~~ → `zk-dex-localnet.sh`로 자동화
+- [ ] End-to-end 증명 생성 및 L1 검증 (프로버 연결 후 검증)
+- [ ] 프론트엔드 (platform/client) 연결하여 L2 RPC 동작 확인
 - [ ] 대규모 배치 벤치마크 (100+ transfers)
 - [ ] Native ARM 벤치마크 (Rosetta 2 없이)
 
 ---
 
-## 5. 다음 단계: L1/L2 환경 구성 + E2E 실행
+## 5. 로컬 환경 구축 가이드
+
+### 자동 구축 (권장)
+
+```bash
+cd crates/l2
+
+# 전체 환경 시작 (L1 + 컨트랙트 배포 + L2 + SP1 프로버)
+make zk-dex-localnet
+
+# 프로버 없이 시작 (앱/프론트엔드 테스트용, 더 빠름)
+make zk-dex-localnet-no-prover
+
+# 상태 확인
+make zk-dex-localnet-status
+
+# 로그 확인
+./scripts/zk-dex-localnet.sh logs        # 전체
+./scripts/zk-dex-localnet.sh logs l1     # L1만
+./scripts/zk-dex-localnet.sh logs l2     # L2만
+
+# 종료
+make zk-dex-localnet-stop
+```
+
+### 엔드포인트
+
+| 서비스 | URL |
+|--------|-----|
+| L1 RPC | `http://localhost:8545` |
+| L2 RPC | `http://localhost:1729` |
+| Proof Coordinator | `tcp://127.0.0.1:3900` |
+| Prometheus Metrics | `http://localhost:3702` |
+
+### 배포된 컨트랙트 (로컬)
+
+| 컨트랙트 | 주소 |
+|-----------|------|
+| OnChainProposer | `cmd/.env` → `ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS` |
+| Bridge | `cmd/.env` → `ETHREX_WATCHER_BRIDGE_ADDRESS` |
+| SP1 Verifier | `cmd/.env` → `ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS` |
+| Timelock | `cmd/.env` → `ETHREX_TIMELOCK_ADDRESS` |
+
+### 검증
+
+```bash
+# L1 RPC 동작 확인
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+  http://localhost:8545
+
+# L2 RPC 동작 확인
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+  http://localhost:1729
+```
+
+### 주의사항
+
+- 첫 실행 시 릴리스 빌드가 포함되어 10분 이상 소요될 수 있음
+- 이전 ethrex 프로세스가 남아있으면 포트 충돌 → `pkill ethrex` 후 재시작
+- 런타임 파일은 `crates/l2/.zk-dex-localnet/`에 저장 (`.gitignore` 처리됨)
+
+---
+
+## 6. 다음 단계
 
 ### 목표
 
-Mock 데이터가 아닌 **실제 L1/L2 환경**에서 ZK-DEX 트랜잭션을 실행하고,
-end-to-end로 증명을 생성하여 L1에서 검증되는 것을 확인한다.
+로컬 환경에서 ZK-DEX 트랜잭션의 **End-to-end 증명 생성 + L1 검증**을 완료한다.
 
 ### 할 일
 
-1. **L1 환경 구성**
-   - 로컬 L1 노드 실행 (Anvil 또는 Geth devnet)
-   - ZK 검증 컨트랙트 배포 (guestProgramRegistry 포함)
+1. **프로버 연결**
+   - 로컬넷에 SP1 프로버 추가 (`make zk-dex-localnet` 또는 별도 터미널)
+   - L2 배치 → SP1 증명 생성 → L1 제출 → 검증 파이프라인 확인
 
-2. **L2 환경 구성**
-   - ethrex L2 노드를 ZK-DEX guest program으로 기동
-   - programs.toml에 sp1-zk-dex 설정
-   - 시퀀서 + 프루버 연결 확인
+2. **프론트엔드 연결**
+   - `platform/client/` (Next.js) → L2 RPC (`http://localhost:1729`) 연결
+   - DEX token transfer UI 동작 확인
 
 3. **E2E 테스트**
    - DEX token transfer 트랜잭션 전송
-   - 배치 생성 → SP1 증명 생성 → L1 제출 → 검증
+   - 배치 생성 → SP1 증명 생성 → L1 제출 → 온체인 검증
    - 전체 파이프라인 동작 확인
 
 4. **성능 측정**
@@ -185,3 +265,5 @@ end-to-end로 증명을 생성하여 L1에서 검증되는 것을 확인한다.
 | `tokamak-notes/zk-optimization-plan.md` | 전체 최적화 계획 (Phase 1-6) |
 | `tokamak-notes/guest-program-modularization/` | 모듈화 설계 문서 (12개) |
 | `tokamak-notes/local-setup-guide.md` | 로컬 실행 가이드 |
+| `crates/l2/scripts/ZK-DEX-LOCALNET.md` | 로컬넷 스크립트 사용 가이드 |
+| `tokamak-notes/zk-dex-e2e-design.md` | E2E 아키텍처 설계 |

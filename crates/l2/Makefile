@@ -4,7 +4,8 @@
 	init-prover-sp1 init-prover-risc0 init-prover-exec build-prover clean-tee clean-tee-contract-deps \
 	test integration-test integration-test-gpu state-diff-test \
 	init-guest-program down-guest-program \
-	zk-dex-localnet zk-dex-localnet-no-prover zk-dex-localnet-stop zk-dex-localnet-status
+	zk-dex-localnet zk-dex-localnet-no-prover zk-dex-localnet-stop zk-dex-localnet-status \
+	zk-dex-docker zk-dex-docker-no-prover zk-dex-docker-no-gpu zk-dex-docker-stop zk-dex-docker-status zk-dex-docker-logs zk-dex-docker-clean
 
 .DEFAULT_GOAL := help
 
@@ -280,6 +281,31 @@ zk-dex-localnet-stop: ## 🛑 Stop ZK-DEX localnet
 
 zk-dex-localnet-status: ## 📊 Show ZK-DEX localnet status
 	./scripts/zk-dex-localnet.sh status
+
+# ==============================================================================
+# ZK-DEX Docker E2E (SP1 + GPU)
+# ==============================================================================
+
+zk-dex-docker: ## 🐳 Start ZK-DEX Docker localnet (SP1 + GPU)
+	./scripts/zk-dex-docker.sh start
+
+zk-dex-docker-no-prover: ## 🐳 Start ZK-DEX Docker localnet without prover
+	./scripts/zk-dex-docker.sh start --no-prover
+
+zk-dex-docker-no-gpu: ## 🐳 Start ZK-DEX Docker localnet (SP1 CPU-only)
+	./scripts/zk-dex-docker.sh start --no-gpu
+
+zk-dex-docker-stop: ## 🛑 Stop ZK-DEX Docker localnet
+	./scripts/zk-dex-docker.sh stop
+
+zk-dex-docker-status: ## 📊 Show ZK-DEX Docker localnet status
+	./scripts/zk-dex-docker.sh status
+
+zk-dex-docker-logs: ## 📋 Tail ZK-DEX Docker localnet logs
+	./scripts/zk-dex-docker.sh logs
+
+zk-dex-docker-clean: ## 🧹 Clean ZK-DEX Docker images and volumes
+	./scripts/zk-dex-docker.sh clean
 
 # ==============================================================================
 # Guest Programs
