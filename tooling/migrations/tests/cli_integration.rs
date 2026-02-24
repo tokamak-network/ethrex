@@ -284,12 +284,19 @@ fn report_file_creates_parent_directories_for_json_failure() {
         "report file should be created with parent directories"
     );
 
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
     let report_content =
         fs::read_to_string(&report_path).expect("report file should be created and readable");
     let line = report_content
         .lines()
         .next()
         .expect("report file should contain one line");
+    assert_eq!(
+        stdout.trim(),
+        line,
+        "stdout json and report-file json line should match"
+    );
+
     let payload: serde_json::Value =
         serde_json::from_str(line).expect("report line should be valid json");
     assert_eq!(payload["status"], "failed");
@@ -328,9 +335,23 @@ fn report_file_creates_parent_directories_for_human_failure() {
         "report file should be created with parent directories"
     );
 
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
     let report_content =
         fs::read_to_string(&report_path).expect("report file should be created and readable");
     assert!(report_content.contains("Migration failed after"));
+
+    let stderr_line = stderr
+        .lines()
+        .find(|line| line.contains("Migration failed after"))
+        .expect("stderr should contain migration failure line");
+    let report_line = report_content
+        .lines()
+        .find(|line| line.contains("Migration failed after"))
+        .expect("report should contain migration failure line");
+    assert_eq!(
+        stderr_line, report_line,
+        "stderr and report failure lines should match"
+    );
 
     let _ = fs::remove_dir_all(&old_path);
     let _ = fs::remove_dir_all(&new_path);
