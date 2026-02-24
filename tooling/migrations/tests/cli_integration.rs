@@ -94,6 +94,7 @@ fn help_command_succeeds_and_lists_core_flags() {
     assert!(stdout.contains("--retry-base-delay-ms"));
     assert!(stdout.contains("--continue-on-error"));
     assert!(stdout.contains("--resume-from-block"));
+    assert!(stdout.contains("--checkpoint-file"));
 }
 
 #[test]
@@ -167,6 +168,47 @@ fn resume_from_block_flag_is_accepted() {
 
     let _ = fs::remove_dir_all(&old_path);
     let _ = fs::remove_dir_all(&new_path);
+}
+
+#[test]
+fn checkpoint_file_flag_is_accepted() {
+    let bin = env!("CARGO_BIN_EXE_migrations");
+    let old_path = unique_test_path("old-checkpoint-file");
+    let new_path = unique_test_path("new-checkpoint-file");
+    let checkpoint_path = unique_test_path("checkpoint-file").join("state/checkpoint.json");
+
+    let output = Command::new(bin)
+        .args([
+            "libmdbx2rocksdb",
+            "--genesis",
+            "./does-not-exist-genesis.json",
+            "--store.old",
+            old_path.to_string_lossy().as_ref(),
+            "--store.new",
+            new_path.to_string_lossy().as_ref(),
+            "--checkpoint-file",
+            checkpoint_path.to_string_lossy().as_ref(),
+            "--json",
+        ])
+        .output()
+        .expect("failed to execute migrations binary");
+
+    assert!(
+        !output.status.success(),
+        "command should still fail for invalid/non-existent stores"
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    let payload: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON");
+
+    assert_eq!(payload["status"], "failed");
+
+    let _ = fs::remove_dir_all(&old_path);
+    let _ = fs::remove_dir_all(&new_path);
+    if let Some(parent) = checkpoint_path.parent() {
+        let _ = fs::remove_dir_all(parent);
+    }
 }
 
 #[test]

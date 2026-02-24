@@ -1,5 +1,5 @@
 use std::{
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     future::Future,
     io::Write,
     path::{Path, PathBuf},
@@ -69,6 +69,9 @@ pub enum Subcommand {
         #[arg(long = "resume-from-block")]
         /// Force migration start block (must be > current target head and <= source head)
         resume_from_block: Option<u64>,
+        #[arg(long = "checkpoint-file")]
+        /// Optional path to write migration checkpoint metadata after successful completion
+        checkpoint_file: Option<PathBuf>,
     },
 }
 
@@ -257,6 +260,18 @@ struct MigrationErrorReport {
     elapsed_ms: u64,
 }
 
+#[derive(Serialize)]
+struct MigrationCheckpoint {
+    schema_version: u32,
+    source_head: u64,
+    target_head: u64,
+    imported_blocks: u64,
+    skipped_blocks: u64,
+    retry_attempts: u32,
+    retries_performed: u32,
+    elapsed_ms: u64,
+}
+
 fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis() as u64
 }
@@ -341,6 +356,35 @@ fn append_report_line(report_file: Option<&Path>, line: &str) -> Result<()> {
     Ok(())
 }
 
+fn write_checkpoint_file(path: Option<&Path>, report: &MigrationReport) -> Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("Cannot create checkpoint directory {parent:?}"))?;
+    }
+
+    let checkpoint = MigrationCheckpoint {
+        schema_version: REPORT_SCHEMA_VERSION,
+        source_head: report.source_head,
+        target_head: report.target_head,
+        imported_blocks: report.imported_blocks,
+        skipped_blocks: report.skipped_blocks,
+        retry_attempts: report.retry_attempts,
+        retries_performed: report.retries_performed,
+        elapsed_ms: report.elapsed_ms,
+    };
+
+    let encoded = serde_json::to_string_pretty(&checkpoint)
+        .wrap_err("Cannot serialize migration checkpoint")?;
+    fs::write(path, encoded).wrap_err_with(|| format!("Cannot write checkpoint file {path:?}"))?;
+    Ok(())
+}
+
 fn emit_report(report: &MigrationReport, json: bool, report_file: Option<&Path>) -> Result<()> {
     if json {
         let encoded =
@@ -421,6 +465,7 @@ impl Subcommand {
                 retry_base_delay_ms,
                 continue_on_error,
                 resume_from_block,
+                checkpoint_file,
                 report_file,
             } => {
                 migrate_libmdbx_to_rocksdb(
@@ -433,6 +478,7 @@ impl Subcommand {
                     Duration::from_millis(*retry_base_delay_ms),
                     *continue_on_error,
                     *resume_from_block,
+                    checkpoint_file.as_deref(),
                     report_file.as_deref(),
                 )
                 .await
@@ -451,6 +497,7 @@ async fn migrate_libmdbx_to_rocksdb(
     retry_base_delay: Duration,
     continue_on_error: bool,
     resume_from_block: Option<u64>,
+    checkpoint_file: Option<&Path>,
     report_file: Option<&Path>,
 ) -> Result<()> {
     let started_at = Instant::now();
@@ -722,6 +769,7 @@ async fn migrate_libmdbx_to_rocksdb(
         retries_performed,
     };
     emit_report(&report, json, report_file)?;
+    write_checkpoint_file(checkpoint_file, &report)?;
 
     Ok(())
 }
@@ -774,7 +822,7 @@ mod tests {
         MigrationReport, REPORT_SCHEMA_VERSION, RetryFailure, Subcommand, append_report_line,
         build_migration_error_report, build_migration_plan, classify_error_from_message,
         classify_error_from_report, classify_io_error_kind, compute_backoff_delay,
-        emit_error_report, emit_report, retry_async, retry_sync,
+        emit_error_report, emit_report, retry_async, retry_sync, write_checkpoint_file,
     };
     use clap::Parser;
     use serde_json::{Value, json};
@@ -966,6 +1014,46 @@ mod tests {
 
         if let Some(parent) = report_path.parent() {
             let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn write_checkpoint_file_writes_json_payload() {
+        let checkpoint_path = unique_test_path("checkpoint-json").join("state/checkpoint.json");
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "completed",
+            phase: "execution",
+            source_head: 100,
+            target_head: 98,
+            plan: Some(MigrationPlan {
+                start_block: 1,
+                end_block: 100,
+            }),
+            dry_run: false,
+            imported_blocks: 98,
+            skipped_blocks: 2,
+            elapsed_ms: 123,
+            retry_attempts: 3,
+            retries_performed: 4,
+        };
+
+        write_checkpoint_file(Some(&checkpoint_path), &report)
+            .expect("checkpoint file write should succeed");
+
+        let content = fs::read_to_string(&checkpoint_path).expect("checkpoint should be readable");
+        let payload: Value = serde_json::from_str(&content).expect("checkpoint should be json");
+
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["source_head"], 100);
+        assert_eq!(payload["target_head"], 98);
+        assert_eq!(payload["imported_blocks"], 98);
+        assert_eq!(payload["skipped_blocks"], 2);
+        assert_eq!(payload["retry_attempts"], 3);
+
+        if let Some(parent) = checkpoint_path.parent() {
+            let root = parent.parent().unwrap_or(parent);
+            let _ = fs::remove_dir_all(root);
         }
     }
 
@@ -1183,6 +1271,7 @@ mod tests {
                 retry_base_delay_ms,
                 continue_on_error,
                 resume_from_block,
+                checkpoint_file,
             } => {
                 assert_eq!(genesis_path, std::path::PathBuf::from("genesis.json"));
                 assert_eq!(old_storage_path, std::path::PathBuf::from("old-db"));
@@ -1194,6 +1283,7 @@ mod tests {
                 assert_eq!(retry_base_delay_ms, DEFAULT_RETRY_BASE_DELAY_MS);
                 assert!(!continue_on_error);
                 assert!(resume_from_block.is_none());
+                assert!(checkpoint_file.is_none());
             }
         }
     }
@@ -1347,6 +1437,33 @@ mod tests {
                 resume_from_block, ..
             } => {
                 assert_eq!(resume_from_block, Some(15));
+            }
+        }
+    }
+
+    #[test]
+    fn parses_checkpoint_file_flag() {
+        let cli = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--checkpoint-file",
+            "state/checkpoint.json",
+        ]);
+
+        match cli.command {
+            Subcommand::Libmdbx2Rocksdb {
+                checkpoint_file, ..
+            } => {
+                assert_eq!(
+                    checkpoint_file,
+                    Some(std::path::PathBuf::from("state/checkpoint.json"))
+                );
             }
         }
     }
