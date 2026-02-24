@@ -164,8 +164,16 @@ fn report_file_captures_json_failure_output() {
     let payload: serde_json::Value =
         serde_json::from_str(line).expect("report line should be valid json");
 
+    assert_eq!(payload["schema_version"], 1);
     assert_eq!(payload["status"], "failed");
+    assert_eq!(payload["phase"], "execution");
+    assert!(payload.get("error_type").is_some());
+    assert!(payload.get("error_classification").is_some());
     assert!(payload.get("retryable").is_some());
+    assert!(payload.get("retry_attempts").is_some());
+    assert!(payload.get("retry_attempts_used").is_some());
+    assert!(payload.get("error").is_some());
+    assert!(payload.get("elapsed_ms").is_some());
 
     let _ = fs::remove_dir_all(&old_path);
     let _ = fs::remove_dir_all(&new_path);
@@ -213,7 +221,16 @@ fn report_file_appends_across_multiple_json_failures() {
     for line in lines {
         let payload: serde_json::Value =
             serde_json::from_str(line).expect("report line should be valid json");
+        assert_eq!(payload["schema_version"], 1);
         assert_eq!(payload["status"], "failed");
+        assert_eq!(payload["phase"], "execution");
+        assert!(payload.get("error_type").is_some());
+        assert!(payload.get("error_classification").is_some());
+        assert!(payload.get("retryable").is_some());
+        assert!(payload.get("retry_attempts").is_some());
+        assert!(payload.get("retry_attempts_used").is_some());
+        assert!(payload.get("error").is_some());
+        assert!(payload.get("elapsed_ms").is_some());
     }
 
     let _ = fs::remove_dir_all(&old_path);
