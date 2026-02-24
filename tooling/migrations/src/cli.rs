@@ -66,6 +66,9 @@ pub enum Subcommand {
         #[arg(long = "continue-on-error", default_value_t = false)]
         /// Continue migrating subsequent blocks when a block-level import fails
         continue_on_error: bool,
+        #[arg(long = "resume-from-block")]
+        /// Force migration start block (must be > current target head and <= source head)
+        resume_from_block: Option<u64>,
     },
 }
 
@@ -417,6 +420,7 @@ impl Subcommand {
                 retry_attempts,
                 retry_base_delay_ms,
                 continue_on_error,
+                resume_from_block,
                 report_file,
             } => {
                 migrate_libmdbx_to_rocksdb(
@@ -428,6 +432,7 @@ impl Subcommand {
                     *retry_attempts,
                     Duration::from_millis(*retry_base_delay_ms),
                     *continue_on_error,
+                    *resume_from_block,
                     report_file.as_deref(),
                 )
                 .await
@@ -445,6 +450,7 @@ async fn migrate_libmdbx_to_rocksdb(
     retry_attempts: u32,
     retry_base_delay: Duration,
     continue_on_error: bool,
+    resume_from_block: Option<u64>,
     report_file: Option<&Path>,
 ) -> Result<()> {
     let started_at = Instant::now();
@@ -524,7 +530,8 @@ async fn migrate_libmdbx_to_rocksdb(
     .await?;
     retries_performed += attempts.saturating_sub(1);
 
-    let Some(plan) = build_migration_plan(last_known_block, last_block_number) else {
+    let Some(plan) = build_migration_plan(last_known_block, last_block_number, resume_from_block)?
+    else {
         let report = MigrationReport {
             schema_version: REPORT_SCHEMA_VERSION,
             status: "up_to_date",
@@ -719,11 +726,36 @@ async fn migrate_libmdbx_to_rocksdb(
     Ok(())
 }
 
-fn build_migration_plan(last_known_block: u64, last_source_block: u64) -> Option<MigrationPlan> {
-    (last_known_block < last_source_block).then_some(MigrationPlan {
-        start_block: last_known_block + 1,
-        end_block: last_source_block,
-    })
+fn build_migration_plan(
+    last_known_block: u64,
+    last_source_block: u64,
+    resume_from_block: Option<u64>,
+) -> Result<Option<MigrationPlan>> {
+    if let Some(resume_start) = resume_from_block {
+        if resume_start <= last_known_block {
+            return Err(eyre::eyre!(
+                "Invalid --resume-from-block={resume_start}: must be greater than target head #{last_known_block}"
+            ));
+        }
+
+        if resume_start > last_source_block {
+            return Err(eyre::eyre!(
+                "Invalid --resume-from-block={resume_start}: must be <= source head #{last_source_block}"
+            ));
+        }
+
+        return Ok(Some(MigrationPlan {
+            start_block: resume_start,
+            end_block: last_source_block,
+        }));
+    }
+
+    Ok(
+        (last_known_block < last_source_block).then_some(MigrationPlan {
+            start_block: last_known_block + 1,
+            end_block: last_source_block,
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -1082,22 +1114,46 @@ mod tests {
 
     #[test]
     fn no_plan_when_target_is_up_to_date() {
-        let plan = build_migration_plan(100, 100);
+        let plan = build_migration_plan(100, 100, None).expect("planning should succeed");
         assert!(plan.is_none());
     }
 
     #[test]
     fn no_plan_when_target_is_ahead() {
-        let plan = build_migration_plan(101, 100);
+        let plan = build_migration_plan(101, 100, None).expect("planning should succeed");
         assert!(plan.is_none());
     }
 
     #[test]
     fn builds_plan_when_source_is_ahead() {
-        let plan = build_migration_plan(12, 20).expect("plan should exist");
+        let plan = build_migration_plan(12, 20, None)
+            .expect("planning should succeed")
+            .expect("plan should exist");
         assert_eq!(plan.start_block, 13);
         assert_eq!(plan.end_block, 20);
         assert_eq!(plan.block_count(), 8);
+    }
+
+    #[test]
+    fn builds_plan_from_resume_from_block_override() {
+        let plan = build_migration_plan(12, 20, Some(15))
+            .expect("planning should succeed")
+            .expect("plan should exist");
+        assert_eq!(plan.start_block, 15);
+        assert_eq!(plan.end_block, 20);
+        assert_eq!(plan.block_count(), 6);
+    }
+
+    #[test]
+    fn rejects_resume_from_block_not_greater_than_target_head() {
+        let result = build_migration_plan(12, 20, Some(12));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_resume_from_block_above_source_head() {
+        let result = build_migration_plan(12, 20, Some(21));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1126,6 +1182,7 @@ mod tests {
                 retry_attempts,
                 retry_base_delay_ms,
                 continue_on_error,
+                resume_from_block,
             } => {
                 assert_eq!(genesis_path, std::path::PathBuf::from("genesis.json"));
                 assert_eq!(old_storage_path, std::path::PathBuf::from("old-db"));
@@ -1136,6 +1193,7 @@ mod tests {
                 assert_eq!(retry_attempts, MAX_RETRY_ATTEMPTS);
                 assert_eq!(retry_base_delay_ms, DEFAULT_RETRY_BASE_DELAY_MS);
                 assert!(!continue_on_error);
+                assert!(resume_from_block.is_none());
             }
         }
     }
@@ -1265,6 +1323,30 @@ mod tests {
                 continue_on_error, ..
             } => {
                 assert!(continue_on_error);
+            }
+        }
+    }
+
+    #[test]
+    fn parses_resume_from_block_flag() {
+        let cli = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--resume-from-block",
+            "15",
+        ]);
+
+        match cli.command {
+            Subcommand::Libmdbx2Rocksdb {
+                resume_from_block, ..
+            } => {
+                assert_eq!(resume_from_block, Some(15));
             }
         }
     }
