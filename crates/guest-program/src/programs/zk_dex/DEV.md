@@ -216,7 +216,7 @@ storage slots need Merkle proofs. For each operation:
 
 - [x] Verify storage slot numbers with manual trace (slot 3, 4, 14 confirmed)
 - [x] Add settleOrder old-note slots to witness analyzer (makerNote, takerStakeNote from calldata)
+- [x] Fix witness analyzer for storage-dependent slots (parentNote + makeOrder order slots)
 - [ ] Measure actual EVM gas costs and update constants
 - [ ] Add DAI token support for liquidate (requires DAI contract proofs)
-- [ ] parentNote slot for settleOrder (only in order storage, relies on ExecutionWitness)
 - [ ] Docker E2E test: deploy ZkDex → call each function → SP1 prove → L1 verify
