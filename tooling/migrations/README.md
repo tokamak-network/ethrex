@@ -52,7 +52,7 @@ Finally restart your ethrex node pointing `--datadir` to the path of the migrate
 ```
 Migrate a libmdbx database to rocksdb
 
-Usage: migrations libmdbx2rocksdb --genesis <GENESIS_PATH> --store.old <OLD_STORAGE_PATH> --store.new <NEW_STORAGE_PATH> [--dry-run] [--json] [--report-file <REPORT_FILE>] [--retry-attempts <RETRY_ATTEMPTS>] [--retry-base-delay-ms <RETRY_BASE_DELAY_MS>] [--continue-on-error] [--resume-from-block <RESUME_FROM_BLOCK>] [--checkpoint-file <CHECKPOINT_FILE>]
+Usage: migrations libmdbx2rocksdb --genesis <GENESIS_PATH> --store.old <OLD_STORAGE_PATH> --store.new <NEW_STORAGE_PATH> [--dry-run] [--json] [--report-file <REPORT_FILE>] [--retry-attempts <RETRY_ATTEMPTS>] [--retry-base-delay-ms <RETRY_BASE_DELAY_MS>] [--continue-on-error] [--resume-from-block <RESUME_FROM_BLOCK>] [--checkpoint-file <CHECKPOINT_FILE>] [--resume-from-checkpoint <RESUME_FROM_CHECKPOINT>]
 
 Options:
       --genesis <GENESIS_PATH>                      Path to the genesis file for the genesis block of store.old
@@ -66,6 +66,8 @@ Options:
       --continue-on-error                           Continue migrating subsequent blocks when a block-level import fails
       --resume-from-block <RESUME_FROM_BLOCK>       Force migration start block (must be > current target head and <= source head)
       --checkpoint-file <CHECKPOINT_FILE>           Optional path to write migration checkpoint metadata after successful completion
+      --resume-from-checkpoint <RESUME_FROM_CHECKPOINT>
+                                                    Optional path to a checkpoint file whose target_head is used as migration start
   -h, --help                                        Print help
 ```
 
@@ -77,6 +79,8 @@ Retry handling is applied during source LibMDBX store open, source state reads, 
 `--continue-on-error` enables degraded execution for block-level failures during migration execution: failed block header reads/imports are skipped with warnings, and migration proceeds using successfully imported blocks.
 
 `--resume-from-block` overrides the computed start block and is validated against discovered heads (`target_head < resume_from_block <= source_head`). This is useful for operator-driven resume after a partial migration.
+
+`--resume-from-checkpoint` derives resume start from a checkpoint file (`resume_start = checkpoint.target_head + 1`) and applies the same head validation. `--resume-from-block` and `--resume-from-checkpoint` are mutually exclusive.
 
 `--checkpoint-file` writes a JSON checkpoint after successful completion with migration head/volume metadata (`source_head`, `target_head`, `imported_blocks`, `skipped_blocks`, retry counters, elapsed time).
 

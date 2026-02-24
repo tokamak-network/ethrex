@@ -10,7 +10,7 @@ use clap::{Parser as ClapParser, Subcommand as ClapSubcommand};
 use ethrex_blockchain::{Blockchain, BlockchainOptions, BlockchainType, L2Config};
 use ethrex_common::types::Block;
 use eyre::{ContextCompat, Result, WrapErr};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::utils::{migrate_block_body, migrate_block_header};
 
@@ -72,6 +72,9 @@ pub enum Subcommand {
         #[arg(long = "checkpoint-file")]
         /// Optional path to write migration checkpoint metadata after successful completion
         checkpoint_file: Option<PathBuf>,
+        #[arg(long = "resume-from-checkpoint")]
+        /// Optional path to a checkpoint file whose target_head is used as migration start
+        resume_from_checkpoint: Option<PathBuf>,
     },
 }
 
@@ -260,7 +263,7 @@ struct MigrationErrorReport {
     elapsed_ms: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct MigrationCheckpoint {
     schema_version: u32,
     source_head: u64,
@@ -354,6 +357,14 @@ fn append_report_line(report_file: Option<&Path>, line: &str) -> Result<()> {
         .wrap_err_with(|| format!("Cannot open report file {path:?}"))?;
     writeln!(file, "{line}").wrap_err_with(|| format!("Cannot write report file {path:?}"))?;
     Ok(())
+}
+
+fn read_resume_block_from_checkpoint(path: &Path) -> Result<u64> {
+    let content = fs::read_to_string(path)
+        .wrap_err_with(|| format!("Cannot read checkpoint file {path:?}"))?;
+    let checkpoint: MigrationCheckpoint = serde_json::from_str(&content)
+        .wrap_err_with(|| format!("Cannot parse checkpoint file {path:?}"))?;
+    Ok(checkpoint.target_head.saturating_add(1))
 }
 
 fn write_checkpoint_file(path: Option<&Path>, report: &MigrationReport) -> Result<()> {
@@ -466,6 +477,7 @@ impl Subcommand {
                 continue_on_error,
                 resume_from_block,
                 checkpoint_file,
+                resume_from_checkpoint,
                 report_file,
             } => {
                 migrate_libmdbx_to_rocksdb(
@@ -478,6 +490,7 @@ impl Subcommand {
                     Duration::from_millis(*retry_base_delay_ms),
                     *continue_on_error,
                     *resume_from_block,
+                    resume_from_checkpoint.as_deref(),
                     checkpoint_file.as_deref(),
                     report_file.as_deref(),
                 )
@@ -497,6 +510,7 @@ async fn migrate_libmdbx_to_rocksdb(
     retry_base_delay: Duration,
     continue_on_error: bool,
     resume_from_block: Option<u64>,
+    resume_from_checkpoint: Option<&Path>,
     checkpoint_file: Option<&Path>,
     report_file: Option<&Path>,
 ) -> Result<()> {
@@ -577,7 +591,20 @@ async fn migrate_libmdbx_to_rocksdb(
     .await?;
     retries_performed += attempts.saturating_sub(1);
 
-    let Some(plan) = build_migration_plan(last_known_block, last_block_number, resume_from_block)?
+    if resume_from_block.is_some() && resume_from_checkpoint.is_some() {
+        return Err(eyre::eyre!(
+            "--resume-from-block and --resume-from-checkpoint are mutually exclusive"
+        ));
+    }
+
+    let resume_override = match (resume_from_block, resume_from_checkpoint) {
+        (Some(block), None) => Some(block),
+        (None, Some(path)) => Some(read_resume_block_from_checkpoint(path)?),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("mutual exclusion validated above"),
+    };
+
+    let Some(plan) = build_migration_plan(last_known_block, last_block_number, resume_override)?
     else {
         let report = MigrationReport {
             schema_version: REPORT_SCHEMA_VERSION,
@@ -822,7 +849,8 @@ mod tests {
         MigrationReport, REPORT_SCHEMA_VERSION, RetryFailure, Subcommand, append_report_line,
         build_migration_error_report, build_migration_plan, classify_error_from_message,
         classify_error_from_report, classify_io_error_kind, compute_backoff_delay,
-        emit_error_report, emit_report, retry_async, retry_sync, write_checkpoint_file,
+        emit_error_report, emit_report, read_resume_block_from_checkpoint, retry_async, retry_sync,
+        write_checkpoint_file,
     };
     use clap::Parser;
     use serde_json::{Value, json};
@@ -1014,6 +1042,35 @@ mod tests {
 
         if let Some(parent) = report_path.parent() {
             let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn read_resume_block_from_checkpoint_returns_target_plus_one() {
+        let checkpoint_path = unique_test_path("checkpoint-read").join("state/checkpoint.json");
+        let checkpoint = json!({
+            "schema_version": 1,
+            "source_head": 100,
+            "target_head": 98,
+            "imported_blocks": 98,
+            "skipped_blocks": 0,
+            "retry_attempts": 3,
+            "retries_performed": 1,
+            "elapsed_ms": 44
+        });
+
+        if let Some(parent) = checkpoint_path.parent() {
+            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
+        }
+        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
+
+        let resume_block = read_resume_block_from_checkpoint(&checkpoint_path)
+            .expect("resume block should be readable");
+        assert_eq!(resume_block, 99);
+
+        if let Some(parent) = checkpoint_path.parent() {
+            let root = parent.parent().unwrap_or(parent);
+            let _ = fs::remove_dir_all(root);
         }
     }
 
@@ -1272,6 +1329,7 @@ mod tests {
                 continue_on_error,
                 resume_from_block,
                 checkpoint_file,
+                resume_from_checkpoint,
             } => {
                 assert_eq!(genesis_path, std::path::PathBuf::from("genesis.json"));
                 assert_eq!(old_storage_path, std::path::PathBuf::from("old-db"));
@@ -1284,6 +1342,7 @@ mod tests {
                 assert!(!continue_on_error);
                 assert!(resume_from_block.is_none());
                 assert!(checkpoint_file.is_none());
+                assert!(resume_from_checkpoint.is_none());
             }
         }
     }
@@ -1462,6 +1521,34 @@ mod tests {
             } => {
                 assert_eq!(
                     checkpoint_file,
+                    Some(std::path::PathBuf::from("state/checkpoint.json"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parses_resume_from_checkpoint_flag() {
+        let cli = CLI::parse_from([
+            "migrations",
+            "libmdbx2rocksdb",
+            "--genesis",
+            "g.json",
+            "--store.old",
+            "old",
+            "--store.new",
+            "new",
+            "--resume-from-checkpoint",
+            "state/checkpoint.json",
+        ]);
+
+        match cli.command {
+            Subcommand::Libmdbx2Rocksdb {
+                resume_from_checkpoint,
+                ..
+            } => {
+                assert_eq!(
+                    resume_from_checkpoint,
                     Some(std::path::PathBuf::from("state/checkpoint.json"))
                 );
             }
