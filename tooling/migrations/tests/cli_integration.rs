@@ -155,6 +155,7 @@ fn report_file_captures_json_failure_output() {
 
     assert!(!output.status.success());
 
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
     let report_content =
         fs::read_to_string(&report_path).expect("report file should be created and readable");
     let line = report_content
@@ -164,6 +165,11 @@ fn report_file_captures_json_failure_output() {
     let payload: serde_json::Value =
         serde_json::from_str(line).expect("report line should be valid json");
 
+    assert_eq!(
+        stdout.trim(),
+        line,
+        "stdout json and report-file json line should match"
+    );
     assert_eq!(payload["schema_version"], 1);
     assert_eq!(payload["status"], "failed");
     assert_eq!(payload["phase"], "execution");
@@ -330,7 +336,7 @@ fn report_file_appends_across_multiple_human_failures() {
     let new_path = unique_test_path("new-report-append-human");
     let report_path = unique_test_path("report-append-human").join("migration.log");
 
-    for _ in 0..2 {
+    for run in 1..=2 {
         let output = Command::new(bin)
             .args([
                 "libmdbx2rocksdb",
@@ -347,15 +353,33 @@ fn report_file_appends_across_multiple_human_failures() {
             .expect("failed to execute migrations binary");
 
         assert!(!output.status.success());
-    }
 
-    let report_content =
-        fs::read_to_string(&report_path).expect("report file should be created and readable");
-    let count = report_content.matches("Migration failed after").count();
-    assert_eq!(
-        count, 2,
-        "report file should append one failure line per run"
-    );
+        let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+        let stderr_line = stderr
+            .lines()
+            .find(|line| line.contains("Migration failed after"))
+            .expect("stderr should contain migration failure line");
+
+        let report_content =
+            fs::read_to_string(&report_path).expect("report file should be created and readable");
+        let lines: Vec<&str> = report_content
+            .lines()
+            .filter(|line| line.contains("Migration failed after"))
+            .collect();
+        assert_eq!(
+            lines.len(),
+            run,
+            "report file should append one failure line per run"
+        );
+
+        let latest_report_line = lines
+            .last()
+            .expect("report file should contain at least one failure line");
+        assert_eq!(
+            *latest_report_line, stderr_line,
+            "latest appended report line should match current stderr failure line"
+        );
+    }
 
     let _ = fs::remove_dir_all(&old_path);
     let _ = fs::remove_dir_all(&new_path);
@@ -388,9 +412,23 @@ fn report_file_captures_human_failure_output() {
 
     assert!(!output.status.success());
 
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
     let report_content =
         fs::read_to_string(&report_path).expect("report file should be created and readable");
     assert!(report_content.contains("Migration failed after"));
+
+    let stderr_line = stderr
+        .lines()
+        .find(|line| line.contains("Migration failed after"))
+        .expect("stderr should contain migration failure line");
+    let report_line = report_content
+        .lines()
+        .find(|line| line.contains("Migration failed after"))
+        .expect("report should contain migration failure line");
+    assert_eq!(
+        stderr_line, report_line,
+        "stderr and report failure lines should match"
+    );
 
     let _ = fs::remove_dir_all(&old_path);
     let _ = fs::remove_dir_all(&new_path);
