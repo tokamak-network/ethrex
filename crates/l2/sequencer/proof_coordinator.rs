@@ -241,6 +241,18 @@ impl ProofCoordinator {
             return Ok(());
         }
 
+        // Store program_id early so the L1 committer can look it up before
+        // the proof is submitted.  Previously this was only stored on proof
+        // submission, which caused a race: the committer would fall back to
+        // "evm-l2" because the program_id hadn't been persisted yet.
+        if let Err(e) = self
+            .rollup_store
+            .store_program_id_by_batch(batch_to_prove, &program_id)
+            .await
+        {
+            warn!("Failed to store program_id early for batch {batch_to_prove}: {e}");
+        }
+
         let response =
             ProofData::batch_response_with_program(batch_to_prove, input, format, program_id);
         send_response(stream, &response).await?;

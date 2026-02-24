@@ -111,8 +111,11 @@ COPY cmd/ethrex/networks ./cmd/ethrex/networks
 COPY --from=builder /ethrex/bin/ethrex .
 
 # Copy guest program VK files so the deployer can register them on L1.
-# The deployer resolves VK paths relative to CARGO_MANIFEST_DIR (/ethrex/cmd/ethrex)
-# which was baked in at compile time, so we must preserve the original directory structure.
+# The deployer resolves VK paths via canonicalize() on:
+#   env!("CARGO_MANIFEST_DIR")/../../crates/guest-program/bin/sp1-zk-dex/out/...
+# where CARGO_MANIFEST_DIR = /ethrex/cmd/ethrex (baked at compile time).
+# We need /ethrex/cmd/ethrex/ to exist for canonicalize() to resolve "../..".
+RUN mkdir -p /ethrex/cmd/ethrex
 COPY --from=builder /ethrex/crates/guest-program/bin/sp1/out/riscv32im-succinct-zkvm-vk-* \
     /ethrex/crates/guest-program/bin/sp1/out/
 COPY --from=builder /ethrex/crates/guest-program/bin/sp1-zk-dex/out/riscv32im-succinct-zkvm-vk-* \
