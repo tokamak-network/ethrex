@@ -219,3 +219,4 @@ storage slots need Merkle proofs. For each operation:
 - [x] Fix witness analyzer for storage-dependent slots (parentNote + makeOrder order slots)
 - [ ] Measure actual EVM gas costs and update constants
 - [ ] Docker E2E test: deploy ZkDex → call each function → SP1 prove → L1 verify
+- [ ] L2 제네시스에 ZkDex 컨트랙트 포함 → `tokamak-notes/guest-program-modularization/13-zkdex-genesis-deployment.md` 참조
