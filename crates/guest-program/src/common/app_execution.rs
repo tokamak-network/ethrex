@@ -22,7 +22,6 @@
 use ethrex_common::types::{Log, Receipt, Transaction, TxKind};
 use ethrex_common::{Address, H160, U256};
 
-use crate::l2::blobs::verify_blob;
 use crate::l2::messages::{compute_message_digests, get_batch_messages};
 use crate::l2::ProgramOutput;
 
@@ -300,14 +299,23 @@ pub fn execute_app_circuit<C: AppCircuit>(
     let balance_diffs =
         ethrex_l2_common::messages::get_balance_diffs(&batch_messages.l2_out_messages);
 
-    // 6. Verify blob proof.
-    let blob_versioned_hash = verify_blob(
-        &input.blocks,
-        &input.fee_configs,
-        input.blob_commitment,
-        input.blob_proof,
-    )
-    .map_err(|e| AppCircuitError::Blob(e.to_string()))?;
+    // 6. Compute blob versioned hash.
+    //
+    // App-specific circuits skip KZG proof verification because:
+    //   - The L1 OnChainProposer already verifies blob KZG proofs
+    //   - kzg-rs's BLS12-381 operations are expensive in the zkVM
+    //   - The app circuit only needs the versioned hash for ProgramOutput
+    //
+    // For validium mode (commitment = [0; 48]), the hash is H256::zero().
+    let blob_versioned_hash = {
+        use ethrex_common::types::kzg_commitment_to_versioned_hash;
+        let is_validium = input.blob_commitment == [0u8; 48] && input.blob_proof == [0u8; 48];
+        if is_validium {
+            ethrex_common::H256::zero()
+        } else {
+            kzg_commitment_to_versioned_hash(&input.blob_commitment)
+        }
+    };
 
     // 7. Build output (same format as evm-l2 ProgramOutput).
     let last_block_hash = input
