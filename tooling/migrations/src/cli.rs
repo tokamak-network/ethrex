@@ -742,6 +742,42 @@ mod tests {
     }
 
     #[test]
+    fn emit_report_writes_up_to_date_json_line_with_null_plan() {
+        let report_path = unique_test_path("json-up-to-date").join("report.jsonl");
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "up_to_date",
+            phase: "planning",
+            source_head: 42,
+            target_head: 42,
+            plan: None,
+            dry_run: false,
+            imported_blocks: 0,
+            elapsed_ms: 4,
+            retry_attempts: 3,
+            retries_performed: 0,
+        };
+
+        emit_report(&report, true, Some(&report_path))
+            .expect("json report emission should succeed");
+
+        let file_content =
+            fs::read_to_string(&report_path).expect("report file should be readable");
+        let line = file_content
+            .lines()
+            .next()
+            .expect("report file should contain one line");
+        let parsed: Value = serde_json::from_str(line).expect("line should be valid json");
+
+        assert_eq!(parsed["status"], "up_to_date");
+        assert!(parsed["plan"].is_null());
+
+        if let Some(parent) = report_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
     fn emit_report_writes_human_lines_to_report_file() {
         let report_path = unique_test_path("human-report").join("report.log");
         let report = MigrationReport {
@@ -846,6 +882,73 @@ mod tests {
     #[test]
     fn append_report_line_is_noop_without_file_path() {
         append_report_line(None, "ignored line").expect("none path should be no-op success");
+    }
+
+    #[test]
+    fn emit_report_writes_up_to_date_summary_to_report_file() {
+        let report_path = unique_test_path("up-to-date-report").join("report.log");
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "up_to_date",
+            phase: "planning",
+            source_head: 100,
+            target_head: 100,
+            plan: None,
+            dry_run: false,
+            imported_blocks: 0,
+            elapsed_ms: 2,
+            retry_attempts: 3,
+            retries_performed: 0,
+        };
+
+        emit_report(&report, false, Some(&report_path))
+            .expect("up_to_date report emission should succeed");
+
+        let file_content =
+            fs::read_to_string(&report_path).expect("report file should be readable");
+        assert!(
+            file_content.contains(
+                "Rocksdb store is already up to date (target head: 100, source head: 100)"
+            )
+        );
+        assert!(!file_content.contains("Dry-run complete: no data was written."));
+
+        if let Some(parent) = report_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn emit_report_writes_dry_run_marker_to_report_file() {
+        let report_path = unique_test_path("dry-run-report").join("report.log");
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "planned",
+            phase: "planning",
+            source_head: 20,
+            target_head: 10,
+            plan: Some(MigrationPlan {
+                start_block: 11,
+                end_block: 20,
+            }),
+            dry_run: true,
+            imported_blocks: 0,
+            elapsed_ms: 5,
+            retry_attempts: 3,
+            retries_performed: 0,
+        };
+
+        emit_report(&report, false, Some(&report_path))
+            .expect("dry-run report emission should succeed");
+
+        let file_content =
+            fs::read_to_string(&report_path).expect("report file should be readable");
+        assert!(file_content.contains("Migration plan: 10 block(s), from #11, to #20"));
+        assert!(file_content.contains("Dry-run complete: no data was written."));
+
+        if let Some(parent) = report_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
     }
 
     #[test]
