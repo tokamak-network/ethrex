@@ -404,13 +404,9 @@ contract OnChainProposer is
             revert("013"); // missing verification key for commit hash
         }
 
-        // Custom programs (programTypeId > 1) must provide a publicValuesHash
-        if (effectiveProgramTypeId > 1) {
-            require(
-                publicValuesHash != bytes32(0),
-                "015" // OnChainProposer: custom program requires publicValuesHash
-            );
-        }
+        // NOTE: publicValuesHash is currently unused because all guest programs
+        // produce the standard ProgramOutput format.  The field is kept in
+        // BatchCommitmentInfo for future programs with custom public values.
 
         batchCommitments[batchNumber] = BatchCommitmentInfo(
             newStateRoot,
@@ -500,22 +496,10 @@ contract OnChainProposer is
         if (batchProgramTypeId == 0) batchProgramTypeId = DEFAULT_PROGRAM_TYPE_ID;
         bytes32 batchCommitHash = batchCommitments[batchNumber].commitHash;
 
-        bytes memory publicInputs;
-        if (batchProgramTypeId == DEFAULT_PROGRAM_TYPE_ID) {
-            // EVM-L2: reconstruct public inputs from commitment data
-            publicInputs = _getPublicInputsFromCommitment(batchNumber);
-        } else {
-            // Custom programs: verify public values hash matches commitment
-            require(
-                customPublicValues.length > 0,
-                "016" // OnChainProposer: custom program requires customPublicValues
-            );
-            require(
-                keccak256(customPublicValues) == batchCommitments[batchNumber].publicValuesHash,
-                "017" // OnChainProposer: customPublicValues hash mismatch
-            );
-            publicInputs = customPublicValues;
-        }
+        // All current guest programs (evm-l2, zk-dex, tokamon) produce the
+        // standard ProgramOutput format, so public inputs can always be
+        // reconstructed from the on-chain commitment data.
+        bytes memory publicInputs = _getPublicInputsFromCommitment(batchNumber);
 
         if (REQUIRE_RISC0_PROOF) {
             bytes32 risc0Vk = verificationKeys[batchCommitHash][

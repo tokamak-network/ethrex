@@ -31,6 +31,7 @@ services:
       - ETHREX_L2_SP1=true
       - ETHREX_REGISTER_GUEST_PROGRAMS=zk-dex
       - GUEST_PROGRAMS=evm-l2,zk-dex
+      - ETHREX_DEPLOYER_DEPLOY_RICH=false
     command: >
       --randomize-contract-deployment
 
@@ -45,10 +46,25 @@ services:
       args:
         - BUILD_FLAGS=--features l2,l2-sql,sp1
         - GUEST_PROGRAMS=evm-l2,zk-dex
+    ports:
+      - 127.0.0.1:3702:3702
     environment:
       - ETHREX_GUEST_PROGRAM_ID=zk-dex
     volumes:
       - ./programs-zk-dex.toml:/etc/ethrex/programs.toml
+    command: >
+      --network /genesis/l2.json
+      --http.addr 0.0.0.0
+      --http.port 1729
+      --authrpc.port 8552
+      --proof-coordinator.addr 0.0.0.0
+      --block-producer.coinbase-address 0x0007a881CD95B1484fca47615B64803dad620C8d
+      --committer.l1-private-key 0x385c546456b6a603a1cfcaa9ec9494ba4832da08dd6bcf4de9a71e4a01b74924
+      --proof-coordinator.l1-private-key 0x39725efee3fb28614de3bacaffe4cc4bd8c436257e2c8bb887c4b5c4be45e76d
+      --no-monitor
+      --metrics
+      --metrics.port 3702
+      --metrics.addr 0.0.0.0
 
   # -------------------------------------------------------------------
   # Prover: SP1 backend (CPU by default, GPU via gpu override)

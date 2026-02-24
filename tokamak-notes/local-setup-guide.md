@@ -110,6 +110,7 @@ curl -s -X POST http://localhost:1729 \
 | `docker-compose.yaml` | 기본 서비스 정의 (L1, deployer, L2, prover) |
 | `docker-compose-zk-dex.overrides.yaml` | ZK-DEX + SP1 + GPU 설정 |
 | `docker-compose-zk-dex-gpu.overrides.yaml` | GPU 가속 opt-in |
+| `docker-compose-zk-dex-tools.yaml` | 지원 도구 (Blockscout, Bridge UI, Dashboard) |
 | `Dockerfile.sp1` (repo root) | SP1 툴체인 포함 Docker 이미지 |
 
 ### Make 명령어
@@ -123,6 +124,93 @@ curl -s -X POST http://localhost:1729 \
 | `make zk-dex-docker-status` | 컨테이너 상태 |
 | `make zk-dex-docker-logs` | 로그 확인 |
 | `make zk-dex-docker-clean` | 이미지/볼륨 완전 정리 |
+| `make zk-dex-docker-tools` | 지원 도구 시작 (Blockscout + Bridge + Dashboard) |
+| `make zk-dex-docker-tools-stop` | 지원 도구 중지 |
+| `make zk-dex-docker-tools-status` | 지원 도구 상태 |
+| `make zk-dex-docker-tools-clean` | 지원 도구 완전 정리 |
+
+---
+
+## 지원 도구 (Blockscout + Bridge UI + Dashboard)
+
+ZK-DEX 로컬넷이 실행 중인 상태에서 별도로 블록 익스플로러, 브릿지 UI, 대시보드를 시작할 수 있다.
+
+### Quick Start
+
+```bash
+cd crates/l2
+
+# 도구 시작 (Blockscout + Bridge UI + Dashboard)
+make zk-dex-docker-tools
+
+# 도구 상태 확인
+make zk-dex-docker-tools-status
+
+# 도구 중지
+make zk-dex-docker-tools-stop
+
+# 도구 완전 정리
+make zk-dex-docker-tools-clean
+```
+
+또는 스크립트 직접 실행:
+
+```bash
+./scripts/zk-dex-docker.sh tools-start
+./scripts/zk-dex-docker.sh tools-stop
+./scripts/zk-dex-docker.sh tools-status
+./scripts/zk-dex-docker.sh tools-clean
+```
+
+### 도구 URL
+
+| 서비스 | URL | 설명 |
+|--------|-----|------|
+| Dashboard | `http://localhost:3000` | 환경 전체 대시보드 (메인 페이지) |
+| Bridge UI | `http://localhost:3000/bridge.html` | L1/L2 ETH 브릿지 |
+| L1 Blockscout | `http://localhost:8083` | L1 블록 익스플로러 |
+| L2 Blockscout | `http://localhost:8082` | L2 블록 익스플로러 |
+
+### Dashboard 기능
+
+- L1/L2 체인 상태 실시간 표시 (블록 넘버, 가스 가격)
+- 각 서비스 온라인/오프라인 상태 모니터링
+- 빠른 링크: 익스플로러, 브릿지, 메트릭스
+- 주요 컨트랙트 주소 표시 및 복사
+- MetaMask 네트워크 원클릭 추가
+
+### Bridge UI 기능
+
+- MetaMask 지갑 연결
+- L1/L2 잔액 표시
+- L1→L2 Deposit (CommonBridge.deposit 호출)
+- L2→L1 Withdraw (CommonBridgeL2.withdraw 호출)
+- 트랜잭션 상태 표시 및 Blockscout 링크
+
+### MetaMask 네트워크 설정
+
+대시보드에서 "Add to MetaMask" 버튼으로 자동 추가하거나, 수동 설정:
+
+**L1 Network:**
+| 항목 | 값 |
+|------|-----|
+| Network Name | ethrex L1 Local |
+| RPC URL | `http://localhost:8545` |
+| Chain ID | 9 |
+| Currency Symbol | ETH |
+| Block Explorer | `http://localhost:8083` |
+
+**L2 Network:**
+| 항목 | 값 |
+|------|-----|
+| Network Name | ethrex L2 Local |
+| RPC URL | `http://localhost:1729` |
+| Chain ID | 65536999 |
+| Currency Symbol | ETH |
+| Block Explorer | `http://localhost:8082` |
+
+> Blockscout는 시작 후 1-2분 정도 초기화 시간이 필요하다.
+> 처음 시작 시 DB 마이그레이션이 진행되며, 그 후 블록 인덱싱이 시작된다.
 
 ---
 
@@ -134,6 +222,10 @@ curl -s -X POST http://localhost:1729 \
 | L2 RPC | `http://localhost:1729` |
 | Proof Coordinator | `tcp://127.0.0.1:3900` |
 | Prometheus Metrics | `http://localhost:3702` |
+| Dashboard | `http://localhost:3000` |
+| Bridge UI | `http://localhost:3000/bridge.html` |
+| L1 Blockscout | `http://localhost:8083` |
+| L2 Blockscout | `http://localhost:8082` |
 
 ---
 
@@ -336,8 +428,13 @@ ethrex/
     docker-compose.yaml                       # 기본 서비스 정의
     docker-compose-zk-dex.overrides.yaml      # ZK-DEX + SP1 + GPU
     docker-compose-zk-dex-gpu.overrides.yaml   # GPU 가속 opt-in
+    docker-compose-zk-dex-tools.yaml          # 지원 도구 (Blockscout, Bridge, Dashboard)
     programs-zk-dex.toml                      # ZK-DEX 프루버 설정
     Makefile                                  # make 명령어
+    tooling/bridge/
+      dashboard.html                          # 환경 대시보드 (메인 페이지)
+      index.html                              # L1/L2 브릿지 UI
+      Dockerfile                              # nginx 정적 파일 서빙
     scripts/
       zk-dex-docker.sh                        # Docker 기반 스크립트
       zk-dex-localnet.sh                      # 네이티브 기반 스크립트

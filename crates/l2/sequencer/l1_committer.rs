@@ -1203,7 +1203,12 @@ impl L1Committer {
             .await
             .ok()
             .flatten()
-            .unwrap_or_else(|| "evm-l2".to_string());
+            .unwrap_or_else(|| {
+                // Fall back to ETHREX_GUEST_PROGRAM_ID env var so that the
+                // committer uses the correct programTypeId even when the proof
+                // coordinator hasn't stored the program_id for this batch yet.
+                std::env::var("ETHREX_GUEST_PROGRAM_ID").unwrap_or_else(|_| "evm-l2".to_string())
+            });
         let program_type_id: u8 = resolve_program_type_id(&program_id);
 
         // For custom programs (programTypeId > 1), compute publicValuesHash.

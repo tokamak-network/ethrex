@@ -5,7 +5,8 @@
 	test integration-test integration-test-gpu state-diff-test \
 	init-guest-program down-guest-program \
 	zk-dex-localnet zk-dex-localnet-no-prover zk-dex-localnet-stop zk-dex-localnet-status \
-	zk-dex-docker zk-dex-docker-no-prover zk-dex-docker-no-gpu zk-dex-docker-stop zk-dex-docker-status zk-dex-docker-logs zk-dex-docker-clean
+	zk-dex-docker zk-dex-docker-no-prover zk-dex-docker-no-gpu zk-dex-docker-stop zk-dex-docker-status zk-dex-docker-logs zk-dex-docker-clean \
+	zk-dex-docker-tools zk-dex-docker-tools-stop zk-dex-docker-tools-status zk-dex-docker-tools-clean
 
 .DEFAULT_GOAL := help
 
@@ -306,6 +307,22 @@ zk-dex-docker-logs: ## 📋 Tail ZK-DEX Docker localnet logs
 
 zk-dex-docker-clean: ## 🧹 Clean ZK-DEX Docker images and volumes
 	./scripts/zk-dex-docker.sh clean
+
+# ==============================================================================
+# ZK-DEX Docker Tools (Blockscout, Bridge UI, Dashboard)
+# ==============================================================================
+
+zk-dex-docker-tools: ## 🔧 Start ZK-DEX tools (Blockscout + Bridge UI + Dashboard)
+	./scripts/zk-dex-docker.sh tools-start
+
+zk-dex-docker-tools-stop: ## 🛑 Stop ZK-DEX tools
+	./scripts/zk-dex-docker.sh tools-stop
+
+zk-dex-docker-tools-status: ## 📊 Show ZK-DEX tools status
+	./scripts/zk-dex-docker.sh tools-status
+
+zk-dex-docker-tools-clean: ## 🧹 Clean ZK-DEX tools Docker resources
+	./scripts/zk-dex-docker.sh tools-clean
 
 # ==============================================================================
 # Guest Programs

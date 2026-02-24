@@ -21,6 +21,7 @@ REPO_ROOT="$(cd "$L2_DIR/../.." && pwd)"
 COMPOSE_BASE="$L2_DIR/docker-compose.yaml"
 COMPOSE_ZK_DEX="$L2_DIR/docker-compose-zk-dex.overrides.yaml"
 COMPOSE_GPU="$L2_DIR/docker-compose-zk-dex-gpu.overrides.yaml"
+COMPOSE_TOOLS="$L2_DIR/docker-compose-zk-dex-tools.yaml"
 
 # Required env for Docker Compose
 export DOCKER_ETHREX_WORKDIR=/usr/local/bin
@@ -211,6 +212,9 @@ do_start() {
     fi
 
     # Step 5: Start L2 with ZK-DEX guest program
+    # NOTE: depends_on causes contract_deployer to re-run, which may
+    # redeploy contracts with new addresses. We extract addresses AFTER
+    # L2 starts to get the final deployed addresses.
     log_step 5 "Starting L2 (ZK-DEX guest program)"
     compose_cmd up -d ethrex_l2
 
@@ -218,6 +222,19 @@ do_start() {
         log_error "L2 failed to start. Check: $0 logs l2"
         do_stop
         exit 1
+    fi
+
+    # Extract deployed contract addresses AFTER L2 is up
+    # (deployer may run again due to depends_on, so we get the final addresses)
+    log_info "Extracting deployed contract addresses..."
+    docker exec ethrex_l2 cat /env/.env > "$L2_DIR/.zk-dex-deployed.env" 2>/dev/null || \
+        docker cp contract_deployer:/env/.env "$L2_DIR/.zk-dex-deployed.env" 2>/dev/null || true
+    if [[ -f "$L2_DIR/.zk-dex-deployed.env" ]]; then
+        log_info "Deployed addresses saved to .zk-dex-deployed.env"
+        grep -E "^ETHREX_WATCHER_BRIDGE_ADDRESS=" "$L2_DIR/.zk-dex-deployed.env" || true
+        grep -E "^ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS=" "$L2_DIR/.zk-dex-deployed.env" || true
+    else
+        log_error "Warning: Could not extract deployed addresses. Bridge UI may not work correctly."
     fi
 
     # Step 6: Start Prover
@@ -289,6 +306,65 @@ do_clean() {
 }
 
 # =============================================================================
+# Tools Commands (Blockscout, Bridge UI, Dashboard)
+# =============================================================================
+
+tools_compose_cmd() {
+    docker compose -f "$COMPOSE_TOOLS" "$@"
+}
+
+do_tools_start() {
+    log_info "Starting ZK-DEX support tools (Blockscout + Bridge UI + Dashboard)..."
+
+    # Check that deployed addresses exist
+    if [[ ! -f "$L2_DIR/.zk-dex-deployed.env" ]]; then
+        log_error "No deployed addresses found at $L2_DIR/.zk-dex-deployed.env"
+        log_error "Run '$0 start' first to deploy contracts and extract addresses."
+        exit 1
+    fi
+    log_info "Using deployed addresses from .zk-dex-deployed.env"
+
+    # Build bridge UI image
+    log_info "Building bridge UI image..."
+    tools_compose_cmd build
+
+    # Start all tools
+    tools_compose_cmd up -d
+
+    printf '\n'
+    printf '========================================\n'
+    printf '  ZK-DEX Tools are starting!\n'
+    printf '========================================\n'
+    printf '  Dashboard:      http://localhost:3000\n'
+    printf '  Bridge UI:      http://localhost:3000/bridge.html\n'
+    printf '  L1 Blockscout:  http://localhost:8083\n'
+    printf '  L2 Blockscout:  http://localhost:8082\n'
+    printf '\n'
+    printf '  Note: Blockscout may take 1-2 minutes to\n'
+    printf '  fully start and begin indexing blocks.\n'
+    printf '========================================\n'
+}
+
+do_tools_stop() {
+    log_info "Stopping ZK-DEX support tools..."
+    tools_compose_cmd down --remove-orphans 2>/dev/null || true
+    log_info "ZK-DEX tools stopped."
+}
+
+do_tools_status() {
+    echo "ZK-DEX Tools Status"
+    echo "-----------------------------------------------------------"
+    tools_compose_cmd ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || \
+        tools_compose_cmd ps
+}
+
+do_tools_clean() {
+    log_info "Cleaning ZK-DEX tools Docker resources..."
+    tools_compose_cmd down --volumes --remove-orphans --rmi local 2>/dev/null || true
+    log_info "ZK-DEX tools Docker resources cleaned."
+}
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -296,20 +372,30 @@ COMMAND="${1:-start}"
 shift || true
 
 case "$COMMAND" in
-    start)  do_start "$@" ;;
-    stop)   do_stop ;;
-    status) do_status ;;
-    logs)   do_logs "$@" ;;
-    clean)  do_clean ;;
+    start)        do_start "$@" ;;
+    stop)         do_stop ;;
+    status)       do_status ;;
+    logs)         do_logs "$@" ;;
+    clean)        do_clean ;;
+    tools-start)  do_tools_start ;;
+    tools-stop)   do_tools_stop ;;
+    tools-status) do_tools_status ;;
+    tools-clean)  do_tools_clean ;;
     *)
-        echo "Usage: $0 [start|stop|status|logs|clean] [options]"
+        echo "Usage: $0 [command] [options]"
         echo ""
-        echo "Commands:"
+        echo "Localnet Commands:"
         echo "  start        Start the full ZK-DEX localnet with Docker"
         echo "  stop         Stop all containers"
         echo "  status       Show container status"
         echo "  logs [name]  Tail logs (l1, l2, prover, deploy)"
         echo "  clean        Stop and remove all images/volumes"
+        echo ""
+        echo "Tools Commands (Blockscout, Bridge UI, Dashboard):"
+        echo "  tools-start  Start Blockscout + Bridge UI + Dashboard"
+        echo "  tools-stop   Stop all tools"
+        echo "  tools-status Show tools status"
+        echo "  tools-clean  Stop and remove tools images/volumes"
         echo ""
         echo "Options:"
         echo "  --no-prover  Skip starting the prover"
