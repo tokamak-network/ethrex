@@ -366,7 +366,10 @@ fn analyze_zk_dex_transactions(
                             order_id,
                         );
 
-                        // Old notes: makerNote and takerStakeNote from calldata.
+                        // Old notes: makerNote (input[1]) and takerStakeNote (input[3])
+                        // are available as public inputs in calldata. The execution
+                        // code reads these from order storage, but their note state
+                        // slots need proofs for the incremental MPT update.
                         let maker_note_hash = H256::from_slice(&data[324..356]);
                         let taker_stake_hash = H256::from_slice(&data[388..420]);
                         storage_slots.insert((

@@ -201,16 +201,16 @@ storage slots need Merkle proofs. For each operation:
 
 - **mint**: `tx.value` transfers ETH from sender to contract (handled by `app_execution.rs`)
 - **liquidate**: Contract → recipient ETH transfer (handled in `execute_liquidate`)
-- **DAI**: Not yet supported (requires DAI contract storage proofs)
 
-## Test Coverage (39 tests)
+## Test Coverage (45 tests)
 
-- `storage.rs`: 7 tests (slot computation, bytes encoding)
-- `events.rs`: 3 tests (log format verification)
+- `storage.rs`: 9 tests (slot computation, bytes short/long encoding verification)
+- `events.rs`: 5 tests (log format, topic uniqueness, signature verification)
 - `notes.rs`: 4 tests (mint, spend, liquidate, convertNote)
-- `orders.rs`: 3 tests (makeOrder, takeOrder, RLP decoding)
+- `orders.rs`: 4 tests (makeOrder, takeOrder, settleOrder lifecycle, RLP decoding)
 - `circuit.rs`: 16 tests (classify_tx, execute, gas, logs)
-- `mod.rs`: 5 tests (program metadata, ELF, serialization)
+- `mod.rs`: 4 tests (program metadata, ELF, backend)
+- `traits.rs`: 2 tests (serialize_input edge cases — requires `l2` feature)
 
 ## TODO
 
@@ -218,5 +218,4 @@ storage slots need Merkle proofs. For each operation:
 - [x] Add settleOrder old-note slots to witness analyzer (makerNote, takerStakeNote from calldata)
 - [x] Fix witness analyzer for storage-dependent slots (parentNote + makeOrder order slots)
 - [ ] Measure actual EVM gas costs and update constants
-- [ ] Add DAI token support for liquidate (requires DAI contract proofs)
 - [ ] Docker E2E test: deploy ZkDex → call each function → SP1 prove → L1 verify
