@@ -2,6 +2,22 @@
 
 This tool migrates Geth chaindata (LevelDB or Pebble) to ethrex's RocksDB storage format.
 
+## Quick Start
+
+For detailed usage instructions, examples, and troubleshooting, see **[USAGE.md](USAGE.md)**.
+
+**TL;DR:**
+```bash
+# Build
+cargo build --release
+
+# Dry-run first (recommended)
+geth2ethrex g2r --source /path/to/geth/chaindata --target /path/to/ethrex/storage --genesis genesis.json --dry-run
+
+# Actual migration
+geth2ethrex g2r --source /path/to/geth/chaindata --target /path/to/ethrex/storage --genesis genesis.json
+```
+
 ## Supported Databases
 
 - **Geth Pebble** (v1.10.0+) → ethrex RocksDB ✅
@@ -46,14 +62,26 @@ sudo pacman -S --needed clang
 > [!IMPORTANT]
 > If you are migrating a db from an ethrex L2 rollup you should also copy the `rollup_store`, `rollup_store-shm` and `rollup_store-wal` files to `<NEW_STORAGE_PATH>`.
 
-It is recomended to backup the original database before migration even if this process does not erase the old data. To migrate a database run:
+It is recomended to backup the original database before migration even if this process does not erase the old data.
+
+### ethrex LibMDBX → ethrex RocksDB
 
 ```
 cargo run --release -- l2r --genesis <GENESIS_PATH> --store.old <OLD_STORAGE_PATH> --store.new <NEW_STORAGE_PATH>
 ```
 
 This will output the migrated database to `<NEW_STORAGE_PATH>`.
-Finally restart your ethrex node pointing `--datadir` to the path of the migrated database
+Finally restart your ethrex node pointing `--datadir` to the path of the migrated database.
+
+### Geth chaindata (Pebble) → ethrex RocksDB
+
+```
+cargo run --release -- g2r --source <GETH_CHAINDATA_PATH> --target <NEW_STORAGE_PATH> --genesis <GENESIS_PATH>
+```
+
+Notes:
+- LevelDB sources are detected but not supported yet.
+- Use `--dry-run` first to verify your chaindata is readable.
 
 ## CLI Reference
 
@@ -78,6 +106,22 @@ Options:
                                                     Optional path to a checkpoint file whose target_head is used as migration start
   -h, --help                                        Print help
 ```
+
+Migrate Geth chaindata (LevelDB/Pebble) to ethrex RocksDB
+
+Usage: geth2ethrex geth2rocksdb --source <GETH_CHAINDATA> --target <TARGET_STORAGE> --genesis <GENESIS_PATH> [--dry-run] [--json] [--report-file <REPORT_FILE>] [--retry-attempts <RETRY_ATTEMPTS>] [--retry-base-delay-ms <RETRY_BASE_DELAY_MS>] [--continue-on-error]
+
+Options:
+      --source <GETH_CHAINDATA>                      Path to Geth chaindata directory (LevelDB or Pebble)
+      --target <TARGET_STORAGE>                      Path for the new ethrex RocksDB database
+      --genesis <GENESIS_PATH>                       Path to the genesis file for ethrex initialization
+      --dry-run                                      Detect Geth DB type and print migration plan without writing blocks
+      --json                                         Emit machine-readable JSON output
+      --report-file <REPORT_FILE>                    Optional path to append emitted reports (JSON lines in --json mode)
+      --retry-attempts <RETRY_ATTEMPTS>              Retry budget for retryable operations (1-10, inclusive) [default: 3]
+      --retry-base-delay-ms <RETRY_BASE_DELAY_MS>    Initial retry backoff delay in milliseconds (0-60000) [default: 1000]
+      --continue-on-error                            Continue migrating subsequent blocks when a block-level import fails
+  -h, --help                                         Print help
 
 `--dry-run` can be used in automation to verify source and target DB readability and to preview how many blocks would be imported before doing a real migration run.
 
