@@ -1,5 +1,6 @@
 mod cli;
 mod detect;
+mod readers;
 mod utils;
 
 use crate::cli::{CLI, emit_error_report};

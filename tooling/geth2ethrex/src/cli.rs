@@ -77,6 +77,40 @@ pub enum Subcommand {
         /// Optional path to a checkpoint file whose target_head is used as migration start
         resume_from_checkpoint: Option<PathBuf>,
     },
+    #[command(
+        name = "geth2rocksdb",
+        visible_alias = "g2r",
+        about = "Migrate Geth chaindata (LevelDB/Pebble) to ethrex RocksDB"
+    )]
+    Geth2Rocksdb {
+        #[arg(long = "source")]
+        /// Path to Geth chaindata directory (LevelDB or Pebble)
+        geth_chaindata: PathBuf,
+        #[arg(long = "target")]
+        /// Path for the new ethrex RocksDB database
+        target_storage: PathBuf,
+        #[arg(long = "genesis")]
+        /// Path to the genesis file for ethrex initialization
+        genesis_path: PathBuf,
+        #[arg(long = "dry-run", default_value_t = false)]
+        /// Detect Geth DB type and print migration plan without writing blocks
+        dry_run: bool,
+        #[arg(long = "json", default_value_t = false)]
+        /// Emit machine-readable JSON output
+        json: bool,
+        #[arg(long = "report-file")]
+        /// Optional path to append emitted reports (JSON lines in --json mode)
+        report_file: Option<PathBuf>,
+        #[arg(long = "retry-attempts", default_value_t = MAX_RETRY_ATTEMPTS, value_parser = clap::value_parser!(u32).range(1..=10))]
+        /// Retry budget for retryable operations (1-10, inclusive)
+        retry_attempts: u32,
+        #[arg(long = "retry-base-delay-ms", default_value_t = DEFAULT_RETRY_BASE_DELAY_MS, value_parser = clap::value_parser!(u64).range(0..=MAX_RETRY_BASE_DELAY_MS))]
+        /// Initial retry backoff delay in milliseconds (0-60000)
+        retry_base_delay_ms: u64,
+        #[arg(long = "continue-on-error", default_value_t = false)]
+        /// Continue migrating subsequent blocks when a block-level import fails
+        continue_on_error: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -541,18 +575,21 @@ impl Subcommand {
     pub fn json_output(&self) -> bool {
         match self {
             Self::Libmdbx2Rocksdb { json, .. } => *json,
+            Self::Geth2Rocksdb { json, .. } => *json,
         }
     }
 
     pub fn retry_attempts(&self) -> u32 {
         match self {
             Self::Libmdbx2Rocksdb { retry_attempts, .. } => *retry_attempts,
+            Self::Geth2Rocksdb { retry_attempts, .. } => *retry_attempts,
         }
     }
 
     pub fn report_file(&self) -> Option<&Path> {
         match self {
             Self::Libmdbx2Rocksdb { report_file, .. } => report_file.as_deref(),
+            Self::Geth2Rocksdb { report_file, .. } => report_file.as_deref(),
         }
     }
 
@@ -584,6 +621,30 @@ impl Subcommand {
                     *resume_from_block,
                     resume_from_checkpoint.as_deref(),
                     checkpoint_file.as_deref(),
+                    report_file.as_deref(),
+                )
+                .await
+            }
+            Self::Geth2Rocksdb {
+                geth_chaindata,
+                target_storage,
+                genesis_path,
+                dry_run,
+                json,
+                retry_attempts,
+                retry_base_delay_ms,
+                continue_on_error,
+                report_file,
+            } => {
+                migrate_geth_to_rocksdb(
+                    geth_chaindata,
+                    target_storage,
+                    genesis_path,
+                    *dry_run,
+                    *json,
+                    *retry_attempts,
+                    Duration::from_millis(*retry_base_delay_ms),
+                    *continue_on_error,
                     report_file.as_deref(),
                 )
                 .await
@@ -921,6 +982,102 @@ fn build_migration_plan(
             end_block: last_source_block,
         }),
     )
+}
+
+/// Migrates Geth chaindata (LevelDB or Pebble) to ethrex RocksDB storage
+async fn migrate_geth_to_rocksdb(
+    geth_chaindata: &Path,
+    target_storage: &Path,
+    genesis_path: &Path,
+    dry_run: bool,
+    json: bool,
+    _retry_attempts: u32,
+    _retry_base_delay: Duration,
+    _continue_on_error: bool,
+    _report_file: Option<&Path>,
+) -> Result<()> {
+    use crate::detect::{detect_geth_db_type, GethDbType};
+    use crate::readers::open_geth_reader;
+
+    let started_at = Instant::now();
+
+    // Phase 1: Detect Geth database type
+    let db_type = detect_geth_db_type(geth_chaindata)
+        .wrap_err("Failed to detect Geth database type")?;
+
+    if json {
+        eprintln!(
+            r#"{{"phase":"detect","db_type":"{}","chaindata_path":"{}"}}"#,
+            match db_type {
+                GethDbType::LevelDB => "leveldb",
+                GethDbType::Pebble => "pebble",
+                GethDbType::Unknown => "unknown",
+            },
+            geth_chaindata.display()
+        );
+    } else {
+        eprintln!("🔍 Detected Geth database type: {:?}", db_type);
+        eprintln!("   Chaindata: {}", geth_chaindata.display());
+    }
+
+    // Phase 2: Open Geth reader
+    let _reader = open_geth_reader(geth_chaindata)
+        .map_err(|e| eyre::eyre!("Failed to open Geth chaindata reader: {}", e))?;
+
+    if json {
+        eprintln!(r#"{{"phase":"open_reader","status":"success"}}"#);
+    } else {
+        eprintln!("✅ Opened Geth chaindata reader ({:?})", db_type);
+    }
+
+    // Phase 3: Dry-run mode
+    if dry_run {
+        if json {
+            eprintln!(
+                r#"{{"phase":"dry_run","mode":"detect_only","elapsed_ms":{}}}"#,
+                started_at.elapsed().as_millis()
+            );
+        } else {
+            eprintln!();
+            eprintln!("🏁 Dry-run mode: detection complete");
+            eprintln!("   Database type: {:?}", db_type);
+            eprintln!("   Source: {}", geth_chaindata.display());
+            eprintln!("   Target: {}", target_storage.display());
+            eprintln!("   Genesis: {}", genesis_path.display());
+            eprintln!();
+            eprintln!("✅ Dry-run validation passed");
+            eprintln!("   Elapsed: {:.2}s", started_at.elapsed().as_secs_f64());
+            eprintln!();
+            eprintln!("💡 Remove --dry-run to start actual migration");
+        }
+        return Ok(());
+    }
+
+    // Phase 4: TODO - Actual migration logic
+    // This is a placeholder for the full migration implementation
+    if json {
+        eprintln!(
+            r#"{{"phase":"migration","status":"not_implemented","message":"TODO: Implement block-by-block migration"}}"#
+        );
+    } else {
+        eprintln!();
+        eprintln!("⚠️  Full migration not yet implemented");
+        eprintln!();
+        eprintln!("TODO: Implement the following steps:");
+        eprintln!("  1. Initialize target ethrex RocksDB storage");
+        eprintln!("  2. Read genesis block from Geth");
+        eprintln!("  3. Iterate through blocks (with retry policy):");
+        eprintln!("     - Read block header from Geth");
+        eprintln!("     - Read block body from Geth");
+        eprintln!("     - Parse and convert to ethrex format");
+        eprintln!("     - Write to target RocksDB");
+        eprintln!("  4. Update forkchoice");
+        eprintln!("  5. Write checkpoint file");
+        eprintln!();
+        eprintln!("For now, use --dry-run to verify Geth chaindata accessibility");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
