@@ -7,7 +7,7 @@ members = [
   "hive_report",
   "load_test",
   "loc",
-  "migrations",
+  "geth2ethrex",
   "monitor",
   "reorgs",
 ]

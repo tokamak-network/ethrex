@@ -4284,6 +4284,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "geth2ethrex"
+version = "4.0.0"
+dependencies = [
+ "clap 4.5.54",
+ "ethrex-blockchain",
+ "ethrex-common 1.0.0",
+ "ethrex-common 9.0.0",
+ "ethrex-storage 1.0.0",
+ "ethrex-storage 9.0.0",
+ "eyre",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5716,23 +5733,6 @@ name = "memuse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d97bbf43eb4f088f8ca469930cde17fa036207c9a5e02ccc5107c4e8b17c964"
-
-[[package]]
-name = "migrations"
-version = "4.0.0"
-dependencies = [
- "clap 4.5.54",
- "ethrex-blockchain",
- "ethrex-common 1.0.0",
- "ethrex-common 9.0.0",
- "ethrex-storage 1.0.0",
- "ethrex-storage 9.0.0",
- "eyre",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
-]
 
 [[package]]
 name = "mime"

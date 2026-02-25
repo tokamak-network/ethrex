@@ -10,10 +10,10 @@ This tool provides a way to migrate ethrex databases created with Libmdbx to Roc
 Quick check:
 
 ```bash
-tooling/migrations/scripts/check-prereqs.sh
+tooling/geth2ethrex/scripts/check-prereqs.sh
 ```
 
-If `cargo test --manifest-path tooling/migrations/Cargo.toml` fails with
+If `cargo test --manifest-path tooling/geth2ethrex/Cargo.toml` fails with
 `Unable to find libclang`, install your distro `libclang` package and/or set:
 
 ```bash
@@ -52,7 +52,7 @@ Finally restart your ethrex node pointing `--datadir` to the path of the migrate
 ```
 Migrate a libmdbx database to rocksdb
 
-Usage: migrations libmdbx2rocksdb --genesis <GENESIS_PATH> --store.old <OLD_STORAGE_PATH> --store.new <NEW_STORAGE_PATH> [--dry-run] [--json] [--report-file <REPORT_FILE>] [--retry-attempts <RETRY_ATTEMPTS>] [--retry-base-delay-ms <RETRY_BASE_DELAY_MS>] [--continue-on-error] [--resume-from-block <RESUME_FROM_BLOCK>] [--checkpoint-file <CHECKPOINT_FILE>] [--resume-from-checkpoint <RESUME_FROM_CHECKPOINT>]
+Usage: geth2ethrex libmdbx2rocksdb --genesis <GENESIS_PATH> --store.old <OLD_STORAGE_PATH> --store.new <NEW_STORAGE_PATH> [--dry-run] [--json] [--report-file <REPORT_FILE>] [--retry-attempts <RETRY_ATTEMPTS>] [--retry-base-delay-ms <RETRY_BASE_DELAY_MS>] [--continue-on-error] [--resume-from-block <RESUME_FROM_BLOCK>] [--checkpoint-file <CHECKPOINT_FILE>] [--resume-from-checkpoint <RESUME_FROM_CHECKPOINT>]
 
 Options:
       --genesis <GENESIS_PATH>                      Path to the genesis file for the genesis block of store.old

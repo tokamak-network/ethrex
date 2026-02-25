@@ -1,5 +1,5 @@
 [package]
-name = "migrations"
+name = "geth2ethrex"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
