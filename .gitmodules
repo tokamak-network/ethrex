@@ -1,0 +1,3 @@
+[submodule "vendor/geth"]
+	path = vendor/geth
+	url = https://github.com/ethereum/go-ethereum.git
