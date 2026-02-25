@@ -1,6 +1,14 @@
-# Ethrex migration tools
+# geth2ethrex: Geth to ethrex Migration Tool
 
-This tool provides a way to migrate ethrex databases created with Libmdbx to RocksDB.
+This tool migrates Geth chaindata (LevelDB or Pebble) to ethrex's RocksDB storage format.
+
+## Supported Databases
+
+- **Geth Pebble** (v1.10.0+) → ethrex RocksDB ✅
+- **Geth LevelDB** (v1.9.x and earlier) → ethrex RocksDB ⚠️ (planned)
+- **ethrex LibMDBX** → ethrex RocksDB ✅ (legacy migration)
+
+The tool automatically detects the Geth database type (LevelDB or Pebble) and uses the appropriate reader. See [docs/geth-db-compatibility.md](../../docs/geth-db-compatibility.md) for details.
 
 ## Development prerequisites
 

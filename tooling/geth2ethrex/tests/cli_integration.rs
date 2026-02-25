@@ -15,7 +15,7 @@ fn unique_test_path(suffix: &str) -> PathBuf {
 
 #[test]
 fn emits_json_failure_payload_for_runtime_error() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old");
     let new_path = unique_test_path("new");
 
@@ -58,7 +58,7 @@ fn emits_json_failure_payload_for_runtime_error() {
 }
 
 fn run_and_expect_clap_validation_error(args: &[&str], expected_flag: &str) {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
 
     let output = Command::new(bin)
         .args(args)
@@ -77,7 +77,7 @@ fn run_and_expect_clap_validation_error(args: &[&str], expected_flag: &str) {
 
 #[test]
 fn help_command_succeeds_and_lists_core_flags() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
 
     let output = Command::new(bin)
         .args(["libmdbx2rocksdb", "--help"])
@@ -100,7 +100,7 @@ fn help_command_succeeds_and_lists_core_flags() {
 
 #[test]
 fn continue_on_error_flag_is_accepted() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-continue-on-error");
     let new_path = unique_test_path("new-continue-on-error");
 
@@ -136,7 +136,7 @@ fn continue_on_error_flag_is_accepted() {
 
 #[test]
 fn resume_from_block_flag_is_accepted() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-resume-from-block");
     let new_path = unique_test_path("new-resume-from-block");
 
@@ -173,7 +173,7 @@ fn resume_from_block_flag_is_accepted() {
 
 #[test]
 fn checkpoint_file_flag_is_accepted() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-checkpoint-file");
     let new_path = unique_test_path("new-checkpoint-file");
     let checkpoint_path = unique_test_path("checkpoint-file").join("state/checkpoint.json");
@@ -214,7 +214,7 @@ fn checkpoint_file_flag_is_accepted() {
 
 #[test]
 fn resume_from_checkpoint_flag_is_accepted() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-resume-from-checkpoint");
     let new_path = unique_test_path("new-resume-from-checkpoint");
     let checkpoint_path = unique_test_path("resume-from-checkpoint").join("state/checkpoint.json");
@@ -250,7 +250,7 @@ fn resume_from_checkpoint_flag_is_accepted() {
 
 #[test]
 fn resume_from_block_and_checkpoint_are_mutually_exclusive() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
 
     let output = Command::new(bin)
         .args([
@@ -318,7 +318,7 @@ fn clap_validation_failure_reports_retry_base_delay_error() {
 
 #[test]
 fn report_file_captures_json_failure_output() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-report-json");
     let new_path = unique_test_path("new-report-json");
     let report_path = unique_test_path("report-json").join("migration.jsonl");
@@ -376,7 +376,7 @@ fn report_file_captures_json_failure_output() {
 
 #[test]
 fn report_file_appends_across_multiple_json_failures() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-report-append");
     let new_path = unique_test_path("new-report-append");
     let report_path = unique_test_path("report-append").join("migration.jsonl");
@@ -442,7 +442,7 @@ fn report_file_appends_across_multiple_json_failures() {
 
 #[test]
 fn report_file_creates_parent_directories_for_json_failure() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-report-parent-dirs");
     let new_path = unique_test_path("new-report-parent-dirs");
     let report_root = unique_test_path("report-parent-dirs");
@@ -494,7 +494,7 @@ fn report_file_creates_parent_directories_for_json_failure() {
 
 #[test]
 fn report_file_creates_parent_directories_for_human_failure() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-report-parent-dirs-human");
     let new_path = unique_test_path("new-report-parent-dirs-human");
     let report_root = unique_test_path("report-parent-dirs-human");
@@ -546,7 +546,7 @@ fn report_file_creates_parent_directories_for_human_failure() {
 
 #[test]
 fn report_file_appends_across_multiple_human_failures() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-report-append-human");
     let new_path = unique_test_path("new-report-append-human");
     let report_path = unique_test_path("report-append-human").join("migration.log");
@@ -605,7 +605,7 @@ fn report_file_appends_across_multiple_human_failures() {
 
 #[test]
 fn report_file_preserves_append_order_across_json_then_human_runs() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-report-mixed");
     let new_path = unique_test_path("new-report-mixed");
     let report_path = unique_test_path("report-mixed").join("migration.log");
@@ -669,7 +669,7 @@ fn report_file_preserves_append_order_across_json_then_human_runs() {
 
 #[test]
 fn report_file_preserves_append_order_across_human_then_json_runs() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-report-mixed-reverse");
     let new_path = unique_test_path("new-report-mixed-reverse");
     let report_path = unique_test_path("report-mixed-reverse").join("migration.log");
@@ -749,7 +749,7 @@ fn report_file_preserves_append_order_across_human_then_json_runs() {
 
 #[test]
 fn report_file_preserves_append_order_across_json_human_json_runs() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-report-mixed-jhj");
     let new_path = unique_test_path("new-report-mixed-jhj");
     let report_path = unique_test_path("report-mixed-jhj").join("migration.log");
@@ -841,7 +841,7 @@ fn report_file_preserves_append_order_across_json_human_json_runs() {
 
 #[test]
 fn report_file_captures_human_failure_output() {
-    let bin = env!("CARGO_BIN_EXE_migrations");
+    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
     let old_path = unique_test_path("old-report-human");
     let new_path = unique_test_path("new-report-human");
     let report_path = unique_test_path("report-human").join("migration.log");
