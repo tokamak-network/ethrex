@@ -11,6 +11,7 @@ use ethrex_blockchain::{Blockchain, BlockchainOptions, BlockchainType, L2Config}
 use ethrex_common::types::Block;
 use eyre::{ContextCompat, Result, WrapErr};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::utils::{migrate_block_body, migrate_block_header};
 
@@ -269,6 +270,8 @@ struct MigrationCheckpoint {
     #[serde(default)]
     genesis_path: Option<String>,
     #[serde(default)]
+    genesis_sha256: Option<String>,
+    #[serde(default)]
     source_store_path: Option<String>,
     source_head: u64,
     target_head: u64,
@@ -363,6 +366,14 @@ fn append_report_line(report_file: Option<&Path>, line: &str) -> Result<()> {
     Ok(())
 }
 
+fn sha256_hex_for_file(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).wrap_err_with(|| format!("Cannot read file for sha256 {path:?}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    Ok(format!("{digest:x}"))
+}
+
 fn read_resume_block_from_checkpoint(
     path: &Path,
     expected_genesis_path: &Path,
@@ -391,6 +402,17 @@ fn read_resume_block_from_checkpoint(
             expected_genesis,
             checkpoint_genesis
         ));
+    }
+
+    if let Some(checkpoint_genesis_hash) = checkpoint.genesis_sha256.as_deref() {
+        let expected_genesis_hash = sha256_hex_for_file(expected_genesis_path)?;
+        if checkpoint_genesis_hash != expected_genesis_hash {
+            return Err(eyre::eyre!(
+                "Checkpoint genesis_sha256 mismatch in {path:?}: expected {:?}, got {:?}",
+                expected_genesis_hash,
+                checkpoint_genesis_hash
+            ));
+        }
     }
 
     if let Some(checkpoint_source) = checkpoint.source_store_path.as_deref()
@@ -437,6 +459,7 @@ fn write_checkpoint_file(
     let checkpoint = MigrationCheckpoint {
         schema_version: REPORT_SCHEMA_VERSION,
         genesis_path: Some(genesis_path.to_string_lossy().to_string()),
+        genesis_sha256: Some(sha256_hex_for_file(genesis_path)?),
         source_store_path: Some(source_store_path.to_string_lossy().to_string()),
         source_head: report.source_head,
         target_head: report.target_head,
@@ -905,7 +928,7 @@ mod tests {
         build_migration_error_report, build_migration_plan, classify_error_from_message,
         classify_error_from_report, classify_io_error_kind, compute_backoff_delay,
         emit_error_report, emit_report, read_resume_block_from_checkpoint, retry_async, retry_sync,
-        write_checkpoint_file,
+        sha256_hex_for_file, write_checkpoint_file,
     };
     use clap::Parser;
     use serde_json::{Value, json};
@@ -1312,8 +1335,55 @@ mod tests {
     }
 
     #[test]
+    fn read_resume_block_from_checkpoint_rejects_genesis_hash_mismatch() {
+        let checkpoint_root = unique_test_path("checkpoint-read-genesis-hash-mismatch");
+        let checkpoint_path = checkpoint_root.join("state/checkpoint.json");
+        let genesis_path = checkpoint_root.join("genesis.json");
+        fs::create_dir_all(&checkpoint_root).expect("checkpoint root should be creatable");
+        fs::write(&genesis_path, "hello-genesis").expect("genesis file should be writable");
+
+        let checkpoint = json!({
+            "schema_version": 1,
+            "genesis_path": genesis_path.to_string_lossy(),
+            "genesis_sha256": "deadbeef",
+            "source_store_path": "old-store",
+            "source_head": 100,
+            "target_head": 98,
+            "imported_blocks": 98,
+            "skipped_blocks": 0,
+            "retry_attempts": 3,
+            "retries_performed": 1,
+            "elapsed_ms": 44
+        });
+
+        if let Some(parent) = checkpoint_path.parent() {
+            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
+        }
+        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
+
+        let error = read_resume_block_from_checkpoint(
+            &checkpoint_path,
+            &genesis_path,
+            std::path::Path::new("old-store"),
+        )
+        .expect_err("genesis hash mismatch should fail");
+        assert!(error.to_string().contains("genesis_sha256 mismatch"));
+
+        let _ = fs::remove_file(&genesis_path);
+        if let Some(parent) = checkpoint_path.parent() {
+            let root = parent.parent().unwrap_or(parent);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
     fn write_checkpoint_file_writes_json_payload() {
-        let checkpoint_path = unique_test_path("checkpoint-json").join("state/checkpoint.json");
+        let checkpoint_root = unique_test_path("checkpoint-json");
+        let checkpoint_path = checkpoint_root.join("state/checkpoint.json");
+        let genesis_path = checkpoint_root.join("genesis.json");
+        fs::create_dir_all(&checkpoint_root).expect("checkpoint root should be creatable");
+        fs::write(&genesis_path, "hello-genesis").expect("genesis file should be writable");
+
         let report = MigrationReport {
             schema_version: REPORT_SCHEMA_VERSION,
             status: "completed",
@@ -1335,7 +1405,7 @@ mod tests {
         write_checkpoint_file(
             Some(&checkpoint_path),
             &report,
-            std::path::Path::new("genesis.json"),
+            &genesis_path,
             std::path::Path::new("old-store"),
         )
         .expect("checkpoint file write should succeed");
@@ -1344,7 +1414,14 @@ mod tests {
         let payload: Value = serde_json::from_str(&content).expect("checkpoint should be json");
 
         assert_eq!(payload["schema_version"], 1);
-        assert_eq!(payload["genesis_path"], "genesis.json");
+        assert_eq!(
+            payload["genesis_path"],
+            genesis_path.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            payload["genesis_sha256"],
+            sha256_hex_for_file(&genesis_path).unwrap()
+        );
         assert_eq!(payload["source_store_path"], "old-store");
         assert_eq!(payload["source_head"], 100);
         assert_eq!(payload["target_head"], 98);
