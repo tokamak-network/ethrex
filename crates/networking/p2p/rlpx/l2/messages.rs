@@ -181,6 +181,8 @@ impl RLPxMessage for BatchSealed {
 pub enum L2Message {
     BatchSealed(BatchSealed),
     NewBlock(NewBlock),
+    GetBlockProofs(crate::rlpx::eth::blocks::GetBlockProofs),
+    BlockProofs(crate::rlpx::eth::blocks::BlockProofs),
 }
 
 // I don't really like doing ad-hoc 'from' implementations,

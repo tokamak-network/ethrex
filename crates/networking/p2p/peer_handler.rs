@@ -13,6 +13,10 @@ use crate::{
         p2p::{Capability, SUPPORTED_ETH_CAPABILITIES},
     },
 };
+#[cfg(feature = "l2")]
+use crate::rlpx::l2::SUPPORTED_BASED_CAPABILITIES;
+#[cfg(not(feature = "l2"))]
+pub const SUPPORTED_BASED_CAPABILITIES: [Capability; 0] = [];
 use ethrex_common::{
     H256,
     types::{BlockBody, BlockHeader, validate_block_body},
@@ -554,6 +558,63 @@ impl PeerHandler {
         }
         Ok(None)
     }
+
+    /// Requests block proofs from any suitable peer given their block hashes
+    /// Returns the block proofs or None if:
+    /// - There are no available peers supporting the based capability
+    /// - The requested peer did not return a valid response in the given time limit
+    #[cfg(feature = "l2")]
+    pub async fn request_block_proofs(
+        &mut self,
+        block_hashes: &[H256],
+    ) -> Result<Option<Vec<ethrex_common::types::BlockProof>>, PeerHandlerError> {
+        let block_hashes_len = block_hashes.len();
+        let request_id = rand::random();
+        let request = RLPxMessage::L2(crate::rlpx::l2::messages::L2Message::GetBlockProofs(
+            crate::rlpx::eth::blocks::GetBlockProofs {
+                id: request_id,
+                block_hashes: block_hashes.to_vec(),
+            },
+        ));
+        match self.get_random_peer(&SUPPORTED_BASED_CAPABILITIES).await? {
+            None => Ok(None),
+            Some((peer_id, mut connection)) => {
+                if let Ok(RLPxMessage::L2(crate::rlpx::l2::messages::L2Message::BlockProofs(
+                    crate::rlpx::eth::blocks::BlockProofs {
+                        id: _,
+                        block_proofs,
+                    },
+                ))) = PeerHandler::make_request(
+                    &mut self.peer_table,
+                    peer_id,
+                    &mut connection,
+                    request,
+                    PEER_REPLY_TIMEOUT,
+                )
+                .await
+                {
+                    if !block_proofs.is_empty() && block_proofs.len() <= block_hashes_len {
+                        self.peer_table.record_success(&peer_id).await?;
+                        return Ok(Some(block_proofs));
+                    }
+                }
+                warn!(
+                    "[SYNCING] Didn't receive block proofs from peer, penalizing peer {peer_id}..."
+                );
+                self.peer_table.record_failure(&peer_id).await?;
+                Ok(None)
+            }
+        }
+    }
+
+    #[cfg(not(feature = "l2"))]
+    pub async fn request_block_proofs(
+        &mut self,
+        _block_hashes: &[H256],
+    ) -> Result<Option<Vec<ethrex_common::types::BlockProof>>, PeerHandlerError> {
+        Ok(None)
+    }
+
     /// Returns the PeerData for each connected Peer
     pub async fn read_connected_peers(&mut self) -> Vec<PeerData> {
         self.peer_table
@@ -645,6 +706,8 @@ pub enum PeerHandlerError {
     SendMessageToPeer(String),
     #[error("Failed to receive block headers")]
     BlockHeaders,
+    #[error("Failed to receive block proofs")]
+    BlockProofs,
     #[error("Received unexpected response from peer {0}")]
     UnexpectedResponseFromPeer(H256),
     #[error("Received an empty response from peer {0}")]

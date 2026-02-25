@@ -141,23 +141,20 @@ pub fn init_metrics(opts: &Options, network: &Network, tracker: TaskTracker) {
     tracker.spawn(metrics_api);
 }
 
-/// Opens a new or pre-existing Store and loads the initial state provided by the network
-pub async fn init_store(datadir: impl AsRef<Path>, genesis: Genesis) -> Result<Store, StoreError> {
-    let mut store = open_store(datadir.as_ref())?;
+pub async fn init_store(datadir: impl AsRef<Path>, genesis: Genesis, in_memory: bool) -> Result<Store, StoreError> {
+    let mut store = open_store(datadir.as_ref(), in_memory)?;
     store.add_initial_state(genesis).await?;
     Ok(store)
 }
 
-/// Initializes a pre-existing Store
-pub async fn load_store(datadir: &Path) -> Result<Store, StoreError> {
-    let store = open_store(datadir)?;
+pub async fn load_store(datadir: &Path, in_memory: bool) -> Result<Store, StoreError> {
+    let store = open_store(datadir, in_memory)?;
     store.load_initial_state().await?;
     Ok(store)
 }
 
-/// Opens a pre-existing Store or creates a new one
-pub fn open_store(datadir: &Path) -> Result<Store, StoreError> {
-    if is_memory_datadir(datadir) {
+pub fn open_store(datadir: &Path, in_memory: bool) -> Result<Store, StoreError> {
+    if in_memory || is_memory_datadir(datadir) {
         Store::new(datadir, EngineType::InMemory)
     } else {
         #[cfg(feature = "rocksdb")]
@@ -451,7 +448,7 @@ pub async fn init_l1(
     debug!("Preloading KZG trusted setup");
     ethrex_crypto::kzg::warm_up_trusted_setup();
 
-    let store = match init_store(datadir, genesis).await {
+    let store = match init_store(datadir, genesis, opts.zk_verifier_only).await {
         Ok(store) => store,
         Err(err @ StoreError::IncompatibleDBVersion { .. })
         | Err(err @ StoreError::NotFoundDBVersion { .. }) => {
@@ -477,6 +474,7 @@ pub async fn init_l1(
             r#type: BlockchainType::L1,
             max_blobs_per_block: opts.max_blobs_per_block,
             precompute_witnesses: opts.precompute_witnesses,
+            zk_verifier_only: opts.zk_verifier_only,
         },
     );
 

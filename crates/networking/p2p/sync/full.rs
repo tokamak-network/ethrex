@@ -125,20 +125,47 @@ pub async fn sync_cycle_full(
                 .collect::<Result<Vec<_>, SyncError>>()?;
         }
         let mut blocks = Vec::new();
-        // Request block bodies
-        // Download block bodies
-        while !headers.is_empty() {
-            let header_batch = &headers[..min(MAX_BLOCK_BODIES_TO_REQUEST, headers.len())];
-            let bodies = peers
-                .request_block_bodies(header_batch)
+        // Request block bodies or proofs
+        if blockchain.options.zk_verifier_only {
+            info!("ZK-Verifier: Requesting block proofs");
+            let block_hashes: Vec<H256> = headers.iter().map(|h| h.hash()).collect();
+            let proofs = peers
+                .request_block_proofs(&block_hashes)
                 .await?
-                .ok_or(SyncError::BodiesNotFound)?;
-            debug!("Obtained: {} block bodies", bodies.len());
+                .unwrap_or_default();
+            
+            info!("ZK-Verifier: Obtained {} block proofs", proofs.len());
+
+            for (hash, proof) in block_hashes.into_iter().zip(proofs) {
+                if let Err(e) = store.add_block_proof(hash, proof).await {
+                    tracing::error!("ZK-Verifier: Failed to store proof for block {}: {}", hash, e);
+                }
+            }
+
             let block_batch = headers
-                .drain(..bodies.len())
-                .zip(bodies)
-                .map(|(header, body)| Block { header, body });
+                .drain(..)
+                .map(|header| {
+                    Block { 
+                        header, 
+                        body: Default::default(),
+                    }
+                });
             blocks.extend(block_batch);
+        } else {
+            // Download block bodies
+            while !headers.is_empty() {
+                let header_batch = &headers[..min(MAX_BLOCK_BODIES_TO_REQUEST, headers.len())];
+                let bodies = peers
+                    .request_block_bodies(header_batch)
+                    .await?
+                    .ok_or(SyncError::BodiesNotFound)?;
+                debug!("Obtained: {} block bodies", bodies.len());
+                let block_batch = headers
+                    .drain(..bodies.len())
+                    .zip(bodies)
+                    .map(|(header, body)| Block { header, body });
+                blocks.extend(block_batch);
+            }
         }
         if !blocks.is_empty() {
             // Execute blocks

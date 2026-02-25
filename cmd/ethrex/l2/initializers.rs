@@ -190,7 +190,7 @@ pub async fn init_l2(
     let network = get_network(&opts.node_opts);
 
     let genesis = network.get_genesis()?;
-    let store = init_store(&datadir, genesis.clone()).await?;
+    let store = init_store(&datadir, genesis.clone(), false).await?;
     let rollup_store = init_rollup_store(&rollup_store_dir).await;
 
     let operator_fee_config = get_operator_fee_config(&opts.sequencer_opts)?;
@@ -217,6 +217,7 @@ pub async fn init_l2(
         perf_logs_enabled: true,
         max_blobs_per_block: None, // L2 doesn't support blob transactions
         precompute_witnesses: opts.node_opts.precompute_witnesses,
+        zk_verifier_only: opts.node_opts.zk_verifier_only,
     };
 
     let blockchain = init_blockchain(store.clone(), blockchain_opts.clone());

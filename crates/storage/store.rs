@@ -308,6 +308,28 @@ impl Store {
         self.write_async(HEADERS, hash_key, header_value).await
     }
 
+    /// Add a block proof
+    pub async fn add_block_proof(
+        &self,
+        block_hash: BlockHash,
+        proof: ethrex_common::types::BlockProof,
+    ) -> Result<(), StoreError> {
+        let hash_key = block_hash.encode_to_vec();
+        let proof_value = serde_json::to_vec(&proof).map_err(|e| StoreError::Custom(e.to_string()))?;
+        self.write_async(crate::api::tables::BLOCK_PROOFS, hash_key, proof_value).await
+    }
+
+    /// Get a block proof
+    pub fn get_block_proof(&self, block_hash: BlockHash) -> Result<Option<ethrex_common::types::BlockProof>, StoreError> {
+        let hash_key = block_hash.encode_to_vec();
+        if let Some(data) = self.read(crate::api::tables::BLOCK_PROOFS, hash_key)? {
+            let proof = serde_json::from_slice(&data).map_err(|e| StoreError::Custom(e.to_string()))?;
+            Ok(Some(proof))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Add a batch of block headers
     pub async fn add_block_headers(
         &self,

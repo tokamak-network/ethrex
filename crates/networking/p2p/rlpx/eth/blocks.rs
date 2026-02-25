@@ -344,6 +344,81 @@ impl RLPxMessage for BlockBodies {
     }
 }
 
+// Custom extension for ZK Verifier Mode
+// https://github.com/ethereum/devp2p/blob/master/caps/eth.md (Extended)
+#[derive(Debug, Clone)]
+pub struct GetBlockProofs {
+    pub id: u64,
+    pub block_hashes: Vec<BlockHash>,
+}
+
+impl GetBlockProofs {
+    pub fn new(id: u64, block_hashes: Vec<BlockHash>) -> Self {
+        Self { block_hashes, id }
+    }
+}
+
+impl RLPxMessage for GetBlockProofs {
+    const CODE: u8 = 0x12; // Picked a code that doesn't collide with standard eth/68
+    fn encode(&self, buf: &mut dyn BufMut) -> Result<(), RLPEncodeError> {
+        let mut encoded_data = vec![];
+        Encoder::new(&mut encoded_data)
+            .encode_field(&self.id)
+            .encode_field(&self.block_hashes)
+            .finish();
+
+        let msg_data = snappy_compress(encoded_data)?;
+        buf.put_slice(&msg_data);
+        Ok(())
+    }
+
+    fn decode(msg_data: &[u8]) -> Result<Self, RLPDecodeError> {
+        let decompressed_data = snappy_decompress(msg_data)?;
+        let decoder = Decoder::new(&decompressed_data)?;
+        let (id, decoder): (u64, _) = decoder.decode_field("request-id")?;
+        let (block_hashes, _): (Vec<BlockHash>, _) = decoder.decode_field("blockHashes")?;
+
+        Ok(Self::new(id, block_hashes))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockProofs {
+    pub id: u64,
+    pub block_proofs: Vec<ethrex_common::types::BlockProof>,
+}
+
+impl BlockProofs {
+    pub fn new(id: u64, block_proofs: Vec<ethrex_common::types::BlockProof>) -> Self {
+        Self { block_proofs, id }
+    }
+}
+
+impl RLPxMessage for BlockProofs {
+    const CODE: u8 = 0x13; // Picked a code that doesn't collide with standard eth/68
+    fn encode(&self, buf: &mut dyn BufMut) -> Result<(), RLPEncodeError> {
+        let mut encoded_data = vec![];
+        Encoder::new(&mut encoded_data)
+            .encode_field(&self.id)
+            .encode_field(&self.block_proofs)
+            .finish();
+
+        let msg_data = snappy_compress(encoded_data)?;
+        buf.put_slice(&msg_data);
+        Ok(())
+    }
+
+    fn decode(msg_data: &[u8]) -> Result<Self, RLPDecodeError> {
+        let decompressed_data = snappy_decompress(msg_data)?;
+        let decoder = Decoder::new(&decompressed_data)?;
+        let (id, decoder): (u64, _) = decoder.decode_field("request-id")?;
+        let (block_proofs, _): (Vec<ethrex_common::types::BlockProof>, _) =
+            decoder.decode_field("blockProofs")?;
+
+        Ok(Self::new(id, block_proofs))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ethrex_common::types::BlockHash;

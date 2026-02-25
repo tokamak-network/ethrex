@@ -13,6 +13,7 @@ mod receipt;
 pub mod requests;
 pub mod transaction;
 pub mod tx_fields;
+pub mod zk;
 
 pub use account::*;
 pub use account_update::*;
@@ -25,3 +26,4 @@ pub use l2::*;
 pub use receipt::*;
 pub use transaction::*;
 pub use tx_fields::*;
+pub use zk::*;

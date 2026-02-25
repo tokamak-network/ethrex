@@ -155,6 +155,10 @@ impl Message {
                     match l2_msg {
                         L2Message::NewBlock(_) => NewBlock::CODE,
                         L2Message::BatchSealed(_) => BatchSealed::CODE,
+                        L2Message::GetBlockProofs(_) => {
+                            crate::rlpx::eth::blocks::GetBlockProofs::CODE
+                        }
+                        L2Message::BlockProofs(_) => crate::rlpx::eth::blocks::BlockProofs::CODE,
                     }
                 }
             }
@@ -242,6 +246,14 @@ impl Message {
                         let decoded = l2::messages::BatchSealed::decode(data)?;
                         L2Message::BatchSealed(decoded)
                     }
+                    crate::rlpx::eth::blocks::GetBlockProofs::CODE => {
+                        let decoded = crate::rlpx::eth::blocks::GetBlockProofs::decode(data)?;
+                        L2Message::GetBlockProofs(decoded)
+                    }
+                    crate::rlpx::eth::blocks::BlockProofs::CODE => {
+                        let decoded = crate::rlpx::eth::blocks::BlockProofs::decode(data)?;
+                        L2Message::BlockProofs(decoded)
+                    }
                     _ => return Err(RLPDecodeError::MalformedData),
                 },
             ));
@@ -288,6 +300,8 @@ impl Message {
             Message::L2(l2_msg) => match l2_msg {
                 L2Message::BatchSealed(msg) => msg.encode(buf),
                 L2Message::NewBlock(msg) => msg.encode(buf),
+                L2Message::GetBlockProofs(msg) => msg.encode(buf),
+                L2Message::BlockProofs(msg) => msg.encode(buf),
             },
         }
     }
@@ -322,7 +336,11 @@ impl Message {
             | Message::NewPooledTransactionHashes(_)
             | Message::BlockRangeUpdate(_) => None,
             #[cfg(feature = "l2")]
-            Message::L2(_) => None,
+            Message::L2(l2_msg) => match l2_msg {
+                L2Message::GetBlockProofs(message) => Some(message.id),
+                L2Message::BlockProofs(message) => Some(message.id),
+                _ => None,
+            },
         }
     }
 }
@@ -360,6 +378,8 @@ impl Display for Message {
             Message::L2(l2_msg) => match l2_msg {
                 L2Message::BatchSealed(_) => "based:BatchSealed".fmt(f),
                 L2Message::NewBlock(_) => "based:NewBlock".fmt(f),
+                L2Message::GetBlockProofs(_) => "based:GetBlockProofs".fmt(f),
+                L2Message::BlockProofs(_) => "based:BlockProofs".fmt(f),
             },
         }
     }

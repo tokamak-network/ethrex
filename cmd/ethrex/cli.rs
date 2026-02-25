@@ -297,6 +297,14 @@ pub struct Options {
         help_heading = "Node options"
     )]
     pub precompute_witnesses: bool,
+    #[arg(
+        long = "zk-verifier-only",
+        action = ArgAction::SetTrue,
+        default_value = "false",
+        help = "Run the node as a stateless ZK-Proof verifier without executing the EVM or storing full state.",
+        help_heading = "Node options"
+    )]
+    pub zk_verifier_only: bool,
 }
 
 impl Options {
@@ -374,6 +382,7 @@ impl Default for Options {
             gas_limit: DEFAULT_BUILDER_GAS_CEIL,
             max_blobs_per_block: None,
             precompute_witnesses: false,
+            zk_verifier_only: false,
         }
     }
 }
@@ -633,7 +642,7 @@ pub async fn import_blocks(
     const MIN_FULL_BLOCKS: usize = 132;
     let start_time = Instant::now();
     init_datadir(datadir);
-    let store = init_store(datadir, genesis).await?;
+    let store = init_store(datadir, genesis, false).await?;
     let blockchain = init_blockchain(store.clone(), blockchain_opts);
     let path_metadata = metadata(path).expect("Failed to read path");
 
@@ -751,7 +760,7 @@ pub async fn import_blocks_bench(
 ) -> Result<(), ChainError> {
     let start_time = Instant::now();
     init_datadir(datadir);
-    let store = init_store(datadir, genesis).await?;
+    let store = init_store(datadir, genesis, false).await?;
     let blockchain = init_blockchain(store.clone(), blockchain_opts);
     regenerate_head_state(&store, &blockchain).await.unwrap();
     let path_metadata = metadata(path).expect("Failed to read path");
@@ -865,7 +874,7 @@ pub async fn export_blocks(
     last_number: Option<u64>,
 ) {
     init_datadir(datadir);
-    let store = match load_store(datadir).await {
+    let store = match load_store(datadir, false).await {
         Err(err) => {
             error!("Failed to load Store due to: {err}");
             return;

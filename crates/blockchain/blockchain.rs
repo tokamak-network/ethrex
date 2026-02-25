@@ -49,6 +49,7 @@ pub mod mempool;
 pub mod payload;
 pub mod tracing;
 pub mod vm;
+pub mod zk;
 
 use ::tracing::{debug, info, instrument, warn};
 use constants::{MAX_INITCODE_SIZE, MAX_TRANSACTION_DATA_SIZE, POST_OSAKA_GAS_LIMIT_CAP};
@@ -205,6 +206,8 @@ pub struct BlockchainOptions {
     pub max_blobs_per_block: Option<u32>,
     /// If true, computes execution witnesses upon receiving newPayload messages and stores them in local storage
     pub precompute_witnesses: bool,
+    /// If true, runs the node as a stateless ZK-Proof verifier without executing the EVM.
+    pub zk_verifier_only: bool,
 }
 
 impl Default for BlockchainOptions {
@@ -215,6 +218,7 @@ impl Default for BlockchainOptions {
             r#type: BlockchainType::default(),
             max_blobs_per_block: None,
             precompute_witnesses: false,
+            zk_verifier_only: false,
         }
     }
 }
@@ -380,6 +384,34 @@ impl Blockchain {
         let start_instant = Instant::now();
 
         let chain_config = self.storage.get_chain_config();
+
+        if self.options.zk_verifier_only {
+            let proof = self.storage.get_block_proof(block.hash()).map_err(|e| ChainError::Custom(e.to_string()))?;
+            // Call our ZK Verifier dummy module
+            crate::zk::verify_proof_for_block(block, proof)
+                .map_err(|e| ChainError::Custom(format!("ZK Verifier Error: {e}")))?;
+
+            info!("ZK-Verifier: Skipping EVM execution and state merkleization for block {}", block.header.number);
+            let execution_result = BlockExecutionResult {
+                receipts: vec![],
+                requests: vec![],
+                block_gas_used: block.header.gas_used,
+            };
+            let account_updates_list = AccountUpdatesList {
+                state_trie_hash: block.header.state_root,
+                state_updates: vec![],
+                storage_updates: vec![],
+                code_updates: vec![],
+            };
+            return Ok((
+                execution_result,
+                account_updates_list,
+                None, // accumulated_updates
+                0,    // max_queue_length
+                [start_instant, start_instant, start_instant, start_instant, start_instant, start_instant],
+                Duration::ZERO, // warmer_duration
+            ));
+        }
 
         // Validate the block pre-execution
         validate_block(block, parent_header, &chain_config, ELASTICITY_MULTIPLIER)?;

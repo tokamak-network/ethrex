@@ -24,6 +24,8 @@ hex.workspace = true
 rustc-hash.workspace = true
 tokio = { workspace = true, features = ["time", "rt", "sync", "macros"] }
 tokio-util.workspace = true
+sp1-sdk = "5.0.0"
+bincode = "1.3.3"
 
 [dev-dependencies]
 serde_json.workspace = true

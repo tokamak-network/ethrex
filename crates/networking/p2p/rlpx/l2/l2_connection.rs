@@ -156,6 +156,28 @@ pub(crate) async fn handle_based_capability_message(
             }
             process_blocks_on_queue(established).await?;
         }
+        L2Message::GetBlockProofs(req) => {
+            info!("Received GetBlockProofs request for {} blocks", req.block_hashes.len());
+            let mut block_proofs = Vec::new();
+            for hash in &req.block_hashes {
+                match established.storage.get_block_proof(*hash) {
+                    Ok(Some(proof)) => block_proofs.push(proof),
+                    Ok(None) => debug!("Proof not found for block hash: {}", hash),
+                    Err(e) => error!("Error fetching proof from storage: {}", e),
+                }
+            }
+            let response = crate::rlpx::eth::blocks::BlockProofs::new(req.id, block_proofs);
+            send(established, Message::L2(L2Message::BlockProofs(response))).await?;
+        }
+        L2Message::BlockProofs(msg) => {
+            if let Some((_, tx)) = Message::L2(L2Message::BlockProofs(msg.clone()))
+                .request_id()
+                .and_then(|id| established.current_requests.remove(&id))
+            {
+                tx.send(Message::L2(L2Message::BlockProofs(msg)))
+                    .map_err(|e| PeerConnectionError::SendMessage(e.to_string()))?
+            }
+        }
     }
     Ok(())
 }
