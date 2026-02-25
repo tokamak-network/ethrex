@@ -366,6 +366,15 @@ fn append_report_line(report_file: Option<&Path>, line: &str) -> Result<()> {
     Ok(())
 }
 
+fn canonicalize_path(path: &Path) -> Result<std::path::PathBuf> {
+    path.canonicalize()
+        .wrap_err_with(|| format!("Cannot canonicalize path {path:?}"))
+}
+
+fn canonical_path_string(path: &Path) -> Result<String> {
+    Ok(canonicalize_path(path)?.to_string_lossy().to_string())
+}
+
 fn sha256_hex_for_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).wrap_err_with(|| format!("Cannot read file for sha256 {path:?}"))?;
     let mut hasher = Sha256::new();
@@ -392,8 +401,8 @@ fn read_resume_block_from_checkpoint(
         ));
     }
 
-    let expected_genesis = expected_genesis_path.to_string_lossy();
-    let expected_source = expected_source_store_path.to_string_lossy();
+    let expected_genesis = canonical_path_string(expected_genesis_path)?;
+    let expected_source = canonical_path_string(expected_source_store_path)?;
     if let Some(checkpoint_genesis) = checkpoint.genesis_path.as_deref()
         && checkpoint_genesis != expected_genesis
     {
@@ -405,7 +414,7 @@ fn read_resume_block_from_checkpoint(
     }
 
     if let Some(checkpoint_genesis_hash) = checkpoint.genesis_sha256.as_deref() {
-        let expected_genesis_hash = sha256_hex_for_file(expected_genesis_path)?;
+        let expected_genesis_hash = sha256_hex_for_file(&canonicalize_path(expected_genesis_path)?)?;
         if checkpoint_genesis_hash != expected_genesis_hash {
             return Err(eyre::eyre!(
                 "Checkpoint genesis_sha256 mismatch in {path:?}: expected {:?}, got {:?}",
@@ -456,11 +465,14 @@ fn write_checkpoint_file(
             .wrap_err_with(|| format!("Cannot create checkpoint directory {parent:?}"))?;
     }
 
+    let canonical_genesis_path = canonicalize_path(genesis_path)?;
+    let canonical_source_store_path = canonicalize_path(source_store_path)?;
+
     let checkpoint = MigrationCheckpoint {
         schema_version: REPORT_SCHEMA_VERSION,
-        genesis_path: Some(genesis_path.to_string_lossy().to_string()),
-        genesis_sha256: Some(sha256_hex_for_file(genesis_path)?),
-        source_store_path: Some(source_store_path.to_string_lossy().to_string()),
+        genesis_path: Some(canonical_genesis_path.to_string_lossy().to_string()),
+        genesis_sha256: Some(sha256_hex_for_file(&canonical_genesis_path)?),
+        source_store_path: Some(canonical_source_store_path.to_string_lossy().to_string()),
         source_head: report.source_head,
         target_head: report.target_head,
         imported_blocks: report.imported_blocks,
@@ -941,6 +953,24 @@ mod tests {
         std::env::temp_dir().join(format!("migrations-cli-unit-{suffix}-{nanos}"))
     }
 
+
+    fn expected_paths_for_checkpoint(checkpoint_path: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = checkpoint_path
+            .parent()
+            .and_then(|parent| parent.parent())
+            .unwrap_or_else(|| checkpoint_path.parent().unwrap_or_else(|| std::path::Path::new(".")));
+
+        fs::create_dir_all(root).expect("checkpoint root should be creatable");
+
+        let genesis_path = root.join("genesis.json");
+        fs::write(&genesis_path, "test-genesis").expect("genesis file should be writable");
+
+        let source_store_path = root.join("old-store");
+        fs::create_dir_all(&source_store_path).expect("source store directory should be creatable");
+
+        (genesis_path, source_store_path)
+    }
+
     #[test]
     fn emit_report_writes_json_line_to_report_file() {
         let report_path = unique_test_path("json-report").join("report.jsonl");
@@ -1142,10 +1172,11 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
+        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
         let resume_block = read_resume_block_from_checkpoint(
             &checkpoint_path,
-            std::path::Path::new("genesis.json"),
-            std::path::Path::new("old-store"),
+            &genesis_path,
+            &source_store_path,
         )
         .expect("resume block should be readable");
         assert_eq!(resume_block, 99);
@@ -1176,10 +1207,11 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
+        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
         let error = read_resume_block_from_checkpoint(
             &checkpoint_path,
-            std::path::Path::new("genesis.json"),
-            std::path::Path::new("old-store"),
+            &genesis_path,
+            &source_store_path,
         )
         .expect_err("schema mismatch should fail");
         assert!(
@@ -1214,10 +1246,11 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
+        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
         let error = read_resume_block_from_checkpoint(
             &checkpoint_path,
-            std::path::Path::new("genesis.json"),
-            std::path::Path::new("old-store"),
+            &genesis_path,
+            &source_store_path,
         )
         .expect_err("overflow should fail");
         assert!(error.to_string().contains("target_head overflow"));
@@ -1248,10 +1281,11 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
+        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
         let error = read_resume_block_from_checkpoint(
             &checkpoint_path,
-            std::path::Path::new("genesis.json"),
-            std::path::Path::new("old-store"),
+            &genesis_path,
+            &source_store_path,
         )
         .expect_err("target_head above source_head should fail");
         assert!(error.to_string().contains("cannot exceed source_head"));
@@ -1284,10 +1318,11 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
+        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
         let error = read_resume_block_from_checkpoint(
             &checkpoint_path,
-            std::path::Path::new("genesis.json"),
-            std::path::Path::new("old-store"),
+            &genesis_path,
+            &source_store_path,
         )
         .expect_err("genesis mismatch should fail");
         assert!(error.to_string().contains("genesis_path mismatch"));
@@ -1320,10 +1355,11 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
+        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
         let error = read_resume_block_from_checkpoint(
             &checkpoint_path,
-            std::path::Path::new("genesis.json"),
-            std::path::Path::new("old-store"),
+            &genesis_path,
+            &source_store_path,
         )
         .expect_err("source store mismatch should fail");
         assert!(error.to_string().contains("source_store_path mismatch"));
@@ -1341,10 +1377,12 @@ mod tests {
         let genesis_path = checkpoint_root.join("genesis.json");
         fs::create_dir_all(&checkpoint_root).expect("checkpoint root should be creatable");
         fs::write(&genesis_path, "hello-genesis").expect("genesis file should be writable");
+        let source_store_path = checkpoint_root.join("old-store");
+        fs::create_dir_all(&source_store_path).expect("source store directory should be creatable");
 
         let checkpoint = json!({
             "schema_version": 1,
-            "genesis_path": genesis_path.to_string_lossy(),
+            "genesis_path": genesis_path.canonicalize().unwrap().to_string_lossy(),
             "genesis_sha256": "deadbeef",
             "source_store_path": "old-store",
             "source_head": 100,
@@ -1364,7 +1402,7 @@ mod tests {
         let error = read_resume_block_from_checkpoint(
             &checkpoint_path,
             &genesis_path,
-            std::path::Path::new("old-store"),
+            &source_store_path,
         )
         .expect_err("genesis hash mismatch should fail");
         assert!(error.to_string().contains("genesis_sha256 mismatch"));
@@ -1383,6 +1421,8 @@ mod tests {
         let genesis_path = checkpoint_root.join("genesis.json");
         fs::create_dir_all(&checkpoint_root).expect("checkpoint root should be creatable");
         fs::write(&genesis_path, "hello-genesis").expect("genesis file should be writable");
+        let source_store_path = checkpoint_root.join("old-store");
+        fs::create_dir_all(&source_store_path).expect("source store directory should be creatable");
 
         let report = MigrationReport {
             schema_version: REPORT_SCHEMA_VERSION,
@@ -1406,7 +1446,7 @@ mod tests {
             Some(&checkpoint_path),
             &report,
             &genesis_path,
-            std::path::Path::new("old-store"),
+            &source_store_path,
         )
         .expect("checkpoint file write should succeed");
 
@@ -1416,18 +1456,110 @@ mod tests {
         assert_eq!(payload["schema_version"], 1);
         assert_eq!(
             payload["genesis_path"],
-            genesis_path.to_string_lossy().to_string()
+genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
         );
         assert_eq!(
             payload["genesis_sha256"],
             sha256_hex_for_file(&genesis_path).unwrap()
         );
-        assert_eq!(payload["source_store_path"], "old-store");
+        assert_eq!(
+            payload["source_store_path"],
+            source_store_path
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        );
         assert_eq!(payload["source_head"], 100);
         assert_eq!(payload["target_head"], 98);
         assert_eq!(payload["imported_blocks"], 98);
         assert_eq!(payload["skipped_blocks"], 2);
         assert_eq!(payload["retry_attempts"], 3);
+
+        if let Some(parent) = checkpoint_path.parent() {
+            let root = parent.parent().unwrap_or(parent);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+
+    #[cfg(unix)]
+    #[test]
+    fn checkpoint_provenance_uses_canonical_paths_and_accepts_symlinked_inputs() {
+        use std::os::unix::fs::symlink;
+
+        let checkpoint_root = unique_test_path("checkpoint-canonicalize");
+        let real_root = checkpoint_root.join("real");
+        let link_root = checkpoint_root.join("link");
+        fs::create_dir_all(&real_root).expect("real root should be creatable");
+        fs::create_dir_all(&link_root).expect("link root should be creatable");
+
+        let real_genesis = real_root.join("genesis.json");
+        fs::write(&real_genesis, "hello-genesis").expect("real genesis should be writable");
+        let real_store = real_root.join("old-store");
+        fs::create_dir_all(&real_store).expect("real store should be creatable");
+
+        let linked_genesis = link_root.join("genesis.json");
+        symlink(&real_genesis, &linked_genesis).expect("genesis symlink should be creatable");
+
+        let linked_store = link_root.join("old-store");
+        symlink(&real_store, &linked_store).expect("store symlink should be creatable");
+
+        let checkpoint_path = checkpoint_root.join("state/checkpoint.json");
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "completed",
+            phase: "execution",
+            source_head: 100,
+            target_head: 98,
+            plan: Some(MigrationPlan {
+                start_block: 1,
+                end_block: 100,
+            }),
+            dry_run: false,
+            imported_blocks: 98,
+            skipped_blocks: 2,
+            elapsed_ms: 123,
+            retry_attempts: 3,
+            retries_performed: 4,
+        };
+
+        write_checkpoint_file(
+            Some(&checkpoint_path),
+            &report,
+            &linked_genesis,
+            &linked_store,
+        )
+        .expect("checkpoint file write should succeed");
+
+        let content = fs::read_to_string(&checkpoint_path).expect("checkpoint should be readable");
+        let payload: Value = serde_json::from_str(&content).expect("checkpoint should be json");
+
+        assert_eq!(
+            payload["genesis_path"],
+            real_genesis
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        );
+        assert_eq!(
+            payload["source_store_path"],
+            real_store
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        );
+
+        // Ensure resume works regardless of expected path representation.
+        let resume_block = read_resume_block_from_checkpoint(
+            &checkpoint_path,
+            &real_genesis,
+            &linked_store,
+        )
+        .expect("resume should succeed with canonicalized provenance");
+        assert_eq!(resume_block, 99);
 
         if let Some(parent) = checkpoint_path.parent() {
             let root = parent.parent().unwrap_or(parent);
