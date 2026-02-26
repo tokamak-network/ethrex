@@ -170,6 +170,10 @@
 | | - L2 P2P 포트 충돌 해결 (`--p2p.port 30304 --discovery.port 30304`) | |
 | | - Localnet E2E 성공: L1→Deploy→L2 전체 파이프라인 검증 | |
 | | - ZkDex 7개 컨트랙트 + storage slots L2 제네시스 배포 확인 | |
+| 2026-02-26 | **SP1 E2E 증명 + L1 온체인 검증 성공** | |
+| | - `ETHREX_GUEST_PROGRAM_ID=zk-dex` env var 누락 수정 (programTypeId 1→2) | |
+| | - Batch 1: SP1 zk-dex 게스트 실행 (4.9M cycles) → Groth16 증명 → L1 검증 성공 | |
+| | - 전체 파이프라인: L1→Deploy→L2→Prover→L1 Verify 완전 동작 확인 | |
 
 ### 아직 구현되지 않은 것
 
@@ -177,7 +181,7 @@
 - [x] ~~실제 L2 노드를 Guest Program과 함께 가동~~ → `zk-dex-localnet.sh`로 자동화
 - [x] ~~ZK-DEX 컨트랙트 L2 제네시스 배포~~ → `generate-zk-dex-genesis.sh` 파이프라인 구축
 - [x] ~~Circom 회로 컴파일 + trusted setup 실행 (1회, 오프라인)~~ → 6개 회로 컴파일 + PTAU 14 setup 완료
-- [ ] End-to-end 증명 생성 및 L1 검증 (프로버 연결 후 검증)
+- [x] End-to-end 증명 생성 및 L1 검증 — Batch 1 SP1 Groth16 증명 + L1 온체인 검증 성공 (2026-02-26)
 - [ ] 프론트엔드 (platform/client) 연결하여 L2 RPC 동작 확인
 - [ ] 대규모 배치 벤치마크 (100+ transfers)
 - [ ] Native ARM 벤치마크 (Rosetta 2 없이)

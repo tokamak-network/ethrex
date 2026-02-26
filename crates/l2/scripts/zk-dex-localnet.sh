@@ -186,6 +186,7 @@ do_start() {
     set +a
 
     GUEST_PROGRAMS=evm-l2,zk-dex \
+    ETHREX_GUEST_PROGRAM_ID=zk-dex \
     cargo run --release --features l2,l2-sql,sp1 --manifest-path "$REPO_ROOT/Cargo.toml" -- \
         l2 \
         --no-monitor \
