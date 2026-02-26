@@ -188,6 +188,7 @@ do_start() {
     GUEST_PROGRAMS=evm-l2,zk-dex \
     cargo run --release --features l2,l2-sql,sp1 --manifest-path "$REPO_ROOT/Cargo.toml" -- \
         l2 \
+        --no-monitor \
         --proof-coordinator.guest-program-id zk-dex \
         --watcher.block-delay 0 \
         --network "$L2_GENESIS" \
@@ -206,6 +207,8 @@ do_start() {
         --committer.l1-private-key $L1_PRIVATE_KEY \
         --proof-coordinator.l1-private-key 0x39725efee3fb28614de3bacaffe4cc4bd8c436257e2c8bb887c4b5c4be45e76d \
         --proof-coordinator.addr 127.0.0.1 \
+        --p2p.port 30304 \
+        --discovery.port 30304 \
         > "$RUNDIR/l2.log" 2>&1 &
     echo $! > "$RUNDIR/l2.pid"
     log_info "L2 started (PID: $(cat "$RUNDIR/l2.pid"))"

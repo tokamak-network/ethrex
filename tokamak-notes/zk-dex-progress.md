@@ -164,13 +164,19 @@
 | | - `generate-zk-dex-genesis.sh` 스크립트 작성 | |
 | | - forge build → bytecode 추출 → storage layout 검증 → genesis JSON 생성 자동화 | |
 | | - localnet/Docker 스크립트 `l2-zk-dex.json` 전환 | |
+| 2026-02-26 | **Storage slot 버그 수정 + Localnet E2E 검증** | |
+| | - `storage.rs` 슬롯 상수 수정: ENCRYPTED_NOTES 3→2, NOTES 4→3, ORDERS 14→13 | |
+| | - L2 서버 `--no-monitor` 플래그 추가 (TUI→stdout 로깅 전환) | |
+| | - L2 P2P 포트 충돌 해결 (`--p2p.port 30304 --discovery.port 30304`) | |
+| | - Localnet E2E 성공: L1→Deploy→L2 전체 파이프라인 검증 | |
+| | - ZkDex 7개 컨트랙트 + storage slots L2 제네시스 배포 확인 | |
 
 ### 아직 구현되지 않은 것
 
 - [x] ~~실제 L1 네트워크에 컨트랙트 배포~~ → 로컬 L1 (ethrex --dev) 배포 완료
 - [x] ~~실제 L2 노드를 Guest Program과 함께 가동~~ → `zk-dex-localnet.sh`로 자동화
 - [x] ~~ZK-DEX 컨트랙트 L2 제네시스 배포~~ → `generate-zk-dex-genesis.sh` 파이프라인 구축
-- [ ] Circom 회로 컴파일 + trusted setup 실행 (1회, 오프라인)
+- [x] ~~Circom 회로 컴파일 + trusted setup 실행 (1회, 오프라인)~~ → 6개 회로 컴파일 + PTAU 14 setup 완료
 - [ ] End-to-end 증명 생성 및 L1 검증 (프로버 연결 후 검증)
 - [ ] 프론트엔드 (platform/client) 연결하여 L2 RPC 동작 확인
 - [ ] 대규모 배치 벤치마크 (100+ transfers)
