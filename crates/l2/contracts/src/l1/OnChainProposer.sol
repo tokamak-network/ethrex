@@ -501,11 +501,20 @@ contract OnChainProposer is
             revert("00v"); // exceeded privileged transaction inclusion deadline, can't include non-privileged transactions
         }
 
+        // ── Genesis state root verification ──
+        // The first batch after genesis may have a different state root than
+        // batch 0 (e.g., due to pre-deployed contracts in the L2 genesis file).
+        // Since the genesis state root is deterministic and already trusted by
+        // the L1 contract (set during initialize()), no ZK proof is needed.
+        // We verify that the batch contains no state-changing transactions.
+        bool isGenesisTransition = lastVerifiedBatch == 0
+            && _hasNoStateChangingTransactions(batchNumber);
+
         // ── Empty batch auto-verification ──
         // Empty batches (no state change, no transactions, no messages) can be
         // verified without a ZK proof. The _isEmptyBatch() function checks all
         // conditions on-chain, so this is cryptographically safe.
-        if (!_isEmptyBatch(batchNumber)) {
+        if (!isGenesisTransition && !_isEmptyBatch(batchNumber)) {
             // Determine public inputs based on program type
             uint8 batchProgramTypeId = batchCommitments[batchNumber].programTypeId;
             // Backward compatibility: treat 0 as DEFAULT_PROGRAM_TYPE_ID
@@ -731,6 +740,17 @@ contract OnChainProposer is
 
         return (
             current.newStateRoot == previousStateRoot &&
+            _hasNoStateChangingTransactions(batchNumber)
+        );
+    }
+
+    /// @notice Checks whether a batch contains no state-changing transactions.
+    /// @dev This checks all indicators except state root comparison. Used by both
+    /// _isEmptyBatch() (which also requires state root unchanged) and genesis
+    /// transition verification (which allows state root to differ from batch 0).
+    function _hasNoStateChangingTransactions(uint256 batchNumber) internal view returns (bool) {
+        BatchCommitmentInfo storage current = batchCommitments[batchNumber];
+        return (
             current.nonPrivilegedTransactions == 0 &&
             current.withdrawalsLogsMerkleRoot == bytes32(0) &&
             current.processedPrivilegedTransactionsRollingHash == bytes32(0) &&
