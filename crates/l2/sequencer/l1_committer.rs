@@ -17,7 +17,7 @@ use ethrex_common::{
     Address, H256, U256,
     types::{
         BLOB_BASE_FEE_UPDATE_FRACTION, BlobsBundle, Block, BlockNumber, Fork, Genesis,
-        MIN_BASE_FEE_PER_BLOB_GAS, TxType, batch::Batch, blobs_bundle, fake_exponential,
+        MIN_BASE_FEE_PER_BLOB_GAS, TxKind, TxType, batch::Batch, blobs_bundle, fake_exponential,
         fee_config::FeeConfig,
     },
 };
@@ -26,8 +26,8 @@ use ethrex_l2_common::{
     calldata::Value,
     merkle_tree::compute_merkle_root,
     messages::{
-        L2Message, get_balance_diffs, get_block_l1_messages, get_block_l2_out_messages,
-        get_l1_message_hash,
+        BRIDGE_ADDRESS, L2Message, get_balance_diffs, get_block_l1_messages,
+        get_block_l2_out_messages, get_l1_message_hash,
     },
     privileged_transactions::{
         PRIVILEGED_TX_BUDGET, compute_privileged_transactions_hash, get_block_l1_in_messages,
@@ -229,6 +229,29 @@ impl L1Committer {
             genesis,
             checkpoints_dir,
         })
+    }
+
+    /// Check if there are pending withdrawal transactions in uncommitted blocks.
+    async fn has_pending_withdrawals(&self) -> Result<bool, CommitterError> {
+        let last_committed_block = self
+            .rollup_store
+            .get_block_numbers_by_batch(self.last_committed_batch)
+            .await?
+            .and_then(|blocks| blocks.last().copied())
+            .unwrap_or(0);
+
+        let latest_block = self.store.get_latest_block_number().await?;
+
+        for block_num in (last_committed_block + 1)..=latest_block {
+            if let Some(body) = self.store.get_block_body(block_num).await? {
+                for tx in &body.transactions {
+                    if tx.to() == TxKind::Call(BRIDGE_ADDRESS) {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     async fn ensure_checkpoint_for_committed_batch(
@@ -1520,8 +1543,13 @@ impl L1Committer {
             }
 
             let commit_time: u128 = self.commit_time_ms.into();
-            let should_send_commitment =
+            let timer_expired =
                 current_time - self.last_committed_batch_timestamp > commit_time;
+            let has_withdrawal = self.has_pending_withdrawals().await.unwrap_or(false);
+            if has_withdrawal {
+                info!("Pending withdrawal detected, triggering early batch commit");
+            }
+            let should_send_commitment = timer_expired || has_withdrawal;
 
             debug!(
                 last_committed_batch_at = self.last_committed_batch_timestamp,
