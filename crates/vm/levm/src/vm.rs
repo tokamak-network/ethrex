@@ -17,6 +17,8 @@ use crate::{
     tracing::LevmCallTracer,
 };
 use bytes::Bytes;
+#[cfg(feature = "tokamak-l2")]
+use ethrex_common::types::l2::tokamak_fee_config::TokamakFeeConfig;
 use ethrex_common::{
     Address, H160, H256, U256,
     tracing::CallType,
@@ -30,6 +32,29 @@ use std::{
     rc::Rc,
 };
 
+/// Snapshot of VM state for JIT dual-execution validation.
+///
+/// Contains clones of the four mutable state components (db, call_frame,
+/// substate, storage_original_values) taken before JIT execution, used to
+/// replay via interpreter and compare results.
+#[cfg(feature = "tokamak-jit")]
+type ValidationSnapshot = (
+    GeneralizedDatabase,
+    CallFrame,
+    Substate,
+    FxHashMap<(Address, H256), U256>,
+);
+
+#[cfg(feature = "tokamak-jit")]
+lazy_static::lazy_static! {
+    /// Global JIT compilation state (execution counter + code cache).
+    ///
+    /// Shared across all VM instances. The `tokamak-jit` crate populates the
+    /// code cache; LEVM only reads it and increments execution counters.
+    pub static ref JIT_STATE: crate::jit::dispatch::JitState =
+        crate::jit::dispatch::JitState::new();
+}
+
 /// Storage mapping from slot key to value.
 pub type Storage = HashMap<U256, H256>;
 
@@ -41,6 +66,9 @@ pub enum VMType {
     L1,
     /// L2 rollup execution with additional fee handling.
     L2(FeeConfig),
+    /// Tokamak L2 execution with proven execution metadata and JIT policy.
+    #[cfg(feature = "tokamak-l2")]
+    TokamakL2(TokamakFeeConfig),
 }
 
 /// Execution substate that tracks changes during transaction execution.
@@ -173,11 +201,15 @@ impl Substate {
 
     /// Mark an address as selfdestructed and return whether is was already marked.
     pub fn add_selfdestruct(&mut self, address: Address) -> bool {
+        if self.selfdestruct_set.contains(&address) {
+            return true;
+        }
+
         let is_present = self
             .parent
             .as_ref()
             .map(|parent| parent.is_selfdestruct(&address))
-            .unwrap_or_default();
+            .unwrap_or(false);
 
         is_present || !self.selfdestruct_set.insert(address)
     }
@@ -222,11 +254,21 @@ impl Substate {
 
     /// Mark an address as accessed and return whether is was already marked.
     pub fn add_accessed_slot(&mut self, address: Address, key: H256) -> bool {
+        // Check self first — short-circuits for re-accessed (warm) slots
+        if self
+            .accessed_storage_slots
+            .get(&address)
+            .map(|set| set.contains(&key))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+
         let is_present = self
             .parent
             .as_ref()
             .map(|parent| parent.is_slot_accessed(&address, &key))
-            .unwrap_or_default();
+            .unwrap_or(false);
 
         is_present
             || !self
@@ -270,11 +312,16 @@ impl Substate {
 
     /// Mark an address as accessed and return whether is was already marked.
     pub fn add_accessed_address(&mut self, address: Address) -> bool {
+        // Check self first — short-circuits for re-accessed (warm) addresses
+        if self.accessed_addresses.contains(&address) {
+            return true;
+        }
+
         let is_present = self
             .parent
             .as_ref()
             .map(|parent| parent.is_address_accessed(&address))
-            .unwrap_or_default();
+            .unwrap_or(false);
 
         is_present || !self.accessed_addresses.insert(address)
     }
@@ -291,11 +338,15 @@ impl Substate {
 
     /// Mark an address as a new account and return whether is was already marked.
     pub fn add_created_account(&mut self, address: Address) -> bool {
+        if self.created_accounts.contains(&address) {
+            return true;
+        }
+
         let is_present = self
             .parent
             .as_ref()
             .map(|parent| parent.is_account_created(&address))
-            .unwrap_or_default();
+            .unwrap_or(false);
 
         is_present || !self.created_accounts.insert(address)
     }
@@ -347,6 +398,24 @@ impl Substate {
     /// Push a log record.
     pub fn add_log(&mut self, log: Log) {
         self.logs.push(log);
+    }
+
+    /// Create a deep, independent snapshot of this substate for JIT dual-execution validation.
+    ///
+    /// Recursively clones the entire parent chain so that the snapshot is fully
+    /// independent of the original.
+    #[cfg(feature = "tokamak-jit")]
+    pub fn snapshot(&self) -> Self {
+        Self {
+            parent: self.parent.as_ref().map(|p| Box::new(p.snapshot())),
+            selfdestruct_set: self.selfdestruct_set.clone(),
+            accessed_addresses: self.accessed_addresses.clone(),
+            accessed_storage_slots: self.accessed_storage_slots.clone(),
+            created_accounts: self.created_accounts.clone(),
+            refunded_gas: self.refunded_gas,
+            transient_storage: self.transient_storage.clone(),
+            logs: self.logs.clone(),
+        }
     }
 }
 
@@ -412,6 +481,9 @@ pub struct VM<'a> {
     pub vm_type: VMType,
     /// Opcode dispatch table, built dynamically per fork.
     pub(crate) opcode_table: [OpCodeFn<'a>; 256],
+    /// Per-opcode recorder for time-travel debugging.
+    #[cfg(feature = "tokamak-debugger")]
+    pub opcode_recorder: Option<Rc<RefCell<dyn crate::debugger_hook::OpcodeRecorder>>>,
 }
 
 impl<'a> VM<'a> {
@@ -460,6 +532,8 @@ impl<'a> VM<'a> {
             ),
             env,
             opcode_table: VM::build_opcode_table(fork),
+            #[cfg(feature = "tokamak-debugger")]
+            opcode_recorder: None,
         };
 
         let call_type = if is_create {
@@ -541,6 +615,7 @@ impl<'a> VM<'a> {
                 call_frame.gas_limit,
                 &mut gas_remaining,
                 self.env.config.fork,
+                self.db.store.precompile_cache(),
             );
 
             call_frame.gas_remaining = gas_remaining as i64;
@@ -548,11 +623,268 @@ impl<'a> VM<'a> {
             return result;
         }
 
+        // JIT dispatch: increment counter, auto-compile at threshold, and execute
+        // via JIT if compiled code is available and a backend is registered.
+        // Skipped when tracing is active (tracing needs opcode-level visibility).
+        #[cfg(feature = "tokamak-jit")]
+        {
+            use std::sync::atomic::Ordering;
+
+            if !self.tracer.active {
+                let bytecode_hash = self.current_call_frame.bytecode.hash;
+                let count = JIT_STATE.counter.increment(&bytecode_hash);
+                let fork = self.env.config.fork;
+
+                // Skip JIT entirely for bytecodes known to exceed max_bytecode_size.
+                if !JIT_STATE.is_oversized(&bytecode_hash) {
+                    // Auto-compile on threshold — try background thread first, fall back to sync.
+                    // NOTE: counter is keyed by hash only (not fork). This fires once per bytecode.
+                    // Safe because forks don't change mid-run (see counter.rs doc).
+                    if count == JIT_STATE.config.compilation_threshold {
+                        // Check size BEFORE queuing compilation
+                        if JIT_STATE
+                            .config
+                            .is_bytecode_oversized(self.current_call_frame.bytecode.bytecode.len())
+                        {
+                            JIT_STATE.mark_oversized(bytecode_hash);
+                            JIT_STATE
+                                .metrics
+                                .compilation_skips
+                                .fetch_add(1, Ordering::Relaxed);
+                        } else if !JIT_STATE
+                            .request_compilation(self.current_call_frame.bytecode.clone(), fork)
+                        {
+                            // No background thread — compile synchronously
+                            if let Some(backend) = JIT_STATE.backend() {
+                                match backend.compile(
+                                    &self.current_call_frame.bytecode,
+                                    fork,
+                                    &JIT_STATE.cache,
+                                ) {
+                                    Ok(()) => {
+                                        JIT_STATE
+                                            .metrics
+                                            .compilations
+                                            .fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[JIT] compilation failed for {bytecode_hash}: {e}"
+                                        );
+                                        JIT_STATE
+                                            .metrics
+                                            .jit_fallbacks
+                                            .fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Dispatch if compiled
+                    if let Some(compiled) =
+                        crate::jit::dispatch::try_jit_dispatch(&JIT_STATE, &bytecode_hash, fork)
+                    {
+                        // Snapshot state before JIT execution for dual-execution validation.
+                        // Only allocate when validation will actually run for this cache key.
+                        // Skip validation for bytecodes with CALL/CREATE — the state-swap
+                        // mechanism cannot correctly replay subcalls (see CRITICAL-1).
+                        let cache_key = (bytecode_hash, fork);
+                        let needs_validation = JIT_STATE.config.validation_mode
+                            && JIT_STATE.should_validate(&cache_key)
+                            && !compiled.has_external_calls;
+                        let pre_jit_snapshot = if needs_validation {
+                            Some((
+                                self.db.clone(),
+                                self.current_call_frame.snapshot(),
+                                self.substate.snapshot(),
+                                self.storage_original_values.clone(),
+                            ))
+                        } else {
+                            None
+                        };
+
+                        if let Some(initial_result) = JIT_STATE.execute_jit(
+                            &compiled,
+                            &mut self.current_call_frame,
+                            self.db,
+                            &mut self.substate,
+                            &self.env,
+                            &mut self.storage_original_values,
+                        ) {
+                            // Resume loop: handle CALL/CREATE suspensions
+                            let mut outcome_result = initial_result;
+                            while let Ok(crate::jit::types::JitOutcome::Suspended {
+                                resume_state,
+                                sub_call,
+                            }) = outcome_result
+                            {
+                                match self.handle_jit_subcall(sub_call) {
+                                    Ok(sub_result) => {
+                                        outcome_result = JIT_STATE
+                                            .execute_jit_resume(
+                                                resume_state,
+                                                sub_result,
+                                                &mut self.current_call_frame,
+                                                self.db,
+                                                &mut self.substate,
+                                                &self.env,
+                                                &mut self.storage_original_values,
+                                            )
+                                            .unwrap_or(
+                                                Err("no JIT backend for resume".to_string()),
+                                            );
+                                    }
+                                    Err(e) => {
+                                        outcome_result = Err(format!("JIT subcall error: {e:?}"));
+                                        break;
+                                    }
+                                }
+                            }
+
+                            match outcome_result {
+                                Ok(outcome) => {
+                                    JIT_STATE
+                                        .metrics
+                                        .jit_executions
+                                        .fetch_add(1, Ordering::Relaxed);
+
+                                    // Dual-execution validation: replay via interpreter and compare.
+                                    if let Some(mut snapshot) = pre_jit_snapshot {
+                                        // Build JIT result for comparison before swapping state
+                                        let jit_result =
+                                            apply_jit_outcome(outcome, &self.current_call_frame)?;
+                                        let jit_refunded_gas = self.substate.refunded_gas;
+                                        let jit_logs = self.substate.extract_logs();
+                                        // Capture JIT DB state before swap
+                                        let jit_accounts = self.db.current_accounts_state.clone();
+
+                                        // Swap JIT-mutated state with pre-JIT snapshots
+                                        // (VM now holds original state for interpreter replay)
+                                        self.swap_validation_state(&mut snapshot);
+
+                                        // Run interpreter on the original state.
+                                        // If interpreter_loop fails (InternalError), swap back to
+                                        // JIT state and return JIT result — validation is inconclusive
+                                        // but JIT succeeded, and InternalError is a programming bug.
+                                        let interp_result = match self.interpreter_loop(0) {
+                                            Ok(result) => result,
+                                            Err(_e) => {
+                                                eprintln!(
+                                                    "[JIT-VALIDATE] interpreter replay failed for \
+                                             {bytecode_hash}, trusting JIT result"
+                                                );
+                                                self.swap_validation_state(&mut snapshot);
+                                                return Ok(jit_result);
+                                            }
+                                        };
+                                        let interp_refunded_gas = self.substate.refunded_gas;
+                                        let interp_logs = self.substate.extract_logs();
+
+                                        // Compare JIT vs interpreter (including DB state)
+                                        let validation =
+                                            crate::jit::validation::validate_dual_execution(
+                                                &jit_result,
+                                                &interp_result,
+                                                jit_refunded_gas,
+                                                interp_refunded_gas,
+                                                &jit_logs,
+                                                &interp_logs,
+                                                &jit_accounts,
+                                                &self.db.current_accounts_state,
+                                            );
+
+                                        match validation {
+                                        crate::jit::validation::DualExecutionResult::Match => {
+                                            // Swap back to JIT state (trusted now)
+                                            self.swap_validation_state(&mut snapshot);
+                                            JIT_STATE.record_validation(&cache_key);
+                                            JIT_STATE
+                                                .metrics
+                                                .validation_successes
+                                                .fetch_add(1, Ordering::Relaxed);
+                                            return Ok(jit_result);
+                                        }
+                                        crate::jit::validation::DualExecutionResult::Mismatch {
+                                            reason,
+                                        } => {
+                                            // Keep interpreter state (already in VM)
+                                            JIT_STATE.cache.invalidate(&cache_key);
+                                            JIT_STATE
+                                                .metrics
+                                                .validation_mismatches
+                                                .fetch_add(1, Ordering::Relaxed);
+                                            eprintln!(
+                                                "[JIT-VALIDATE] MISMATCH hash={bytecode_hash} \
+                                             fork={fork:?}: {reason}"
+                                            );
+                                            return Ok(interp_result);
+                                        }
+                                    }
+                                    }
+
+                                    return apply_jit_outcome(outcome, &self.current_call_frame);
+                                }
+                                Err(msg) => {
+                                    JIT_STATE
+                                        .metrics
+                                        .jit_fallbacks
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    eprintln!("[JIT] fallback for {bytecode_hash}: {msg}");
+                                }
+                            }
+                        }
+                    }
+                } // if !JIT_STATE.is_oversized
+            }
+        }
+
+        self.interpreter_loop(0)
+    }
+
+    /// Swap VM mutable state with a validation snapshot.
+    ///
+    /// Used during dual-execution validation to alternate between JIT-mutated
+    /// state and pre-JIT snapshot state. Calling twice restores the original.
+    #[cfg(feature = "tokamak-jit")]
+    fn swap_validation_state(&mut self, snapshot: &mut ValidationSnapshot) {
+        mem::swap(self.db, &mut snapshot.0);
+        mem::swap(&mut self.current_call_frame, &mut snapshot.1);
+        mem::swap(&mut self.substate, &mut snapshot.2);
+        mem::swap(&mut self.storage_original_values, &mut snapshot.3);
+    }
+
+    /// Shared interpreter loop used by both `run_execution` (stop_depth=0) and
+    /// `run_subcall` (stop_depth=call_frames.len()). Executes opcodes until the
+    /// call stack depth returns to `stop_depth`, at which point the final result
+    /// is returned.
+    ///
+    /// When `stop_depth == 0`, this behaves like the original `run_execution` loop:
+    /// it terminates when the initial call frame completes (call_frames is empty).
+    ///
+    /// When `stop_depth > 0`, this is a bounded run for a JIT sub-call: it
+    /// terminates when the child frame (and any nested calls) have completed.
+    fn interpreter_loop(&mut self, stop_depth: usize) -> Result<ContextResult, VMError> {
         #[cfg(feature = "perf_opcode_timings")]
+        #[allow(clippy::expect_used)]
         let mut timings = crate::timings::OPCODE_TIMINGS.lock().expect("poison");
 
         loop {
             let opcode = self.current_call_frame.next_opcode();
+
+            #[cfg(feature = "tokamak-debugger")]
+            if let Some(recorder) = self.opcode_recorder.as_ref() {
+                recorder.borrow_mut().record_step(
+                    opcode,
+                    self.current_call_frame.pc,
+                    self.current_call_frame.gas_remaining,
+                    self.call_frames.len(),
+                    &self.current_call_frame.stack,
+                    self.current_call_frame.memory.len,
+                    self.current_call_frame.code_address,
+                );
+            }
+
             self.advance_pc(1)?;
 
             #[cfg(feature = "perf_opcode_timings")]
@@ -626,12 +958,29 @@ impl<'a> VM<'a> {
                 0x9d => self.op_swap::<14>(),
                 0x9e => self.op_swap::<15>(),
                 0x9f => self.op_swap::<16>(),
+                0x00 => self.op_stop(),
                 0x01 => self.op_add(),
+                0x02 => self.op_mul(),
+                0x03 => self.op_sub(),
+                0x10 => self.op_lt(),
+                0x11 => self.op_gt(),
+                0x14 => self.op_eq(),
+                0x15 => self.op_iszero(),
+                0x16 => self.op_and(),
+                0x17 => self.op_or(),
+                0x1b if self.env.config.fork >= Fork::Constantinople => self.op_shl(),
+                0x1c if self.env.config.fork >= Fork::Constantinople => self.op_shr(),
+                0x35 => self.op_calldataload(),
                 0x39 => self.op_codecopy(),
+                0x50 => self.op_pop(),
                 0x51 => self.op_mload(),
+                0x52 => self.op_mstore(),
+                0x54 => self.op_sload(),
                 0x56 => self.op_jump(),
                 0x57 => self.op_jumpi(),
                 0x5b => self.op_jumpdest(),
+                0x5f if self.env.config.fork >= Fork::Shanghai => self.op_push0(),
+                0xf3 => self.op_return(),
                 _ => {
                     // Call the opcode, using the opcode function lookup table.
                     // Indexing will not panic as all the opcode values fit within the table.
@@ -651,9 +1000,20 @@ impl<'a> VM<'a> {
                 Err(error) => self.handle_opcode_error(error)?,
             };
 
-            // Return the ExecutionReport if the executed callframe was the first one.
-            if self.is_initial_call_frame() {
+            // Check if we've reached the stop depth (initial frame or JIT sub-call boundary)
+            if self.call_frames.len() <= stop_depth {
                 self.handle_state_backup(&result)?;
+                // For JIT sub-calls (stop_depth > 0), pop the completed child frame
+                // and merge its backup into the parent so reverts work correctly.
+                if stop_depth > 0 {
+                    let child = self.pop_call_frame()?;
+                    if result.is_success() {
+                        self.merge_call_frame_backup_with_parent(&child.call_frame_backup)?;
+                    }
+                    let mut child_stack = child.stack;
+                    child_stack.clear();
+                    self.stack_pool.push(child_stack);
+                }
                 return Ok(result);
             }
 
@@ -669,11 +1029,10 @@ impl<'a> VM<'a> {
         gas_limit: u64,
         gas_remaining: &mut u64,
         fork: Fork,
+        cache: Option<&precompiles::PrecompileCache>,
     ) -> Result<ContextResult, VMError> {
-        let execute_precompile = precompiles::execute_precompile;
-
         Self::handle_precompile_result(
-            execute_precompile(code_address, calldata, gas_remaining, fork),
+            precompiles::execute_precompile(code_address, calldata, gas_remaining, fork, cache),
             gas_limit,
             *gas_remaining,
         )
@@ -731,6 +1090,533 @@ impl<'a> VM<'a> {
         };
 
         Ok(report)
+    }
+
+    /// Execute a sub-call from JIT-compiled code via the LEVM interpreter.
+    ///
+    /// Creates a child CallFrame, pushes it onto the call stack, runs it to
+    /// completion, and returns the result as a `SubCallResult`. The JIT parent
+    /// frame is temporarily on the call_frames stack during execution.
+    #[cfg(feature = "tokamak-jit")]
+    fn handle_jit_subcall(
+        &mut self,
+        sub_call: crate::jit::types::JitSubCall,
+    ) -> Result<crate::jit::types::SubCallResult, VMError> {
+        use crate::jit::types::{JitCallScheme, JitSubCall, SubCallResult};
+
+        match sub_call {
+            JitSubCall::Call {
+                gas_limit,
+                caller,
+                target,
+                code_address,
+                value,
+                calldata,
+                is_static,
+                scheme,
+                ..
+            } => {
+                // Depth check
+                let new_depth = self
+                    .current_call_frame
+                    .depth
+                    .checked_add(1)
+                    .ok_or(InternalError::Overflow)?;
+                if new_depth > 1024 {
+                    return Ok(SubCallResult {
+                        success: false,
+                        gas_limit,
+                        gas_used: 0,
+                        output: Bytes::new(),
+                        created_address: None,
+                    });
+                }
+
+                // Compute should_transfer before precompile check (needed for both paths)
+                let should_transfer =
+                    matches!(scheme, JitCallScheme::Call | JitCallScheme::CallCode);
+
+                // Balance check: verify sender has enough value before attempting transfer
+                if should_transfer && !value.is_zero() {
+                    let sender_balance = self.db.get_account(caller)?.info.balance;
+                    if sender_balance < value {
+                        return Ok(SubCallResult {
+                            success: false,
+                            gas_limit,
+                            gas_used: 0,
+                            output: Bytes::new(),
+                            created_address: None,
+                        });
+                    }
+                }
+
+                // Check if target is a precompile
+                // TODO: JIT does not yet handle EIP-7702 delegation — revmc does not signal this.
+                // generic_call guards precompile entry with `&& !is_delegation_7702` to prevent
+                // delegated accounts from being treated as precompiles. When revmc adds 7702
+                // delegation support, this check must be updated to match.
+                if precompiles::is_precompile(&code_address, self.env.config.fork, self.vm_type) {
+                    // Record precompile address touch for BAL per EIP-7928
+                    if let Some(recorder) = self.db.bal_recorder.as_mut() {
+                        recorder.record_touched_address(code_address);
+                    }
+
+                    let mut gas_remaining = gas_limit;
+                    let ctx_result = Self::execute_precompile(
+                        code_address,
+                        &calldata,
+                        gas_limit,
+                        &mut gas_remaining,
+                        self.env.config.fork,
+                        self.db.store.precompile_cache(),
+                    )?;
+
+                    let gas_used = gas_limit
+                        .checked_sub(gas_remaining)
+                        .ok_or(InternalError::Underflow)?;
+
+                    // Transfer value and emit EIP-7708 log on success
+                    if ctx_result.is_success() && should_transfer && !value.is_zero() {
+                        self.transfer(caller, target, value)?;
+
+                        // EIP-7708: Emit transfer log for nonzero-value CALL/CALLCODE
+                        // Self-transfers (caller == target) do NOT emit a log
+                        if self.env.config.fork >= Fork::Amsterdam && caller != target {
+                            let log = crate::utils::create_eth_transfer_log(caller, target, value);
+                            self.substate.add_log(log);
+                        }
+                    }
+
+                    return Ok(SubCallResult {
+                        success: ctx_result.is_success(),
+                        gas_limit,
+                        gas_used,
+                        output: ctx_result.output,
+                        created_address: None,
+                    });
+                }
+
+                // Create BAL checkpoint before entering nested call for potential revert
+                // per EIP-7928 (ref: generic_call)
+                let bal_checkpoint = self.db.bal_recorder.as_ref().map(|r| r.checkpoint());
+
+                // Load target bytecode
+                let code_hash = self.db.get_account(code_address)?.info.code_hash;
+                let bytecode = self.db.get_code(code_hash)?.clone();
+
+                let mut stack = self.stack_pool.pop().unwrap_or_default();
+                stack.clear();
+                let next_memory = self.current_call_frame.memory.next_memory();
+
+                let mut new_call_frame = CallFrame::new(
+                    caller,
+                    target,
+                    code_address,
+                    bytecode,
+                    value,
+                    calldata,
+                    is_static,
+                    gas_limit,
+                    new_depth,
+                    should_transfer,
+                    false, // is_create
+                    0,     // ret_offset — handled by JIT resume
+                    0,     // ret_size — handled by JIT resume
+                    stack,
+                    next_memory,
+                );
+                // Store BAL checkpoint in the call frame's backup for restoration on revert
+                new_call_frame.call_frame_backup.bal_checkpoint = bal_checkpoint;
+
+                self.add_callframe(new_call_frame);
+
+                // Transfer value from caller to callee (ref: generic_call)
+                if should_transfer {
+                    self.transfer(caller, target, value)?;
+                }
+
+                self.substate.push_backup();
+
+                // EIP-7708: Emit transfer log for nonzero-value CALL/CALLCODE
+                // Must be after push_backup() so the log reverts if the child context reverts
+                // Self-transfers (caller == target) do NOT emit a log
+                if should_transfer
+                    && self.env.config.fork >= Fork::Amsterdam
+                    && !value.is_zero()
+                    && caller != target
+                {
+                    let log = crate::utils::create_eth_transfer_log(caller, target, value);
+                    self.substate.add_log(log);
+                }
+
+                // Run the child frame to completion
+                let result = self.run_subcall()?;
+
+                Ok(SubCallResult {
+                    success: result.is_success(),
+                    gas_limit,
+                    gas_used: result.gas_used,
+                    output: result.output,
+                    created_address: None,
+                })
+            }
+            JitSubCall::Create {
+                gas_limit,
+                caller,
+                value,
+                init_code,
+                salt,
+            } => {
+                // Depth check
+                let new_depth = self
+                    .current_call_frame
+                    .depth
+                    .checked_add(1)
+                    .ok_or(InternalError::Overflow)?;
+                if new_depth > 1024 {
+                    return Ok(SubCallResult {
+                        success: false,
+                        gas_limit,
+                        gas_used: 0,
+                        output: Bytes::new(),
+                        created_address: None,
+                    });
+                }
+
+                // EIP-3860: Initcode size limit (49152 bytes) — Shanghai+
+                if self.env.config.fork >= Fork::Shanghai && init_code.len() > 49152 {
+                    return Ok(SubCallResult {
+                        success: false,
+                        gas_limit,
+                        gas_used: gas_limit,
+                        output: Bytes::new(),
+                        created_address: None,
+                    });
+                }
+
+                // Balance check before transfer
+                if !value.is_zero() {
+                    let sender_balance = self.db.get_account(caller)?.info.balance;
+                    if sender_balance < value {
+                        return Ok(SubCallResult {
+                            success: false,
+                            gas_limit,
+                            gas_used: 0,
+                            output: Bytes::new(),
+                            created_address: None,
+                        });
+                    }
+                }
+
+                // Get current nonce and compute deploy address BEFORE incrementing
+                let caller_nonce = self.db.get_account(caller)?.info.nonce;
+
+                // Max nonce check (ref: generic_create)
+                if caller_nonce == u64::MAX {
+                    return Ok(SubCallResult {
+                        success: false,
+                        gas_limit,
+                        gas_used: 0,
+                        output: Bytes::new(),
+                        created_address: None,
+                    });
+                }
+
+                let deploy_address = if let Some(salt_val) = salt {
+                    crate::utils::calculate_create2_address(caller, &init_code, salt_val)?
+                } else {
+                    ethrex_common::evm::calculate_create_address(caller, caller_nonce)
+                };
+
+                // Add new contract to accessed addresses (ref: generic_create)
+                self.substate.add_accessed_address(deploy_address);
+
+                // Record address touch for BAL per EIP-7928 (ref: generic_create)
+                if let Some(recorder) = self.db.bal_recorder.as_mut() {
+                    recorder.record_touched_address(deploy_address);
+                }
+
+                // Increment caller nonce (CREATE consumes a nonce)
+                self.increment_account_nonce(caller)?;
+
+                // Collision check (ref: generic_create)
+                let new_account = self.get_account_mut(deploy_address)?;
+                if new_account.create_would_collide() {
+                    return Ok(SubCallResult {
+                        success: false,
+                        gas_limit,
+                        gas_used: gas_limit,
+                        output: Bytes::new(),
+                        created_address: None,
+                    });
+                }
+
+                // Create BAL checkpoint before entering create call for potential revert
+                // per EIP-7928 (ref: generic_create)
+                let bal_checkpoint = self.db.bal_recorder.as_ref().map(|r| r.checkpoint());
+
+                // SAFETY: init code hash is never used (matches generic_create pattern)
+                let bytecode =
+                    ethrex_common::types::Code::from_bytecode_unchecked(init_code, H256::zero());
+
+                let mut stack = self.stack_pool.pop().unwrap_or_default();
+                stack.clear();
+                let next_memory = self.current_call_frame.memory.next_memory();
+
+                let mut new_call_frame = CallFrame::new(
+                    caller,
+                    deploy_address,
+                    deploy_address,
+                    bytecode,
+                    value,
+                    Bytes::new(), // no calldata for CREATE
+                    false,        // not static
+                    gas_limit,
+                    new_depth,
+                    true, // should_transfer_value
+                    true, // is_create
+                    0,
+                    0,
+                    stack,
+                    next_memory,
+                );
+                // Store BAL checkpoint in the call frame's backup for restoration on revert
+                new_call_frame.call_frame_backup.bal_checkpoint = bal_checkpoint;
+
+                self.add_callframe(new_call_frame);
+
+                // Deploy nonce init: 0 -> 1 (ref: generic_create)
+                self.increment_account_nonce(deploy_address)?;
+
+                // Transfer value
+                if !value.is_zero() {
+                    self.transfer(caller, deploy_address, value)?;
+                }
+
+                self.substate.push_backup();
+
+                // Track created account (ref: generic_create)
+                self.substate.add_created_account(deploy_address);
+
+                // EIP-7708: Emit transfer log for nonzero-value CREATE/CREATE2
+                // Must be after push_backup() so the log reverts if the child context reverts
+                if self.env.config.fork >= Fork::Amsterdam && !value.is_zero() {
+                    let log = crate::utils::create_eth_transfer_log(caller, deploy_address, value);
+                    self.substate.add_log(log);
+                }
+
+                // Run the child frame to completion.
+                // validate_contract_creation (called by handle_opcode_result inside
+                // interpreter_loop) already checks code size, EOF prefix, charges code
+                // deposit cost, and stores the deployed code — no redundant checks needed.
+                let result = self.run_subcall()?;
+                let success = result.is_success();
+
+                Ok(SubCallResult {
+                    success,
+                    gas_limit,
+                    gas_used: result.gas_used,
+                    output: result.output,
+                    created_address: if success { Some(deploy_address) } else { None },
+                })
+            }
+        }
+    }
+
+    /// Run the current child call frame to completion and return the result.
+    ///
+    /// Unlike `run_execution()` which runs until the call stack is empty,
+    /// this method runs until the child frame (and any nested calls it makes)
+    /// have completed. The JIT parent frame remains on the call_frames stack
+    /// and is NOT executed by the interpreter.
+    ///
+    /// Uses the shared `interpreter_loop` to avoid duplicating the opcode
+    /// dispatch table.
+    #[cfg(feature = "tokamak-jit")]
+    fn run_subcall(&mut self) -> Result<ContextResult, VMError> {
+        // The parent_depth is the number of frames on the stack when the child
+        // was pushed. When call_frames.len() drops back to this, the child
+        // has completed and we should stop.
+        let parent_depth = self.call_frames.len();
+
+        // Check if the child is a precompile
+        #[expect(clippy::as_conversions, reason = "remaining gas conversion")]
+        if precompiles::is_precompile(
+            &self.current_call_frame.to,
+            self.env.config.fork,
+            self.vm_type,
+        ) {
+            let call_frame = &mut self.current_call_frame;
+            let mut gas_remaining = call_frame.gas_remaining as u64;
+            let result = Self::execute_precompile(
+                call_frame.code_address,
+                &call_frame.calldata,
+                call_frame.gas_limit,
+                &mut gas_remaining,
+                self.env.config.fork,
+                self.db.store.precompile_cache(),
+            );
+            call_frame.gas_remaining = gas_remaining as i64;
+
+            // Handle backup and pop the child frame
+            if let Ok(ref ctx_result) = result {
+                self.handle_state_backup(ctx_result)?;
+            }
+            let child = self.pop_call_frame()?;
+            let mut child_stack = child.stack;
+            child_stack.clear();
+            self.stack_pool.push(child_stack);
+
+            return result;
+        }
+
+        // Run the shared interpreter loop, bounded to stop when depth
+        // returns to parent_depth (child frame completed).
+        self.interpreter_loop(parent_depth)
+    }
+}
+
+/// Map a JIT execution outcome to a `ContextResult`.
+///
+/// Called from `run_execution()` when JIT dispatch succeeds. Converts
+/// `JitOutcome::Success` / `Revert` into the LEVM result type that
+/// `finalize_execution` expects.
+///
+/// Gas is computed from the call frame: `gas_limit - max(gas_remaining, 0)`,
+/// matching the interpreter formula in `execution_handlers.rs:80-86`.
+/// We ignore `gas_used` from `JitOutcome` because it only captures execution
+/// gas (gas_limit_to_revm minus gas_remaining), excluding intrinsic gas.
+/// By the time we reach here, `call_frame.gas_remaining` has already been
+/// synced from the revm interpreter in `handle_interpreter_action`.
+///
+/// The `max(0)` clamp prevents wrap-around if `gas_remaining` is negative
+/// (should not happen in practice, but defensive coding).
+#[cfg(feature = "tokamak-jit")]
+#[expect(clippy::as_conversions, reason = "remaining gas conversion")]
+fn apply_jit_outcome(
+    outcome: crate::jit::types::JitOutcome,
+    call_frame: &CallFrame,
+) -> Result<ContextResult, VMError> {
+    use crate::errors::TxResult;
+
+    // Clamp to zero before u64 conversion to prevent i64→u64 wrap-around
+    let gas_remaining = call_frame.gas_remaining.max(0) as u64;
+
+    match outcome {
+        crate::jit::types::JitOutcome::Success { output, .. } => {
+            let gas_used = call_frame
+                .gas_limit
+                .checked_sub(gas_remaining)
+                .ok_or(InternalError::Underflow)?;
+            Ok(ContextResult {
+                result: TxResult::Success,
+                gas_used,
+                gas_spent: gas_used,
+                output,
+            })
+        }
+        crate::jit::types::JitOutcome::Revert { output, .. } => {
+            let gas_used = call_frame
+                .gas_limit
+                .checked_sub(gas_remaining)
+                .ok_or(InternalError::Underflow)?;
+            Ok(ContextResult {
+                result: TxResult::Revert(VMError::RevertOpcode),
+                gas_used,
+                gas_spent: gas_used,
+                output,
+            })
+        }
+        crate::jit::types::JitOutcome::NotCompiled
+        | crate::jit::types::JitOutcome::Error(_)
+        | crate::jit::types::JitOutcome::Suspended { .. } => {
+            // These cases are handled by the caller before reaching this function.
+            Err(VMError::Internal(InternalError::Custom(
+                "unexpected JitOutcome in apply_jit_outcome".to_string(),
+            )))
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "tokamak-jit")]
+mod jit_tests {
+    use super::*;
+    use bytes::Bytes;
+
+    /// Verify `apply_jit_outcome` handles negative `gas_remaining` safely.
+    ///
+    /// Without the `max(0)` clamp, `(-1i64) as u64` would produce `u64::MAX`,
+    /// causing `checked_sub` to return `None` → `InternalError::Underflow`.
+    /// With the clamp, `gas_remaining = -1` → 0 → `gas_used = gas_limit`.
+    #[test]
+    fn test_apply_jit_outcome_negative_gas_remaining() {
+        let mut call_frame = CallFrame::new(
+            Address::zero(),
+            Address::zero(),
+            Address::zero(),
+            ethrex_common::types::Code::from_bytecode(Bytes::new()),
+            U256::zero(),
+            Bytes::new(),
+            false,
+            1000, // gas_limit
+            0,
+            false,
+            false,
+            0,
+            0,
+            crate::call_frame::Stack::default(),
+            crate::memory::Memory::default(),
+        );
+        call_frame.gas_remaining = -1;
+
+        let outcome = crate::jit::types::JitOutcome::Success {
+            gas_used: 0, // ignored by apply_jit_outcome
+            output: Bytes::new(),
+        };
+
+        let result = apply_jit_outcome(outcome, &call_frame)
+            .expect("apply_jit_outcome should not error with negative gas_remaining");
+        assert_eq!(
+            result.gas_used, 1000,
+            "gas_used should equal gas_limit (1000) when gas_remaining is negative, got {}",
+            result.gas_used
+        );
+    }
+
+    /// Verify `apply_jit_outcome` Revert arm also handles negative `gas_remaining`.
+    #[test]
+    fn test_apply_jit_outcome_revert_negative_gas() {
+        let mut call_frame = CallFrame::new(
+            Address::zero(),
+            Address::zero(),
+            Address::zero(),
+            ethrex_common::types::Code::from_bytecode(Bytes::new()),
+            U256::zero(),
+            Bytes::new(),
+            false,
+            500, // gas_limit
+            0,
+            false,
+            false,
+            0,
+            0,
+            crate::call_frame::Stack::default(),
+            crate::memory::Memory::default(),
+        );
+        call_frame.gas_remaining = -100;
+
+        let outcome = crate::jit::types::JitOutcome::Revert {
+            gas_used: 0,
+            output: Bytes::new(),
+        };
+
+        let result = apply_jit_outcome(outcome, &call_frame)
+            .expect("Revert should not error with negative gas_remaining");
+        assert_eq!(
+            result.gas_used, 500,
+            "Revert gas_used should equal gas_limit (500) when gas_remaining is negative"
+        );
     }
 }
 

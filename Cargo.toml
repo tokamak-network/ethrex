@@ -25,6 +25,9 @@ members = [
   "crates/common/config",
   "tooling/repl",
   "test",
+  "crates/vm/tokamak-jit",
+  "crates/tokamak-bench",
+  "crates/tokamak-debugger",
 ]
 exclude = ["crates/vm/levm/bench/revm_comparison"]
 resolver = "2"
@@ -53,6 +56,11 @@ debug = 2
 [profile.release-with-debug-assertions]
 inherits = "release"
 debug-assertions = true
+
+[profile.jit-bench]
+inherits = "release"
+lto = false
+codegen-units = 16
 
 [workspace.dependencies]
 ethrex-blockchain = { path = "./crates/blockchain", default-features = false }
@@ -129,6 +137,7 @@ tower-http = { version = "0.6.2", features = ["cors"] }
 indexmap = { version = "2.11.4" }
 k256 = "0.13.4"
 anyhow = "1.0.86"
+serial_test = "3.2.0"
 
 rocksdb = { version = "0.24.0", default-features = false, features = [
   "bindgen-runtime",
