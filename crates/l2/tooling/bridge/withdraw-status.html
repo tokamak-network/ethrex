@@ -198,6 +198,10 @@
       background: rgba(99, 102, 241, 0.15);
       color: var(--accent);
     }
+    .status-badge.finalized {
+      background: rgba(136, 136, 160, 0.15);
+      color: var(--text-dim);
+    }
 
     .empty-state {
       text-align: center;
@@ -726,7 +730,10 @@
           amount: BigInt(log.topics[3]),
           _batch: null,
           _stage: 0,
-          _timestamp: null
+          _timestamp: null,
+          _claimed: false,
+          _claimTxHash: null,
+          _claimTimestamp: null
         }));
 
         // Fetch block timestamps
@@ -778,8 +785,80 @@
           allWithdrawals[i]._batch = batches[i];
           allWithdrawals[i]._stage = computeStage(batches[i], lastCommitted, lastVerified);
         }
+
+        // Check on-chain claim status for stage 3 (claimable) withdrawals
+        const bridgeAddr = CONFIG ? CONFIG.bridge_address : null;
+        if (bridgeAddr) {
+          const claimableWithdrawals = allWithdrawals.filter(w => w._stage >= 3 && !claimedTxMap[w.txHash]);
+          if (claimableWithdrawals.length > 0) {
+            try {
+              const bridge = new ethers.Contract(bridgeAddr, [
+                "function claimedWithdrawalIDs(uint256) view returns (bool)",
+                "event WithdrawalClaimed(uint256 indexed withdrawalId)"
+              ], l1);
+
+              // Get proofs for claimable withdrawals to obtain messageIds
+              const proofPromises = claimableWithdrawals.map(w =>
+                l2.send("ethrex_getL1MessageProof", [w.txHash]).catch(() => null)
+              );
+              const proofs = await Promise.all(proofPromises);
+
+              // Check claimedWithdrawalIDs for each
+              const checkPromises = proofs.map((proof, i) => {
+                if (!proof || proof.length === 0) return Promise.resolve({ claimed: false });
+                const messageId = BigInt(proof[0].message_id);
+                return bridge.claimedWithdrawalIDs(messageId)
+                  .then(claimed => ({ claimed, messageId }))
+                  .catch(() => ({ claimed: false }));
+              });
+              const claimResults = await Promise.all(checkPromises);
+
+              // Fetch WithdrawalClaimed events for claimed ones
+              const claimedIndices = [];
+              for (let i = 0; i < claimResults.length; i++) {
+                if (claimResults[i].claimed) {
+                  claimableWithdrawals[i]._claimed = true;
+                  claimedIndices.push(i);
+                }
+              }
+
+              // Batch-fetch claim tx hashes from events
+              const eventPromises = claimedIndices.map(i => {
+                const messageId = claimResults[i].messageId;
+                return bridge.queryFilter(bridge.filters.WithdrawalClaimed(messageId), 0, 'latest')
+                  .then(events => ({ index: i, events }))
+                  .catch(() => ({ index: i, events: [] }));
+              });
+              const eventResults = await Promise.all(eventPromises);
+
+              for (const { index, events } of eventResults) {
+                const w = claimableWithdrawals[index];
+                if (events.length > 0) {
+                  w._claimTxHash = events[0].transactionHash;
+                  try {
+                    const block = await l1.getBlock(events[0].blockNumber);
+                    if (block) w._claimTimestamp = block.timestamp * 1000;
+                  } catch {}
+                  claimedTxMap[w.txHash] = { hash: w._claimTxHash, timestamp: w._claimTimestamp };
+                }
+              }
+            } catch (err) {
+              console.warn('Failed to check on-chain claim status:', err);
+            }
+          }
+        }
       } catch (err) {
         console.error('Failed to load withdrawal logs:', err);
+      }
+
+      // Apply cached claim status
+      for (const w of allWithdrawals) {
+        const cached = claimedTxMap[w.txHash];
+        if (cached) {
+          w._claimed = true;
+          w._claimTxHash = cached.hash;
+          w._claimTimestamp = cached.timestamp;
+        }
       }
 
       applyFilterAndRender();
@@ -862,9 +941,8 @@
         const amountEth = parseFloat(ethers.formatEther(w.amount)).toFixed(4);
         const txLink = getL2Explorer() + '/tx/' + w.txHash;
 
-        const claimed = claimedTxMap[w.txHash];
-        const stageBadge = claimed
-          ? '<span class="status-badge claimable" title="Claimed">Claimed</span>'
+        const stageBadge = w._claimed
+          ? '<span class="status-badge finalized">Finalized</span>'
           : renderStageBadge(w._stage);
 
         tr.innerHTML =
@@ -997,7 +1075,25 @@
     }
 
     // ── Claim withdrawal ──
-    function updateClaimSection(w) {
+    function showClaimedState(section, btn, status, claimTxLink, claimTxHash, claimTimestamp) {
+      section.style.display = '';
+      btn.disabled = true;
+      btn.classList.remove('claiming');
+      btn.textContent = 'Claimed';
+      status.className = 'claim-status success';
+      let msg = 'Already claimed on L1';
+      if (claimTimestamp) {
+        msg = 'Claimed at ' + new Date(claimTimestamp).toLocaleString();
+      }
+      if (claimTxHash) {
+        msg += ' &mdash; TX: <a href="' + getL1Explorer() + '/tx/' + claimTxHash + '" target="_blank" class="mono">' + shortenHash(claimTxHash) + '</a>';
+        claimTxLink.href = getL1Explorer() + '/tx/' + claimTxHash;
+        claimTxLink.style.display = '';
+      }
+      status.innerHTML = msg;
+    }
+
+    async function updateClaimSection(w) {
       const section = document.getElementById('claimSection');
       const btn = document.getElementById('claimBtn');
       const status = document.getElementById('claimStatus');
@@ -1006,15 +1102,7 @@
       // Check if already claimed in this session
       const claimed = claimedTxMap[w.txHash];
       if (claimed) {
-        section.style.display = '';
-        btn.disabled = true;
-        btn.classList.remove('claiming');
-        btn.textContent = 'Claimed';
-        status.className = 'claim-status success';
-        const claimTime = new Date(claimed.timestamp).toLocaleString();
-        status.innerHTML = 'Claimed at ' + claimTime + ' &mdash; TX: <a href="' + getL1Explorer() + '/tx/' + claimed.hash + '" target="_blank" class="mono">' + shortenHash(claimed.hash) + '</a>';
-        claimTxLink.href = getL1Explorer() + '/tx/' + claimed.hash;
-        claimTxLink.style.display = '';
+        showClaimedState(section, btn, status, claimTxLink, claimed.hash, claimed.timestamp);
         return;
       }
 
@@ -1032,6 +1120,57 @@
       }
 
       section.style.display = '';
+      status.textContent = 'Checking on-chain claim status...';
+
+      // Check on-chain if already claimed
+      try {
+        const { l1, l2 } = getProviders();
+        const proofResult = await l2.send("ethrex_getL1MessageProof", [w.txHash]);
+
+        if (proofResult && proofResult.length > 0) {
+          const messageId = BigInt(proofResult[0].message_id);
+          const bridgeAddr = CONFIG ? CONFIG.bridge_address : null;
+
+          if (bridgeAddr) {
+            const bridge = new ethers.Contract(bridgeAddr, [
+              "function claimedWithdrawalIDs(uint256) view returns (bool)",
+              "event WithdrawalClaimed(uint256 indexed withdrawalId)"
+            ], l1);
+
+            const isClaimed = await bridge.claimedWithdrawalIDs(messageId);
+
+            if (isClaimed) {
+              // Find the claim TX from WithdrawalClaimed event
+              let claimTxHash = null;
+              let claimTimestamp = null;
+              try {
+                const filter = bridge.filters.WithdrawalClaimed(messageId);
+                const events = await bridge.queryFilter(filter, 0, 'latest');
+                if (events.length > 0) {
+                  claimTxHash = events[0].transactionHash;
+                  const block = await l1.getBlock(events[0].blockNumber);
+                  if (block) claimTimestamp = block.timestamp * 1000;
+                }
+              } catch (e) {
+                console.warn('Failed to find WithdrawalClaimed event:', e);
+              }
+
+              // Cache it
+              claimedTxMap[w.txHash] = { hash: claimTxHash, timestamp: claimTimestamp };
+              // Update table badge
+              applyFilterAndRender();
+
+              showClaimedState(section, btn, status, claimTxLink, claimTxHash, claimTimestamp);
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to check on-chain claim status:', e);
+      }
+
+      // Not claimed yet - show claim button
+      status.textContent = '';
 
       if (!connectedAddress) {
         btn.disabled = true;
