@@ -10,23 +10,22 @@
 //! ZkDaiBase:
 //!   slot 0: development(bool) + dai(address) (packed)
 //!   slot 1: requestVerifier (address)
-//!   slot 2: (empty — packing gap)
-//!   slot 3: encryptedNotes  mapping(bytes32 => bytes)
-//!   slot 4: notes            mapping(bytes32 => State)
-//!   slot 5: requestedNoteProofs mapping(bytes32 => bytes)
-//!   slot 6: verifiedProofs   mapping(bytes32 => bool)
-//! MintNotes:    slot 7: mintNoteVerifier
-//! SpendNotes:   slot 8: spendNoteVerifier
-//! LiquidateNotes: slot 9: liquidateNoteVerifier
+//!   slot 2: encryptedNotes  mapping(bytes32 => bytes)
+//!   slot 3: notes            mapping(bytes32 => State)
+//!   slot 4: requestedNoteProofs mapping(bytes32 => bytes)
+//!   slot 5: verifiedProofs   mapping(bytes32 => bool)
+//! MintNotes:    slot 6: mintNoteVerifier
+//! SpendNotes:   slot 7: spendNoteVerifier
+//! LiquidateNotes: slot 8: liquidateNoteVerifier
 //! ZkDex:
-//!   slot 10: convertNoteVerifier
-//!   slot 11: makeOrderVerifier
-//!   slot 12: takeOrderVerifier
-//!   slot 13: settleOrderVerifier
-//!   slot 14: orders  Order[]
+//!   slot 9:  convertNoteVerifier
+//!   slot 10: makeOrderVerifier
+//!   slot 11: takeOrderVerifier
+//!   slot 12: settleOrderVerifier
+//!   slot 13: orders  Order[]
 //! ```
 //!
-//! > **Note**: Verify slot numbers with `forge inspect ZkDex storage-layout`.
+//! > Verified with `forge inspect ZkDex storage-layout`.
 
 use ethrex_common::{Address, H256, U256};
 use ethrex_crypto::keccak::keccak_hash;
@@ -36,21 +35,21 @@ use crate::common::app_state::AppState;
 
 // ── Base slot constants ─────────────────────────────────────────
 
-/// `mapping(bytes32 => bytes) encryptedNotes` at slot 3.
-pub const ENCRYPTED_NOTES_SLOT: u64 = 3;
+/// `mapping(bytes32 => bytes) encryptedNotes` at slot 2.
+pub const ENCRYPTED_NOTES_SLOT: u64 = 2;
 
-/// `mapping(bytes32 => State) notes` at slot 4.
-pub const NOTES_SLOT: u64 = 4;
+/// `mapping(bytes32 => State) notes` at slot 3.
+pub const NOTES_SLOT: u64 = 3;
 
-/// `Order[] orders` at slot 14.
-pub const ORDERS_SLOT: u64 = 14;
+/// `Order[] orders` at slot 13.
+pub const ORDERS_SLOT: u64 = 13;
 
 // ── Slot computation helpers ────────────────────────────────────
 
 /// Compute the storage slot for `notes[noteHash]`.
 ///
-/// Solidity: `mapping(bytes32 => State)` at slot 4.
-/// `slot = keccak256(abi.encode(noteHash, 4))`
+/// Solidity: `mapping(bytes32 => State)` at slot 3.
+/// `slot = keccak256(abi.encode(noteHash, 3))`
 pub fn note_state_slot(note_hash: H256) -> H256 {
     mapping_slot(note_hash, NOTES_SLOT)
 }
@@ -82,8 +81,8 @@ pub fn order_field_slot(order_index: U256, field_offset: u64) -> H256 {
 
 /// Compute the length slot for `encryptedNotes[noteHash]`.
 ///
-/// Solidity: `mapping(bytes32 => bytes)` at slot 3.
-/// `slot = keccak256(abi.encode(noteHash, 3))`
+/// Solidity: `mapping(bytes32 => bytes)` at slot 2.
+/// `slot = keccak256(abi.encode(noteHash, 2))`
 pub fn encrypted_note_length_slot(note_hash: H256) -> H256 {
     mapping_slot(note_hash, ENCRYPTED_NOTES_SLOT)
 }

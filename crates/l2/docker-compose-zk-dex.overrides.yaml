@@ -32,6 +32,9 @@ services:
       - ETHREX_REGISTER_GUEST_PROGRAMS=zk-dex
       - GUEST_PROGRAMS=evm-l2,zk-dex
       - ETHREX_DEPLOYER_DEPLOY_RICH=false
+      - ETHREX_DEPLOYER_GENESIS_L2_PATH=${DOCKER_ETHREX_WORKDIR}/fixtures/genesis/l2-zk-dex.json
+    volumes:
+      - ../../fixtures/genesis/l2-zk-dex.json:${DOCKER_ETHREX_WORKDIR}/fixtures/genesis/l2-zk-dex.json
     command: >
       --randomize-contract-deployment
 
@@ -52,8 +55,9 @@ services:
       - ETHREX_GUEST_PROGRAM_ID=zk-dex
     volumes:
       - ./programs-zk-dex.toml:/etc/ethrex/programs.toml
+      - ../../fixtures/genesis/l2-zk-dex.json:/genesis/l2-zk-dex.json
     command: >
-      --network /genesis/l2.json
+      --network /genesis/l2-zk-dex.json
       --http.addr 0.0.0.0
       --http.port 1729
       --authrpc.port 8552
