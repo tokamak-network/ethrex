@@ -603,6 +603,10 @@
     let lastCommitted = 0n;
     let lastVerified = 0n;
 
+    // L1 event caches: batchNumber(string) -> { timestamp, txHash }
+    const commitEventCache = {};
+    const verifyEventCache = {};
+
     function getL1Explorer() { return CONFIG ? CONFIG.l1_explorer : 'http://localhost:8083'; }
     function getL2Explorer() { return CONFIG ? CONFIG.l2_explorer : 'http://localhost:8082'; }
 
@@ -733,7 +737,11 @@
           _timestamp: null,
           _claimed: false,
           _claimTxHash: null,
-          _claimTimestamp: null
+          _claimTimestamp: null,
+          _commitTimestamp: null,
+          _commitTxHash: null,
+          _verifyTimestamp: null,
+          _verifyTxHash: null
         }));
 
         // Fetch block timestamps
@@ -768,6 +776,11 @@
           }
         }
 
+        // 2b. Fetch L1 batch commit/verify events for timestamps & tx hashes
+        if (proposerAddr) {
+          await fetchBatchEvents(l1, proposerAddr);
+        }
+
         // 3. Get batch number for each withdrawal
         const batchPromises = allWithdrawals.map(async (w) => {
           try {
@@ -784,6 +797,15 @@
         for (let i = 0; i < allWithdrawals.length; i++) {
           allWithdrawals[i]._batch = batches[i];
           allWithdrawals[i]._stage = computeStage(batches[i], lastCommitted, lastVerified);
+
+          // Attach commit/verify timestamps & tx hashes from L1 event cache
+          if (batches[i] !== null) {
+            const bKey = batches[i].toString();
+            const ci = commitEventCache[bKey];
+            const vi = verifyEventCache[bKey];
+            if (ci) { allWithdrawals[i]._commitTimestamp = ci.timestamp; allWithdrawals[i]._commitTxHash = ci.txHash; }
+            if (vi) { allWithdrawals[i]._verifyTimestamp = vi.timestamp; allWithdrawals[i]._verifyTxHash = vi.txHash; }
+          }
         }
 
         // Check on-chain claim status for stage 3 (claimable) withdrawals
@@ -870,6 +892,47 @@
           selectedWithdrawal = updated;
           showDetail(updated);
         }
+      }
+    }
+
+    // ── Fetch L1 batch commit/verify events ──
+    async function fetchBatchEvents(l1, proposerAddr) {
+      try {
+        const proposer = new ethers.Contract(proposerAddr, [
+          "event BatchCommitted(bytes32 indexed newStateRoot)",
+          "event BatchVerified(uint256 indexed lastVerifiedBatch)"
+        ], l1);
+
+        // BatchCommitted: events are sequential (1st = batch 1, 2nd = batch 2, ...)
+        const commitEvents = await proposer.queryFilter(proposer.filters.BatchCommitted(), 0, 'latest');
+        const l1BlockCache = {};
+        for (let i = 0; i < commitEvents.length; i++) {
+          const batchNum = (i + 1).toString();
+          if (!commitEventCache[batchNum]) {
+            const bn = commitEvents[i].blockNumber;
+            if (l1BlockCache[bn] === undefined) {
+              try { const b = await l1.getBlock(bn); l1BlockCache[bn] = b ? b.timestamp : null; }
+              catch { l1BlockCache[bn] = null; }
+            }
+            commitEventCache[batchNum] = { timestamp: l1BlockCache[bn], txHash: commitEvents[i].transactionHash };
+          }
+        }
+
+        // BatchVerified: indexed by batch number
+        const verifyEvents = await proposer.queryFilter(proposer.filters.BatchVerified(), 0, 'latest');
+        for (const ev of verifyEvents) {
+          const batchNum = ev.args[0].toString();
+          if (!verifyEventCache[batchNum]) {
+            const bn = ev.blockNumber;
+            if (l1BlockCache[bn] === undefined) {
+              try { const b = await l1.getBlock(bn); l1BlockCache[bn] = b ? b.timestamp : null; }
+              catch { l1BlockCache[bn] = null; }
+            }
+            verifyEventCache[batchNum] = { timestamp: l1BlockCache[bn], txHash: ev.transactionHash };
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to fetch batch events:', err);
       }
     }
 
@@ -1003,11 +1066,19 @@
       const stage = w._stage;
       const batch = w._batch;
 
+      const l1Exp = getL1Explorer();
+      const l2Exp = getL2Explorer();
+
+      // Helper: format a tx link
+      function txLink(explorer, hash) {
+        return ' &mdash; TX: <a href="' + explorer + '/tx/' + hash + '" target="_blank" class="mono" style="color:var(--accent);text-decoration:none;">' + shortenHash(hash) + '</a>';
+      }
+
       // Stage 1: always done (we only see confirmed logs)
-      const tsInfo = w._timestamp
-        ? 'Block #' + w.blockNumber + ' &mdash; ' + formatTimestamp(w._timestamp) + ' (' + timeAgo(w._timestamp) + ')'
-        : 'Block #' + w.blockNumber;
-      setStage(1, 'done', tsInfo);
+      let s1 = 'Block #' + w.blockNumber;
+      if (w._timestamp) s1 += ' &mdash; ' + formatTimestamp(w._timestamp) + ' (' + timeAgo(w._timestamp) + ')';
+      s1 += txLink(l2Exp, w.txHash);
+      setStage(1, 'done', s1);
       setStageLine(1, true);
 
       // Stage 2
@@ -1019,7 +1090,10 @@
           'Batch #' + batch.toString() + ' &mdash; waiting for commit (last committed: #' + lastCommitted.toString() + ')');
         setStageLine(2, false);
       } else {
-        setStage(2, 'done', 'Batch #' + batch.toString() + ' committed');
+        let s2 = 'Batch #' + batch.toString() + ' committed';
+        if (w._commitTimestamp) s2 += ' &mdash; ' + formatTimestamp(w._commitTimestamp) + ' (' + timeAgo(w._commitTimestamp) + ')';
+        if (w._commitTxHash) s2 += txLink(l1Exp, w._commitTxHash);
+        setStage(2, 'done', s2);
         setStageLine(2, true);
       }
 
@@ -1032,13 +1106,21 @@
           'Batch #' + batch.toString() + ' &mdash; waiting for ZK proof (last verified: #' + lastVerified.toString() + ')');
         setStageLine(3, false);
       } else {
-        setStage(3, 'done', 'Batch #' + batch.toString() + ' verified');
+        let s3 = 'Batch #' + batch.toString() + ' verified';
+        if (w._verifyTimestamp) s3 += ' &mdash; ' + formatTimestamp(w._verifyTimestamp) + ' (' + timeAgo(w._verifyTimestamp) + ')';
+        if (w._verifyTxHash) s3 += txLink(l1Exp, w._verifyTxHash);
+        setStage(3, 'done', s3);
         setStageLine(3, true);
       }
 
       // Stage 4
       if (stage < 3) {
         setStage(4, 'locked', 'Waiting for batch verification');
+      } else if (w._claimed) {
+        let s4 = 'Claimed on L1';
+        if (w._claimTimestamp) s4 += ' &mdash; ' + new Date(w._claimTimestamp).toLocaleString();
+        if (w._claimTxHash) s4 += txLink(l1Exp, w._claimTxHash);
+        setStage(4, 'done', s4);
       } else {
         setStage(4, 'done', 'Ready to claim on L1 via CommonBridge.claimWithdrawal()');
       }
