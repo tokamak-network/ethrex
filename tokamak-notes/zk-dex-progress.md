@@ -169,8 +169,8 @@
 - [x] Cycle-tracker 계측
 
 **출금 UX 최적화 (Phase 4)**:
-- [x] 출금 감지 시 즉시 배치 커밋 (`has_pending_withdrawals()`)
-- [x] 기존 타이머(5분) + 출금 감지 OR 조건으로 커밋 결정
+- [x] 출금 감지 시 조건부 즉시 배치 커밋 (`has_pending_withdrawals()` + 증명 상태 확인)
+- [x] 즉시 커밋 조건: 출금 TX 있음 + 증명 대기 배치 없음 (`committed ≤ verified`)
 - [x] Withdrawal Tracker UI (4단계 상태 추적 + Claim 버튼)
 
 **Docker 인프라 (Phase 4)**:
@@ -228,11 +228,12 @@
 | 2026-02-26 | **Genesis state root 검증 + 프루버 버전 불일치 수정** | `f329a93` |
 | | - Genesis 상태 root 검증 로직 추가 | |
 | | - 프루버 버전 불일치 문제 수정 | |
-| 2026-02-27 | **출금 감지 시 즉시 배치 커밋 (Early Batch Commit)** | `23759c9` |
+| 2026-02-27 | **출금 감지 시 조건부 즉시 배치 커밋 (Early Batch Commit)** | `23759c9` |
 | | - `l1_committer.rs`에 `has_pending_withdrawals()` 메서드 추가 | |
 | | - 미커밋 블록 중 BRIDGE_ADDRESS(0x...ffff) 대상 TX 감지 | |
-| | - 출금 감지 시 5분 타이머 대기 없이 즉시 배치 커밋 트리거 | |
-| | - 기존 타이머 기반 커밋은 fallback으로 유지 | |
+| | - 즉시 커밋 조건: 출금 감지 **+** 증명 대기 배치 없음 (`committed ≤ verified`) | |
+| | - 증명 중인 배치가 있으면 프루버가 바빠서 즉시 커밋 불필요 → 기존 타이머 대기 | |
+| | - `get_last_verified_batch()` L1 조회로 증명 상태 판단 | |
 | 2026-02-27 | **Docker Tools 안정화 + TokamakAppL2 브랜딩** | `931fad9` |
 | | - Blockscout restart policy + 무거운 indexer 비활성화 | |
 | | - ethrex → TokamakAppL2 ZK-DEX 전체 리브랜딩 | |

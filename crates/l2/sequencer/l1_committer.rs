@@ -38,7 +38,7 @@ use ethrex_l2_common::{
 use ethrex_l2_rpc::signer::{Signer, SignerHealth};
 use ethrex_l2_sdk::{
     build_generic_tx, calldata::encode_calldata, get_l1_active_fork, get_last_committed_batch,
-    send_tx_bump_gas_exponential_backoff,
+    get_last_verified_batch, send_tx_bump_gas_exponential_backoff,
 };
 #[cfg(feature = "metrics")]
 use ethrex_metrics::l2::metrics::{METRICS, MetricsBlockType};
@@ -1542,12 +1542,39 @@ impl L1Committer {
             }
 
             let commit_time: u128 = self.commit_time_ms.into();
-            let timer_expired = current_time - self.last_committed_batch_timestamp > commit_time;
-            let has_withdrawal = self.has_pending_withdrawals().await.unwrap_or(false);
-            if has_withdrawal {
-                info!("Pending withdrawal detected, triggering early batch commit");
-            }
-            let should_send_commitment = timer_expired || has_withdrawal;
+            let timer_expired =
+                current_time - self.last_committed_batch_timestamp > commit_time;
+
+            // Early batch commit: only if there's a pending withdrawal AND no batch
+            // is waiting for proof verification (committed > verified means prover is busy).
+            let early_commit = if !timer_expired {
+                let has_withdrawal = self.has_pending_withdrawals().await.unwrap_or(false);
+                if has_withdrawal {
+                    let last_verified = get_last_verified_batch(
+                        &self.eth_client,
+                        self.on_chain_proposer_address,
+                    )
+                    .await
+                    .unwrap_or(0);
+                    let no_pending_proof = current_last_committed_batch <= last_verified;
+                    if no_pending_proof {
+                        info!("Pending withdrawal detected, triggering early batch commit");
+                    } else {
+                        debug!(
+                            last_committed = current_last_committed_batch,
+                            last_verified = last_verified,
+                            "Pending withdrawal detected but prover is busy, waiting for timer"
+                        );
+                    }
+                    no_pending_proof
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            let should_send_commitment = timer_expired || early_commit;
 
             debug!(
                 last_committed_batch_at = self.last_committed_batch_timestamp,
