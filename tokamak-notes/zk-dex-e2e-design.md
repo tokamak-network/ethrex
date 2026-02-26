@@ -1,8 +1,8 @@
 # ZK-DEX E2E 실행 설계 문서
 
 **작성일**: 2026-02-24
-**최종 업데이트**: 2026-02-24
-**브랜치**: `feat/zk/sp1-zk-dex-e2e`
+**최종 업데이트**: 2026-02-27
+**브랜치**: `feat/zk/zk-dex-full-circuit`
 **선행 문서**: `zk-dex-progress.md`, `12-app-specific-circuit-dev-plan.md`
 
 ---
@@ -381,7 +381,7 @@ enabled_programs = ["zk-dex"]
 
 ---
 
-### Phase 3: E2E 테스트 실행 — 미완료
+### Phase 3: E2E 테스트 실행 — 완료 (2026-02-26)
 
 #### 6.1 실행 순서
 
@@ -491,10 +491,12 @@ Phase 1 (L1 배포 파이프라인)     ✅ 완료
    ↓
 Phase 2 (빌드 + Makefile)       ✅ 완료
    ↓
-Phase 3 (E2E 테스트)            ⬜ 미실행
+Phase 3 (E2E 테스트)            ✅ 완료 — Batch 1~9 SP1 Groth16 증명 + L1 온체인 검증 성공
+   ↓
+Phase 4 (출금 UX + Docker 인프라) ✅ 완료 — Early batch commit + Withdrawal Claim UI
 ```
 
-빌드 검증: `cargo check --release --features l2,l2-sql,sp1` — ✅ 통과 (2026-02-24)
+빌드 검증: `cargo build --release -p ethrex` — ✅ 통과 (2026-02-27)
 
 총 수정 파일 2개 + 생성 1개. 구현량이 매우 적다.
 
