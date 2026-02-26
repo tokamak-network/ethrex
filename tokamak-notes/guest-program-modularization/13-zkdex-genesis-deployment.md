@@ -1,21 +1,23 @@
-# ZK-DEX L2 제네시스 배포 계획
+# ZK-DEX L2 제네시스 배포
+
+**최종 업데이트**: 2026-02-26
+**상태**: ✅ 구현 완료 (제네시스 생성 파이프라인 구축)
 
 ## 배경
 
 ZkDex 컨트랙트와 Groth16 verifier를 L2 제네시스 블록에 포함시켜,
 Block 0부터 DEX 기능을 사용 가능하게 하고 SP1 Prover를 즉시 시작할 수 있도록 한다.
 
-### 현재 문제
+### 해결한 문제
 
 1. **verifier 컨트랙트 부재**: `contracts/verifiers/*.sol`이 gitignore되어 있음.
-   Circom 회로에서 생성해야 함.
+   → ✅ `IGroth16Verifier.sol` 인터페이스 생성 + Circom 회로에서 verifier 생성 파이프라인 구축
 2. **배포 순서 의존성**: ZkDex → verifier 주소 필요 → 배포 후에야 주소 확정.
-   Prover는 모든 배포 완료 후 시작해야 함.
+   → ✅ 제네시스에 고정 주소로 사전 배치하여 의존성 제거
 3. **DEX_CONTRACT_ADDRESS 하드코딩**: SP1 게스트 프로그램에
-   `H160([0xDE; 20])`로 컴파일 타임 상수. 배포 주소와 일치해야 함.
+   `H160([0xDE; 20])`로 컴파일 타임 상수. → ✅ 제네시스 주소와 일치
 4. **chainId 제한**: `ZkDaiBase` constructor가 `development=true` 시
-   chainId 1337/31337만 허용. L2 chainId(65602535)에서는 `development=false`
-   (진짜 Groth16 검증) 필수.
+   chainId 1337/31337만 허용. → ✅ `development=false` + 제네시스 storage 직접 세팅으로 우회
 
 ### 제네시스 접근법의 장점
 
@@ -26,178 +28,151 @@ Block 0부터 DEX 기능을 사용 가능하게 하고 SP1 Prover를 즉시 시�
 
 ---
 
-## 제네시스에 포함할 컨트랙트
+## 컨트랙트 주소 배정
 
-| # | 컨트랙트 | 역할 | 소스 |
-|---|----------|------|------|
-| 1 | MintBurnNoteVerifier | mint/liquidate Groth16 검증 | Circom `mint_burn_note.circom` |
-| 2 | TransferNoteVerifier | spend Groth16 검증 | Circom `transfer_note.circom` |
-| 3 | ConvertNoteVerifier | convertNote Groth16 검증 | Circom `convert_note.circom` |
-| 4 | MakeOrderVerifier | makeOrder Groth16 검증 | Circom `make_order.circom` |
-| 5 | TakeOrderVerifier | takeOrder Groth16 검증 | Circom `take_order.circom` |
-| 6 | SettleOrderVerifier | settleOrder Groth16 검증 | Circom `settle_order.circom` |
-| 7 | MockDai | ERC20 테스트 토큰 | `contracts/test/MockDai.sol` (현재 미사용, ETH only) |
-| 8 | ZkDex | 메인 DEX 컨트랙트 | `contracts/ZkDex.sol` |
+| Contract | Address | Purpose |
+|----------|---------|---------|
+| MintBurnNoteVerifier | `0xDE00000000000000000000000000000000000001` | mint/liquidate 증명 검증 |
+| TransferNoteVerifier | `0xDE00000000000000000000000000000000000002` | spend 증명 검증 |
+| ConvertNoteVerifier | `0xDE00000000000000000000000000000000000003` | convertNote 증명 검증 |
+| MakeOrderVerifier | `0xDE00000000000000000000000000000000000004` | makeOrder 증명 검증 |
+| TakeOrderVerifier | `0xDE00000000000000000000000000000000000005` | takeOrder 증명 검증 |
+| SettleOrderVerifier | `0xDE00000000000000000000000000000000000006` | settleOrder 증명 검증 |
+| ZkDex | `0xDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDE` | 메인 DEX 컨트랙트 |
+
+> MockDai는 ETH-only 모드이므로 불필요. dai 주소 = 0x0.
 
 ---
 
-## 작업 순서
+## 구현 결과
 
-### Step 1: Circom 회로 컴파일 (1회, 오프라인)
+### 생성된 파일
 
-Circom 회로 소스: `/Users/zena/tokamak-projects/zk-dex/circuits-circom/main/`
+| # | 파일 | 프로젝트 | 설명 |
+|---|------|----------|------|
+| 1 | `contracts/verifiers/IGroth16Verifier.sol` | zk-dex | 6개 Groth16 verifier 인터페이스 |
+| 2 | `foundry.toml` | zk-dex | Forge 빌드 설정 (solc 0.8.20, paris EVM) |
+| 3 | `scripts/generate-zk-dex-genesis.sh` | ethrex | 제네시스 JSON 자동 생성 스크립트 |
+
+### 수정된 파일
+
+| # | 파일 | 프로젝트 | 변경 내용 |
+|---|------|----------|-----------|
+| 1 | `circuits-circom/scripts/generate_verifiers.sh` | zk-dex | pragma 호환성 수정 (snarkjs 0.7.x → `^0.8.0`) |
+| 2 | `crates/l2/scripts/zk-dex-localnet.sh` | ethrex | `L2_GENESIS` → `l2-zk-dex.json` + 존재 검증 추가 |
+| 3 | `crates/l2/docker-compose-zk-dex.overrides.yaml` | ethrex | L2 제네시스 경로 + 볼륨 매핑 변경 |
+
+### IGroth16Verifier.sol 인터페이스 (public input 배열 크기)
+
+| 인터페이스 | 배열 크기 | 용도 |
+|-----------|----------|------|
+| `IMintNBurnNoteVerifier` | `uint[4]` | output + noteHash + value + tokenType |
+| `ITransferNoteVerifier` | `uint[5]` | output + o0Hash + o1Hash + newHash + changeHash |
+| `IConvertNoteVerifier` | `uint[4]` | output + smartHash + originHash + newHash |
+| `IMakeOrderVerifier` | `uint[3]` | output + noteHash + tokenType |
+| `ITakeOrderVerifier` | `uint[6]` | output + oldNoteHash + oldType + newNoteHash + newParentHash + newType |
+| `ISettleOrderVerifier` | `uint[14]` | output + 13 public inputs |
+
+---
+
+## 실행 방법
+
+### 전체 파이프라인 (1회, 오프라인)
 
 ```bash
-# 각 회로에 대해 (예: mint_burn_note)
-circom circuits-circom/main/mint_burn_note.circom --r1cs --wasm -o build/
-
-# Powers of Tau 다운로드 (회로 크기에 맞는 ptau)
-# https://github.com/iden3/snarkjs#7-prepare-phase-2
-
-# Groth16 setup
-snarkjs groth16 setup build/mint_burn_note.r1cs pot_final.ptau build/mint_burn_note_0000.zkey
-
-# (선택) contribution
-snarkjs zkey contribute build/mint_burn_note_0000.zkey build/mint_burn_note_final.zkey
-
-# Solidity verifier 추출
-snarkjs zkey export solidityverifier build/mint_burn_note_final.zkey contracts/verifiers/MintBurnNoteVerifier.sol
-```
-
-6개 회로 모두 반복:
-- `mint_burn_note.circom` → `MintBurnNoteVerifier.sol`
-- `transfer_note.circom` → `TransferNoteVerifier.sol`
-- `convert_note.circom` → `ConvertNoteVerifier.sol`
-- `make_order.circom` → `MakeOrderVerifier.sol`
-- `take_order.circom` → `TakeOrderVerifier.sol`
-- `settle_order.circom` → `SettleOrderVerifier.sol`
-
-도구 버전: `circom 2.1.9`, `snarkjs 0.7.6`
-
-### Step 2: 전체 컨트랙트 컴파일 → bytecode 추출
-
-```bash
-cd /Users/zena/tokamak-projects/zk-dex
-
-# Foundry로 컴파일 (foundry.toml 설정 필요)
-forge build
-
-# 또는 Truffle
+# 1. Circom 회로 컴파일 + trusted setup + Solidity verifier 생성
+cd /Users/zena/tokamak-projects/zk-dex/circuits-circom
 npm install
-truffle compile
+./scripts/compile.sh                    # 6개 회로 → r1cs + wasm
+PTAU_SIZE=18 ./scripts/setup.sh         # trusted setup (pot18)
+./scripts/generate_verifiers.sh         # Solidity verifier 생성
+
+# 2. Forge로 전체 컨트랙트 컴파일 + 제네시스 JSON 생성
+cd /Users/zena/tokamak-projects/ethrex
+./scripts/generate-zk-dex-genesis.sh    # 자동: forge build + bytecode 추출 + storage 검증 + genesis 생성
 ```
 
-각 컨트랙트의 **deployed bytecode** 추출 (creation bytecode가 아닌 runtime bytecode).
+### generate-zk-dex-genesis.sh 스크립트가 하는 일
 
-### Step 3: L2 제네시스 JSON에 컨트랙트 계정 추가
+1. zk-dex 프로젝트에서 `forge build --force` 실행
+2. 7개 컨트랙트의 `deployedBytecode` 추출 (6 verifiers + ZkDex)
+3. `forge inspect ZkDex storage-layout`으로 슬롯 번호 자동 검증
+4. `jq`로 기존 `l2.json`에 7개 컨트랙트 alloc 추가
+5. ZkDex storage 슬롯 설정 (development=false, verifier 주소 등)
+6. `fixtures/genesis/l2-zk-dex.json`으로 출력
+7. 출력 JSON 유효성 검증
 
-SP1 ZK-DEX 전용 제네시스 파일 생성 (기존 L2 제네시스와 별도):
+### 커스텀 zk-dex 경로 지정
 
-```
-crates/l2/fixtures/genesis/l2-zk-dex.json
-```
-
-제네시스 JSON의 `alloc` 섹션에 컨트랙트 추가:
-
-```json
-{
-  "alloc": {
-    "0x<VERIFIER_1_ADDRESS>": {
-      "code": "0x<MintBurnNoteVerifier deployed bytecode>",
-      "balance": "0x0"
-    },
-    "0x<VERIFIER_2_ADDRESS>": {
-      "code": "0x<TransferNoteVerifier deployed bytecode>",
-      "balance": "0x0"
-    },
-    ...
-    "0x<ZKDEX_ADDRESS>": {
-      "code": "0x<ZkDex deployed bytecode>",
-      "balance": "0x0",
-      "storage": {
-        "0x0": "<development(false) + dai(MockDai주소) packed>",
-        "0x1": "<requestVerifier = MintBurnNoteVerifier 주소>",
-        "0x7": "<mintNoteVerifier 주소>",
-        "0x8": "<spendNoteVerifier 주소>",
-        "0x9": "<liquidateNoteVerifier 주소>",
-        "0xa": "<convertNoteVerifier 주소>",
-        "0xb": "<makeOrderVerifier 주소>",
-        "0xc": "<takeOrderVerifier 주소>",
-        "0xd": "<settleOrderVerifier 주소>",
-        "0xe": "0x0"
-      }
-    }
-  }
-}
+```bash
+./scripts/generate-zk-dex-genesis.sh --zk-dex-dir /path/to/custom/zk-dex
 ```
 
-### Step 4: DEX_CONTRACT_ADDRESS 확정
+### 로컬넷 시작
 
-제네시스에서 ZkDex에 할당한 주소를 게스트 프로그램에 반영:
-
-```rust
-// crates/guest-program/src/programs/zk_dex/mod.rs:10
-const DEX_CONTRACT_ADDRESS: Address = H160([...]); // ← 제네시스 주소와 일치
+```bash
+cd crates/l2
+make zk-dex-localnet              # l2-zk-dex.json 제네시스 사용
+make zk-dex-localnet-no-prover    # 프로버 없이 (앱 테스트용)
 ```
-
-현재: `H160([0xDE; 20])` = `0xDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDE`
-→ 제네시스에서 이 주소를 그대로 사용하면 코드 변경 불필요.
-
-### Step 5: Docker 파이프라인 수정
-
-`zk-dex-docker.sh` 및 `docker-compose-zk-dex.overrides.yaml` 수정:
-
-```
-현재: L1 시작 → L1 컨트랙트 배포 → L2 시작 → (Prover)
-변경: L1 시작 → L1 컨트랙트 배포 → L2 시작 (ZK-DEX 제네시스 사용) → Prover 시작
-```
-
-L2 시작 시 `--network` 옵션으로 ZK-DEX 제네시스 파일 지정:
-```
---network /genesis/l2-zk-dex.json
-```
-
-### Step 6: E2E 검증
-
-1. Docker 환경 시작
-2. ZkDex 함수 호출 (mint, spend, liquidate, convertNote, makeOrder, takeOrder, settleOrder)
-3. 배치 커밋 확인
-4. SP1 증명 생성 확인
-5. L1 검증 확인
 
 ---
 
-## ZkDex Storage Layout (제네시스 세팅용)
+## ZkDex Storage Layout (제네시스 세팅)
 
 ZkDex 상속 체인: `ZkDaiBase → MintNotes → SpendNotes → LiquidateNotes → ZkDai → ZkDex`
 
 | Slot | 변수 | 값 |
 |------|------|-----|
-| 0 | `development` (bool) + `dai` (address) | `0x00..00` + `<MockDai주소>` (packed) |
-| 1 | `requestVerifier` | MintBurnNoteVerifier 주소 |
-| 2 | (gap) | 0 |
-| 3 | `encryptedNotes` mapping | 비어있음 (mapping base) |
-| 4 | `notes` mapping | 비어있음 (mapping base) |
-| 5 | `requestedNoteProofs` mapping | 비어있음 |
-| 6 | `verifiedProofs` mapping | 비어있음 |
-| 7 | `mintNoteVerifier` | MintBurnNoteVerifier 주소 |
-| 8 | `spendNoteVerifier` | TransferNoteVerifier 주소 |
-| 9 | `liquidateNoteVerifier` | MintBurnNoteVerifier 주소 |
-| 10 | `convertNoteVerifier` | ConvertNoteVerifier 주소 |
-| 11 | `makeOrderVerifier` | MakeOrderVerifier 주소 |
-| 12 | `takeOrderVerifier` | TakeOrderVerifier 주소 |
-| 13 | `settleOrderVerifier` | SettleOrderVerifier 주소 |
-| 14 | `orders.length` | 0 |
+| 0 | `development` (bool) + `dai` (address) | `0x0` (development=false, dai=0x0) |
+| 1 | `requestVerifier` | MintBurnNoteVerifier (`0xDE...01`) |
+| 2 | `encryptedNotes` mapping | 비어있음 (mapping base) |
+| 3 | `notes` mapping | 비어있음 (mapping base) |
+| 4 | `requestedNoteProofs` mapping | 비어있음 |
+| 5 | `verifiedProofs` mapping | 비어있음 |
+| 6 | `mintNoteVerifier` | MintBurnNoteVerifier (`0xDE...01`) |
+| 7 | `spendNoteVerifier` | TransferNoteVerifier (`0xDE...02`) |
+| 8 | `liquidateNoteVerifier` | MintBurnNoteVerifier (`0xDE...01`) |
+| 9 | `convertNoteVerifier` | ConvertNoteVerifier (`0xDE...03`) |
+| 10 | `makeOrderVerifier` | MakeOrderVerifier (`0xDE...04`) |
+| 11 | `takeOrderVerifier` | TakeOrderVerifier (`0xDE...05`) |
+| 12 | `settleOrderVerifier` | SettleOrderVerifier (`0xDE...06`) |
+| 13 | `orders.length` | 0 |
 
-> `forge inspect ZkDex storage-layout`으로 슬롯 번호 확인 필수.
+> `forge inspect ZkDex storage-layout`으로 슬롯 번호 검증 — generate-zk-dex-genesis.sh가 자동 수행.
+
+---
+
+## 검증 방법
+
+1. **Storage layout 검증**: 스크립트가 자동으로 `forge inspect ZkDex storage-layout`과 비교
+2. **Genesis JSON 유효성**: 스크립트가 `jq empty`로 검증 + alloc 항목 수 비교
+3. **L2 코드 존재 확인**: L2 시작 후 `eth_getCode` RPC로 ZkDex 주소에 코드 확인
+4. **E2E 테스트**: localnet에서 mint → spend → batch commit → SP1 proof
+
+```bash
+# L2 시작 후 ZkDex 코드 확인
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_getCode","params":["0xDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDE","latest"],"id":1}' \
+  http://localhost:1729 | jq '.result | length'
+# → 코드 길이가 4 이상이면 성공 (0x + bytecode)
+```
 
 ---
 
 ## 참고 파일
 
-- Circom 회로: `/Users/zena/tokamak-projects/zk-dex/circuits-circom/main/`
-- ZkDex 컨트랙트: `/Users/zena/tokamak-projects/zk-dex/contracts/`
+### ethrex 프로젝트
+- 제네시스 생성 스크립트: `scripts/generate-zk-dex-genesis.sh`
+- 생성될 제네시스: `fixtures/genesis/l2-zk-dex.json`
+- 베이스 제네시스: `fixtures/genesis/l2.json`
+- 로컬넷 스크립트: `crates/l2/scripts/zk-dex-localnet.sh`
+- Docker 오버라이드: `crates/l2/docker-compose-zk-dex.overrides.yaml`
 - SP1 게스트 프로그램: `crates/guest-program/src/programs/zk_dex/`
-- Docker 스크립트: `crates/l2/scripts/zk-dex-docker.sh`
-- 현재 L2 제네시스: `crates/l2/fixtures/genesis/`
-- 도구: `circom 2.1.9`, `snarkjs 0.7.6`, `forge 1.5.1`
+
+### zk-dex 프로젝트
+- Verifier 인터페이스: `contracts/verifiers/IGroth16Verifier.sol`
+- Forge 설정: `foundry.toml`
+- Circom 회로: `circuits-circom/main/`
+- 빌드 스크립트: `circuits-circom/scripts/{compile,setup,generate_verifiers}.sh`
+- 도구: `circom 2.1.9`, `snarkjs 0.7.6`, `forge`

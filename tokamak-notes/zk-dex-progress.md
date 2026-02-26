@@ -153,10 +153,24 @@
 | | - Makefile 타겟 4개 추가 | |
 | | - 실제 로컬넷 구동 검증 완료 | |
 
+### Phase 3: L2 제네시스 배포 파이프라인 — 완료
+
+| 날짜 | 작업 | 커밋 |
+|------|------|------|
+| 2026-02-26 | **ZK-DEX L2 제네시스 배포 파이프라인 구축** | |
+| | - `IGroth16Verifier.sol` 인터페이스 생성 (6개 verifier) | |
+| | - `foundry.toml` 생성 (Forge 빌드 지원) | |
+| | - `generate_verifiers.sh` pragma 호환성 수정 (snarkjs 0.7.x) | |
+| | - `generate-zk-dex-genesis.sh` 스크립트 작성 | |
+| | - forge build → bytecode 추출 → storage layout 검증 → genesis JSON 생성 자동화 | |
+| | - localnet/Docker 스크립트 `l2-zk-dex.json` 전환 | |
+
 ### 아직 구현되지 않은 것
 
 - [x] ~~실제 L1 네트워크에 컨트랙트 배포~~ → 로컬 L1 (ethrex --dev) 배포 완료
 - [x] ~~실제 L2 노드를 Guest Program과 함께 가동~~ → `zk-dex-localnet.sh`로 자동화
+- [x] ~~ZK-DEX 컨트랙트 L2 제네시스 배포~~ → `generate-zk-dex-genesis.sh` 파이프라인 구축
+- [ ] Circom 회로 컴파일 + trusted setup 실행 (1회, 오프라인)
 - [ ] End-to-end 증명 생성 및 L1 검증 (프로버 연결 후 검증)
 - [ ] 프론트엔드 (platform/client) 연결하여 L2 RPC 동작 확인
 - [ ] 대규모 배치 벤치마크 (100+ transfers)

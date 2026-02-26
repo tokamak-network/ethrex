@@ -28,7 +28,7 @@ BRIDGE_OWNER_PRIVATE_KEY="0x941e103320615d394a55708be13e45994c7d93b932b064dbcb2b
 
 # Paths
 L1_GENESIS="$REPO_ROOT/fixtures/genesis/l1.json"
-L2_GENESIS="$REPO_ROOT/fixtures/genesis/l2.json"
+L2_GENESIS="$REPO_ROOT/fixtures/genesis/l2-zk-dex.json"
 ENV_FILE="$REPO_ROOT/cmd/.env"
 L1_DB="$RUNDIR/dev_ethrex_l1"
 L2_DB="$RUNDIR/dev_ethrex_l2"
@@ -115,6 +115,12 @@ do_start() {
 
     if any_running; then
         log_error "ZK-DEX localnet is already running. Run 'stop' first."
+        exit 1
+    fi
+
+    if [[ ! -f "$L2_GENESIS" ]]; then
+        log_error "L2 genesis not found: $L2_GENESIS"
+        log_error "Run 'scripts/generate-zk-dex-genesis.sh' first to generate the ZK-DEX genesis."
         exit 1
     fi
 
