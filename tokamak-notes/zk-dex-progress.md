@@ -73,18 +73,48 @@
 
 추가된 패치: `k256`, `ecdsa`, `crypto-bigint`, `sha2`, `sha3`, `p256` (기존 `tiny-keccak`, `secp256k1`에 추가)
 
-### 스케일링 전망
+---
 
-| Transfers | ZK-DEX 사이클 (추정) | 예상 Proving 시간 |
-|-----------|---------------------|------------------|
-| 1 | 357,761 | 3분 26초 (실측) |
-| 10 | ~3,500,000 | ~3.5-4분 |
-| 100 | ~35,000,000 | ~5-8분 |
-| 1,000 | ~350,000,000 | ~30-60분 |
+## 3. E2E Localnet 벤치마크 (실측)
+
+### 환경
+- **머신**: Apple M4 Max (Rosetta 2 / x86_64 에뮬레이션, CPU only)
+- **SP1**: v5.0.8, Groth16 circuit v5.0.0, Docker 기반 Groth16 wrapping
+- **L1/L2**: ethrex --dev (로컬), SP1 Prover (CPU)
+
+### 배치별 Proving 시간 실측
+
+| Batch | 블록 수 | 트랜잭션 수 | 트랜잭션 유형 | SP1 실행 사이클 | Core Proving | Groth16 Wrapping | 전체 시간 | L1 검증 |
+|-------|---------|------------|---------------|----------------|-------------|-----------------|----------|---------|
+| 1 | 1 | 49 | L1 deposit (privileged) | 5,406,639 | ~3분 31초 | ~17초 | **3분 48초** | ✅ 성공 |
+| 2 | ~134 | 200 | ETH transfer | 15,792,250 | ~6분 29초 | ~17초 | **6분 46초** | ✅ 성공 |
+
+### 분석
+
+1. **Groth16 wrapping은 사이클 수에 무관하게 고정 ~17초** (Docker 기반, SP1 v5.0.0 circuit)
+2. **Core proving 시간은 사이클 수에 비례**:
+   - 5.4M cycles → 3분 31초 (~25.6K cycles/sec)
+   - 15.8M cycles → 6분 29초 (~40.6K cycles/sec)
+   - 큰 배치에서 throughput이 더 높음 (proving 초기 고정 오버헤드 분산)
+3. **200개 ETH 전송 배치를 7분 이내에 증명 + L1 검증 완료**
+4. **Empty batch 자동 검증**: 트랜잭션이 없는 빈 배치는 ZK proof 없이 자동 검증됨
+
+### 스케일링 전망 (실측 기반 업데이트)
+
+| 시나리오 | 예상 사이클 | 예상 Proving 시간 | 비고 |
+|----------|------------|------------------|------|
+| 1 ETH transfer | ~80K | ~3분 (고정 오버헤드 지배적) | 최소 단위 |
+| 49 deposits (batch 1) | 5.4M | 3분 48초 | **실측** |
+| 200 ETH transfers (batch 2) | 15.8M | 6분 46초 | **실측** |
+| 500 transfers | ~40M | ~12-15분 | 추정 |
+| 1,000 transfers | ~80M | ~20-30분 | 추정 |
+
+> **참고**: 위 데이터는 단순 ETH transfer 기준. 실제 DEX 트랜잭션(mint/spend/makeOrder 등)은
+> Groth16 검증 + Poseidon 해싱이 추가되어 트랜잭션당 사이클이 더 높을 수 있음.
 
 ---
 
-## 3. Halo2 vs SP1 비교 및 전략적 결정
+## 4. Halo2 vs SP1 비교 및 전략적 결정
 
 ### 결론: SP1 선택
 
@@ -106,7 +136,7 @@
 
 ---
 
-## 4. L1/L2 인프라 현황
+## 5. L1/L2 인프라 현황
 
 ### 이미 구현된 것
 
@@ -153,42 +183,57 @@
 | | - Makefile 타겟 4개 추가 | |
 | | - 실제 로컬넷 구동 검증 완료 | |
 
-### Phase 3: L2 제네시스 배포 파이프라인 — 완료
+### Phase 3: L2 제네시스 + E2E 증명 파이프라인 — 완료
 
 | 날짜 | 작업 | 커밋 |
 |------|------|------|
-| 2026-02-26 | **ZK-DEX L2 제네시스 배포 파이프라인 구축** | |
+| 2026-02-26 | **ZK-DEX L2 제네시스 배포 파이프라인 구축** | `523734f` |
 | | - `IGroth16Verifier.sol` 인터페이스 생성 (6개 verifier) | |
 | | - `foundry.toml` 생성 (Forge 빌드 지원) | |
 | | - `generate_verifiers.sh` pragma 호환성 수정 (snarkjs 0.7.x) | |
 | | - `generate-zk-dex-genesis.sh` 스크립트 작성 | |
 | | - forge build → bytecode 추출 → storage layout 검증 → genesis JSON 생성 자동화 | |
 | | - localnet/Docker 스크립트 `l2-zk-dex.json` 전환 | |
-| 2026-02-26 | **Storage slot 버그 수정 + Localnet E2E 검증** | |
+| 2026-02-26 | **Localnet 시작 버그 수정** | `2fc703c` |
 | | - `storage.rs` 슬롯 상수 수정: ENCRYPTED_NOTES 3→2, NOTES 4→3, ORDERS 14→13 | |
 | | - L2 서버 `--no-monitor` 플래그 추가 (TUI→stdout 로깅 전환) | |
 | | - L2 P2P 포트 충돌 해결 (`--p2p.port 30304 --discovery.port 30304`) | |
-| | - Localnet E2E 성공: L1→Deploy→L2 전체 파이프라인 검증 | |
 | | - ZkDex 7개 컨트랙트 + storage slots L2 제네시스 배포 확인 | |
-| 2026-02-26 | **SP1 E2E 증명 + L1 온체인 검증 성공** | |
+| 2026-02-26 | **SP1 E2E 증명 + L1 온체인 검증 성공** | `0541a74` |
 | | - `ETHREX_GUEST_PROGRAM_ID=zk-dex` env var 누락 수정 (programTypeId 1→2) | |
-| | - Batch 1: SP1 zk-dex 게스트 실행 (4.9M cycles) → Groth16 증명 → L1 검증 성공 | |
+| | - 근본 원인: committer가 programTypeId=1(evm-l2)로 batch commit → VK 불일치 | |
+| | - Batch 1~9: SP1 zk-dex Groth16 증명 → L1 온체인 검증 성공 | |
 | | - 전체 파이프라인: L1→Deploy→L2→Prover→L1 Verify 완전 동작 확인 | |
+| 2026-02-26 | **대규모 배치 벤치마크 (200 ETH transfers)** | |
+| | - 200개 ETH transfer 트랜잭션 L2 전송 → 단일 블록에 포함 | |
+| | - Batch 2: 15.8M cycles, 6분 46초 proving, L1 검증 성공 | |
+| | - Groth16 wrapping 고정 ~17초, core proving이 지배적 | |
 
-### 아직 구현되지 않은 것
+### 해결된 주요 이슈
 
-- [x] ~~실제 L1 네트워크에 컨트랙트 배포~~ → 로컬 L1 (ethrex --dev) 배포 완료
-- [x] ~~실제 L2 노드를 Guest Program과 함께 가동~~ → `zk-dex-localnet.sh`로 자동화
-- [x] ~~ZK-DEX 컨트랙트 L2 제네시스 배포~~ → `generate-zk-dex-genesis.sh` 파이프라인 구축
-- [x] ~~Circom 회로 컴파일 + trusted setup 실행 (1회, 오프라인)~~ → 6개 회로 컴파일 + PTAU 14 setup 완료
-- [x] End-to-end 증명 생성 및 L1 검증 — Batch 1 SP1 Groth16 증명 + L1 온체인 검증 성공 (2026-02-26)
-- [ ] 프론트엔드 (platform/client) 연결하여 L2 RPC 동작 확인
-- [ ] 대규모 배치 벤치마크 (100+ transfers)
+| 이슈 | 증상 | 근본 원인 | 해결 |
+|------|------|----------|------|
+| L2 로그 미출력 | stdout 리다이렉트 시 0 bytes | TUI 모니터 기본 활성화 → 인메모리 버퍼 전송 | `--no-monitor` 플래그 |
+| P2P 포트 충돌 | `UdpSocketError(AddrInUse)` | L1/L2 모두 30303 포트 기본 사용 | `--p2p.port 30304` |
+| SP1 증명 L1 검증 실패 (`00e`) | `ISP1Verifier.verifyProof` revert | `ETHREX_GUEST_PROGRAM_ID` 미설정 → programTypeId=1(evm-l2) 사용 | env var 추가 |
+| Batch 2 commit 실패 (`005`) | `execution reverted: 005` | Batch 1 미검증 → 다음 batch commit 불가 | Batch 1 검증 후 자동 해소 |
+| Storage slot 불일치 | 게스트 프로그램 storage proof 실패 | `storage.rs` 슬롯 상수와 Solidity storage layout 불일치 | 슬롯 번호 수정 |
+
+### 체크리스트
+
+- [x] 실제 L1 네트워크에 컨트랙트 배포 → 로컬 L1 (ethrex --dev) 배포 완료
+- [x] 실제 L2 노드를 Guest Program과 함께 가동 → `zk-dex-localnet.sh`로 자동화
+- [x] ZK-DEX 컨트랙트 L2 제네시스 배포 → `generate-zk-dex-genesis.sh` 파이프라인 구축
+- [x] Circom 회로 컴파일 + trusted setup 실행 (1회, 오프라인) → 6개 회로 컴파일 + PTAU 14 setup 완료
+- [x] End-to-end 증명 생성 및 L1 검증 — Batch 1~9 SP1 Groth16 증명 + L1 온체인 검증 성공
+- [x] 대규모 배치 벤치마크 — 200 ETH transfers, 15.8M cycles, 6분 46초 proving
+- [ ] 실제 DEX 트랜잭션 (mint/spend/makeOrder) 벤치마크
+- [ ] 프론트엔드 DEX 트레이딩 UI 개발
 - [ ] Native ARM 벤치마크 (Rosetta 2 없이)
 
 ---
 
-## 5. 로컬 환경 구축 가이드
+## 6. 로컬 환경 구축 가이드
 
 ### 자동 구축 (권장)
 
@@ -230,6 +275,8 @@ make zk-dex-localnet-stop
 | Bridge | `cmd/.env` → `ETHREX_WATCHER_BRIDGE_ADDRESS` |
 | SP1 Verifier | `cmd/.env` → `ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS` |
 | Timelock | `cmd/.env` → `ETHREX_TIMELOCK_ADDRESS` |
+| ZkDex (L2 Genesis) | `0xDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDE` |
+| Verifiers (L2 Genesis) | `0xDE00...01` ~ `0xDE00...06` |
 
 ### 검증
 
@@ -243,6 +290,13 @@ curl -s -X POST -H "Content-Type: application/json" \
 curl -s -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
   http://localhost:1729
+
+# L2 ZkDex 컨트랙트 코드 확인
+cast code 0xDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDEDE --rpc-url http://localhost:1729
+
+# L1 마지막 검증된 배치 확인
+source cmd/.env
+cast call $ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS "lastVerifiedBatch()(uint256)" --rpc-url http://localhost:8545
 ```
 
 ### 주의사항
@@ -250,33 +304,38 @@ curl -s -X POST -H "Content-Type: application/json" \
 - 첫 실행 시 릴리스 빌드가 포함되어 10분 이상 소요될 수 있음
 - 이전 ethrex 프로세스가 남아있으면 포트 충돌 → `pkill ethrex` 후 재시작
 - 런타임 파일은 `crates/l2/.zk-dex-localnet/`에 저장 (`.gitignore` 처리됨)
+- git commit 변경 시 prover에서 "Version mismatch" 경고 발생 가능 → localnet 재시작 필요
 
 ---
 
-## 6. 다음 단계
+## 7. 다음 단계
 
-### 목표
+### 완료된 목표
 
-로컬 환경에서 ZK-DEX 트랜잭션의 **End-to-end 증명 생성 + L1 검증**을 완료한다.
+1. **E2E 파이프라인 검증** ✅
+   - L1 Deploy → L2 Genesis (ZkDex + 6 Verifiers) → Block Production → Batch Commit → SP1 Proof → L1 Verify
+   - Batch 1~9 연속 검증 성공
 
-### 할 일
+2. **대규모 배치 벤치마크** ✅
+   - 200 ETH transfers → 15.8M cycles → 6분 46초 proving → L1 검증 성공
+   - Throughput: ~40K cycles/sec (대규모 배치 기준)
 
-1. **프로버 연결**
-   - 로컬넷에 SP1 프로버 추가 (`make zk-dex-localnet` 또는 별도 터미널)
-   - L2 배치 → SP1 증명 생성 → L1 제출 → 검증 파이프라인 확인
+### 남은 작업
 
-2. **프론트엔드 연결**
-   - `platform/client/` (Next.js) → L2 RPC (`http://localhost:1729`) 연결
-   - DEX token transfer UI 동작 확인
+1. **실제 DEX 트랜잭션 벤치마크**
+   - mint/spend/makeOrder/takeOrder/settleOrder 트랜잭션을 L2에 전송
+   - Groth16 client-side 증명 생성 필요 (snarkjs, circomlibjs)
+   - DEX 트랜잭션의 SP1 proving overhead 측정
 
-3. **E2E 테스트**
-   - DEX token transfer 트랜잭션 전송
-   - 배치 생성 → SP1 증명 생성 → L1 제출 → 온체인 검증
-   - 전체 파이프라인 동작 확인
+2. **프론트엔드 DEX 트레이딩 UI**
+   - `platform/client/`는 현재 Guest Program Store (배포 관리 플랫폼)
+   - DEX 전용 트레이딩 UI (swap, order book, trade history) 미구현
+   - BabyJubJub 키 관리 + ECDH 노트 암호화 필요
 
-4. **성능 측정**
-   - 실제 L2 배치로 proving 시간 측정
-   - Mock 데이터와의 차이 비교
+3. **Native ARM 벤치마크**
+   - 현재: Rosetta 2 / x86_64 에뮬레이션 (M4 Max)
+   - SP1 Docker Groth16 wrapping은 x86_64 전용
+   - Native ARM proving은 compressed proof만 가능 (Groth16 wrapping 불가)
 
 ---
 
@@ -291,3 +350,4 @@ curl -s -X POST -H "Content-Type: application/json" \
 | `tokamak-notes/local-setup-guide.md` | 로컬 실행 가이드 |
 | `crates/l2/scripts/ZK-DEX-LOCALNET.md` | 로컬넷 스크립트 사용 가이드 |
 | `tokamak-notes/zk-dex-e2e-design.md` | E2E 아키텍처 설계 |
+| `tokamak-notes/sp1-zk-dex-infra-cost-analysis.md` | SP1 ZK-DEX 인프라 비용 분석 |
