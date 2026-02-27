@@ -11,6 +11,7 @@ import {ICommonBridge} from "./interfaces/ICommonBridge.sol";
 import {IRiscZeroVerifier} from "./interfaces/IRiscZeroVerifier.sol";
 import {ISP1Verifier} from "./interfaces/ISP1Verifier.sol";
 import {ITDXVerifier} from "./interfaces/ITDXVerifier.sol";
+import {ITokamakVerifier} from "./interfaces/ITokamakVerifier.sol";
 import {IGuestProgramRegistry} from "./interfaces/IGuestProgramRegistry.sol";
 import "../l2/interfaces/ICommonBridgeL2.sol";
 
@@ -51,6 +52,7 @@ contract OnChainProposer is
 
     uint8 internal constant SP1_VERIFIER_ID = 1;
     uint8 internal constant RISC0_VERIFIER_ID = 2;
+    uint8 internal constant TOKAMAK_VERIFIER_ID = 3;
 
     /// @notice Program type ID for the default EVM-L2 guest program.
     uint8 internal constant DEFAULT_PROGRAM_TYPE_ID = 1;
@@ -115,6 +117,10 @@ contract OnChainProposer is
     bool public REQUIRE_SP1_PROOF;
     /// @notice True if a TDX proof is required for batch verification.
     bool public REQUIRE_TDX_PROOF;
+    /// @notice True if a Tokamak proof is required for batch verification.
+    bool public REQUIRE_TOKAMAK_PROOF;
+
+    address public TOKAMAK_VERIFIER_ADDRESS;
 
     /// @notice True if verification is done through Aligned Layer instead of smart contract verifiers.
     bool public ALIGNED_MODE;
@@ -145,10 +151,12 @@ contract OnChainProposer is
         bool requireRisc0Proof,
         bool requireSp1Proof,
         bool requireTdxProof,
+        bool requireTokamakProof,
         bool aligned,
         address r0verifier,
         address sp1verifier,
         address tdxverifier,
+        address tokamakverifier,
         address alignedProofAggregator,
         bytes32 sp1Vk,
         bytes32 risc0Vk,
@@ -163,6 +171,7 @@ contract OnChainProposer is
         REQUIRE_RISC0_PROOF = requireRisc0Proof;
         REQUIRE_SP1_PROOF = requireSp1Proof;
         REQUIRE_TDX_PROOF = requireTdxProof;
+        REQUIRE_TOKAMAK_PROOF = requireTokamakProof;
 
         require(
             !REQUIRE_RISC0_PROOF || r0verifier != address(0),
@@ -181,6 +190,11 @@ contract OnChainProposer is
             "OnChainProposer: missing TDX verifier address"
         );
         TDX_VERIFIER_ADDRESS = tdxverifier;
+        require(
+            !REQUIRE_TOKAMAK_PROOF || tokamakverifier != address(0),
+            "OnChainProposer: missing Tokamak verifier address"
+        );
+        TOKAMAK_VERIFIER_ADDRESS = tokamakverifier;
 
         ALIGNED_MODE = aligned;
         ALIGNEDPROOFAGGREGATOR = alignedProofAggregator;
@@ -450,6 +464,8 @@ contract OnChainProposer is
         bytes memory sp1ProofBytes,
         //tdx
         bytes memory tdxSignature,
+        //tokamak
+        bytes memory tokamakProof,
         // Custom program public values (only needed for programTypeId > 1)
         bytes memory customPublicValues
     ) external override whenNotPaused {
@@ -567,6 +583,37 @@ contract OnChainProposer is
                 {} catch {
                     revert(
                         "00g" // OnChainProposer: Invalid TDX proof failed proof verification
+                    );
+                }
+            }
+
+            if (REQUIRE_TOKAMAK_PROOF) {
+                (
+                    uint128[] memory proof_part1,
+                    uint256[] memory proof_part2,
+                    uint128[] memory preprocess_part1,
+                    uint256[] memory preprocess_part2,
+                    uint256[] memory tokamakPublicInputs,
+                    uint256 smax
+                ) = abi.decode(tokamakProof, (uint128[], uint256[], uint128[], uint256[], uint256[], uint256));
+
+                try
+                    ITokamakVerifier(TOKAMAK_VERIFIER_ADDRESS).verify(
+                        proof_part1,
+                        proof_part2,
+                        preprocess_part1,
+                        preprocess_part2,
+                        tokamakPublicInputs,
+                        smax
+                    )
+                returns (bool result) {
+                    require(
+                        result,
+                        "00t" // OnChainProposer: Tokamak proof verification returned false
+                    );
+                } catch {
+                    revert(
+                        "00u" // OnChainProposer: Invalid Tokamak proof failed proof verification
                     );
                 }
             }

@@ -62,6 +62,7 @@ interface ITimelock {
         bytes memory risc0BlockProof,
         bytes memory sp1ProofBytes,
         bytes memory tdxSignature,
+        bytes memory tokamakProof,
         bytes memory customPublicValues
     ) external;
 

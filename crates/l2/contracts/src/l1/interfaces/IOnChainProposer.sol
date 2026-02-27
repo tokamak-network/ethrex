@@ -122,6 +122,7 @@ interface IOnChainProposer {
     /// @param sp1ProofBytes Groth16 proof
     /// ----------------------------------------------------------------------
     /// @param tdxSignature TDX signature
+    /// @param tokamakProof Tokamak custom zkSNARK proof (abi-encoded)
     function verifyBatch(
         uint256 batchNumber,
         //risc0
@@ -130,6 +131,8 @@ interface IOnChainProposer {
         bytes memory sp1ProofBytes,
         //tdx
         bytes memory tdxSignature,
+        //tokamak
+        bytes memory tokamakProof,
         // Custom program public values (only needed for programTypeId > 1)
         bytes memory customPublicValues
     ) external;

@@ -117,6 +117,7 @@ contract Timelock is TimelockControllerUpgradeable, UUPSUpgradeable, ITimelock {
         bytes memory risc0BlockProof,
         bytes memory sp1ProofBytes,
         bytes memory tdxSignature,
+        bytes memory tokamakProof,
         bytes memory customPublicValues
     ) external onlyRole(SEQUENCER) {
         onChainProposer.verifyBatch(
@@ -124,6 +125,7 @@ contract Timelock is TimelockControllerUpgradeable, UUPSUpgradeable, ITimelock {
             risc0BlockProof,
             sp1ProofBytes,
             tdxSignature,
+            tokamakProof,
             customPublicValues
         );
     }
