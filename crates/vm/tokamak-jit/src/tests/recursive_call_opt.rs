@@ -159,8 +159,11 @@ fn test_metrics_snapshot_9_tuple() {
     let metrics = JitMetrics::new();
     metrics.bytecode_cache_hits.store(42, Ordering::Relaxed);
 
-    let (_, _, _, _, _, _, _, _, cache_hits) = metrics.snapshot();
-    assert_eq!(cache_hits, 42, "bytecode_cache_hits should be in snapshot");
+    let snap = metrics.snapshot();
+    assert_eq!(
+        snap.bytecode_cache_hits, 42,
+        "bytecode_cache_hits should be in snapshot"
+    );
 }
 
 /// Verify metrics reset clears bytecode_cache_hits.
@@ -173,8 +176,11 @@ fn test_metrics_reset_clears_cache_hits() {
     metrics.bytecode_cache_hits.store(10, Ordering::Relaxed);
     metrics.reset();
 
-    let (_, _, _, _, _, _, _, _, cache_hits) = metrics.snapshot();
-    assert_eq!(cache_hits, 0, "bytecode_cache_hits should be 0 after reset");
+    let snap = metrics.snapshot();
+    assert_eq!(
+        snap.bytecode_cache_hits, 0,
+        "bytecode_cache_hits should be 0 after reset"
+    );
 }
 
 /// Run a multi-CALL contract through the interpreter and verify the bytecode

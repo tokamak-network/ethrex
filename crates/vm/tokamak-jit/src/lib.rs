@@ -62,9 +62,7 @@ pub use ethrex_levm::jit::{
 pub fn register_jit_backend() {
     use ethrex_levm::jit::analyzer::analyze_bytecode;
     use ethrex_levm::jit::compiler_thread::{CompilerRequest, CompilerThreadPool};
-    use ethrex_levm::jit::dispatch::JitBackend;
     use ethrex_levm::jit::optimizer;
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     let backend = Arc::new(backend::RevmcBackend::default());
@@ -257,7 +255,8 @@ pub fn register_jit_backend() {
 #[cfg(feature = "revmc-backend")]
 struct ArenaState {
     /// Active arenas indexed by ID. Dropped arenas free LLVM resources.
-    arena_compilers: HashMap<ethrex_levm::jit::arena::ArenaId, compiler::ArenaCompiler>,
+    arena_compilers:
+        std::collections::HashMap<ethrex_levm::jit::arena::ArenaId, compiler::ArenaCompiler>,
     /// ID of the current (not-yet-full) arena.
     current_arena_id: Option<ethrex_levm::jit::arena::ArenaId>,
 }
@@ -266,7 +265,7 @@ struct ArenaState {
 impl ArenaState {
     fn new() -> Self {
         Self {
-            arena_compilers: HashMap::new(),
+            arena_compilers: std::collections::HashMap::new(),
             current_arena_id: None,
         }
     }

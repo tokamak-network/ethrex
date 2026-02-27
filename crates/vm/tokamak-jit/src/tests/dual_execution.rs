@@ -199,17 +199,19 @@ mod tests {
         assert_eq!(result_val, U256::from(6u64), "5 + 1 = 6");
 
         // Verify dual execution validation happened and matched
-        let (jit_execs, _, _, _, validation_successes, validation_mismatches, _, _, _) =
-            JIT_STATE.metrics.snapshot();
+        let snap = JIT_STATE.metrics.snapshot();
         assert_eq!(
-            validation_successes, 1,
+            snap.validation_successes, 1,
             "should have 1 successful validation"
         );
         assert_eq!(
-            validation_mismatches, 0,
+            snap.validation_mismatches, 0,
             "should have no validation mismatches"
         );
-        assert!(jit_execs >= 1, "should have at least 1 JIT execution");
+        assert!(
+            snap.jit_executions >= 1,
+            "should have at least 1 JIT execution"
+        );
 
         // Verify cache entry is still present (not invalidated)
         assert!(
@@ -295,8 +297,7 @@ mod tests {
         assert!(JIT_STATE.cache.get(&cache_key).is_some());
 
         // Capture baseline metrics
-        let (_, _, _, _, baseline_successes, baseline_mismatches, _, _, _) =
-            JIT_STATE.metrics.snapshot();
+        let baseline = JIT_STATE.metrics.snapshot();
 
         // Run VM — JIT dispatches to mock backend, validation detects mismatch
         let mut vm = VM::new(env, &mut db, &tx, LevmCallTracer::disabled(), VMType::L1)
@@ -320,14 +321,20 @@ mod tests {
         );
 
         // Verify mismatch was detected (compare delta from baseline)
-        let (_, _, _, _, final_successes, final_mismatches, _, _, _) = JIT_STATE.metrics.snapshot();
+        let final_snap = JIT_STATE.metrics.snapshot();
         assert_eq!(
-            final_mismatches.saturating_sub(baseline_mismatches),
+            final_snap
+                .validation_mismatches
+                .saturating_sub(baseline.validation_mismatches),
             1,
-            "should have exactly 1 new validation mismatch (baseline={baseline_mismatches}, final={final_mismatches})"
+            "should have exactly 1 new validation mismatch (baseline={}, final={})",
+            baseline.validation_mismatches,
+            final_snap.validation_mismatches
         );
         assert_eq!(
-            final_successes.saturating_sub(baseline_successes),
+            final_snap
+                .validation_successes
+                .saturating_sub(baseline.validation_successes),
             0,
             "should have no new successful validations"
         );
@@ -516,8 +523,7 @@ mod tests {
         JIT_STATE.cache.insert(cache_key, dummy_compiled);
 
         // Capture baseline metrics
-        let (_, _, _, _, baseline_successes, baseline_mismatches, _, _, _) =
-            JIT_STATE.metrics.snapshot();
+        let baseline = JIT_STATE.metrics.snapshot();
 
         // Run VM — JIT succeeds, interpreter fails on BALANCE(0xDEAD), swap-back fires
         let mut vm = VM::new(env, &mut db, &tx, LevmCallTracer::disabled(), VMType::L1)
@@ -541,14 +547,18 @@ mod tests {
         );
 
         // Verify no validation counters changed (inconclusive, not match/mismatch)
-        let (_, _, _, _, final_successes, final_mismatches, _, _, _) = JIT_STATE.metrics.snapshot();
+        let final_snap = JIT_STATE.metrics.snapshot();
         assert_eq!(
-            final_successes.saturating_sub(baseline_successes),
+            final_snap
+                .validation_successes
+                .saturating_sub(baseline.validation_successes),
             0,
             "should have no new validation successes (inconclusive)"
         );
         assert_eq!(
-            final_mismatches.saturating_sub(baseline_mismatches),
+            final_snap
+                .validation_mismatches
+                .saturating_sub(baseline.validation_mismatches),
             0,
             "should have no new validation mismatches (inconclusive)"
         );
@@ -590,16 +600,20 @@ mod tests {
         let dummy = unsafe { CompiledCode::new(std::ptr::null(), 100, 5, None, true) };
         JIT_STATE.cache.insert(cache_key, dummy);
 
-        let (_, _, _, _, base_s, base_m, _, _, _) = JIT_STATE.metrics.snapshot();
+        let base = JIT_STATE.metrics.snapshot();
 
         let mut vm = VM::new(env, &mut db, &tx, LevmCallTracer::disabled(), VMType::L1)
             .expect("VM::new should succeed");
         let _report = vm.stateless_execute().expect("execution should succeed");
 
-        let (_, _, _, _, final_s, final_m, _, _, _) = JIT_STATE.metrics.snapshot();
+        let final_snap = JIT_STATE.metrics.snapshot();
         (
-            final_s.saturating_sub(base_s),
-            final_m.saturating_sub(base_m),
+            final_snap
+                .validation_successes
+                .saturating_sub(base.validation_successes),
+            final_snap
+                .validation_mismatches
+                .saturating_sub(base.validation_mismatches),
         )
     }
 
@@ -634,15 +648,18 @@ mod tests {
         let dummy = unsafe { CompiledCode::new(std::ptr::null(), 100, 5, None, true) };
         JIT_STATE.cache.insert(cache_key, dummy);
 
-        let (_, _, _, _, _, base_m, _, _, _) = JIT_STATE.metrics.snapshot();
+        let base = JIT_STATE.metrics.snapshot();
 
         let mut vm = VM::new(env, &mut db, &tx, LevmCallTracer::disabled(), VMType::L1)
             .expect("VM::new should succeed");
         let _report = vm.stateless_execute().expect("execution should succeed");
 
-        let (_, _, _, _, _, final_m, _, _, _) = JIT_STATE.metrics.snapshot();
+        let final_snap = JIT_STATE.metrics.snapshot();
         assert!(
-            final_m.saturating_sub(base_m) > 0,
+            final_snap
+                .validation_mismatches
+                .saturating_sub(base.validation_mismatches)
+                > 0,
             "G-3: STATICCALL must trigger mismatch"
         );
         assert!(
@@ -680,7 +697,7 @@ mod tests {
         let dummy = unsafe { CompiledCode::new(std::ptr::null(), 100, 5, None, false) };
         JIT_STATE.cache.insert(cache_key, dummy);
 
-        let (_, _, _, _, _, base_m, _, _, _) = JIT_STATE.metrics.snapshot();
+        let base = JIT_STATE.metrics.snapshot();
 
         let mut vm = VM::new(env, &mut db, &tx, LevmCallTracer::disabled(), VMType::L1)
             .expect("VM::new should succeed");
@@ -695,9 +712,12 @@ mod tests {
             "pure computation should produce 6"
         );
 
-        let (_, _, _, _, _, final_m, _, _, _) = JIT_STATE.metrics.snapshot();
+        let final_snap = JIT_STATE.metrics.snapshot();
         assert!(
-            final_m.saturating_sub(base_m) > 0,
+            final_snap
+                .validation_mismatches
+                .saturating_sub(base.validation_mismatches)
+                > 0,
             "pure computation validation should still detect mismatch after G-3 changes"
         );
     }
@@ -743,11 +763,13 @@ mod tests {
             let _ = vm.stateless_execute().expect("exec 2");
         }
 
-        let (_, _, _, _, final_s, final_m, _, _, _) = JIT_STATE.metrics.snapshot();
-        let total = final_s + final_m;
+        let final_snap = JIT_STATE.metrics.snapshot();
+        let total = final_snap.validation_successes + final_snap.validation_mismatches;
         assert!(
             total >= 2,
-            "G-3: both bytecodes must be validated, total={total} (s={final_s}, m={final_m})"
+            "G-3: both bytecodes must be validated, total={total} (s={}, m={})",
+            final_snap.validation_successes,
+            final_snap.validation_mismatches
         );
     }
 }

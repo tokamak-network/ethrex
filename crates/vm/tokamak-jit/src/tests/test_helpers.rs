@@ -29,6 +29,7 @@ pub const SENDER_ADDR: u64 = 0x100;
 pub const TEST_GAS_LIMIT: u64 = (i64::MAX - 1) as u64;
 
 /// Account setup entry for [`make_test_db`].
+#[derive(Clone)]
 pub struct TestAccount {
     pub address: Address,
     pub code: Code,

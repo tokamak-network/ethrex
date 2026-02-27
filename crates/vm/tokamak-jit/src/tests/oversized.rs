@@ -37,7 +37,7 @@ mod tests {
     #[test]
     fn test_oversized_bytecode_falls_back_to_interpreter() {
         JIT_STATE.reset_for_testing();
-        tokamak_jit::register_jit_backend();
+        crate::register_jit_backend();
 
         let max_size = JIT_STATE.config.max_bytecode_size;
         let oversized = make_bytecode_of_size(max_size + 1);
@@ -55,11 +55,11 @@ mod tests {
         for _ in 0..=threshold {
             let mut db_clone = db.clone();
             let mut vm = VM::new(
-                VMType::Transaction,
-                &env,
-                &tx,
+                env.clone(),
                 &mut db_clone,
-                LevmCallTracer::new_non_active(),
+                &tx,
+                LevmCallTracer::disabled(),
+                VMType::L1,
             )
             .expect("VM creation");
 
@@ -93,11 +93,11 @@ mod tests {
         for _ in 0..5 {
             let mut db_clone = db.clone();
             let mut vm = VM::new(
-                VMType::Transaction,
-                &env,
-                &tx,
+                env.clone(),
                 &mut db_clone,
-                LevmCallTracer::new_non_active(),
+                &tx,
+                LevmCallTracer::disabled(),
+                VMType::L1,
             )
             .expect("VM creation");
             let result = vm.execute();
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn test_exactly_max_size_compiles() {
         JIT_STATE.reset_for_testing();
-        tokamak_jit::register_jit_backend();
+        crate::register_jit_backend();
 
         let max_size = JIT_STATE.config.max_bytecode_size;
         let exactly_max = make_bytecode_of_size(max_size);

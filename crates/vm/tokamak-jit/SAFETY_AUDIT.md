@@ -71,6 +71,7 @@ supports **22 opcodes** (expanded from 6 in D-3):
 | 7 | execution.rs | 203-204 | FFI call | CRITICAL | `call_with_interpreter` -- resume call after CALL/CREATE sub-call |
 | 8 | cache.rs | 79-80 | Send impl | LOW | Manual `Send` for `CompiledCode` containing raw function pointer |
 | 9 | cache.rs | 81-82 | Sync impl | LOW | Manual `Sync` for `CompiledCode` -- JIT code is immutable after creation |
+| 10 | execution.rs | 114-116 | Transmute | LOW | `transmute` null pointer to `EvmCompilerFn` as pool sentinel -- immediately overwritten before use |
 
 ## Detailed Analysis
 
@@ -223,6 +224,28 @@ by default. Incorrect Send/Sync can cause data races.
 executable memory. Consider wrapping in a newtype that documents the
 Send/Sync invariants.
 
+### Block #10: Null EvmCompilerFn sentinel for resume state pool
+
+**Location**: `src/execution.rs:114-116`
+**Risk**: LOW
+
+The thread-local `RESUME_STATE_POOL` pre-allocates `JitResumeStateInner` boxes to
+eliminate heap allocation churn during JIT suspend/resume cycles. Pool entries need
+a default `EvmCompilerFn` value, but the type has no public `Default` impl.
+
+```rust
+compiled_fn: unsafe {
+    EvmCompilerFn::new(std::mem::transmute::<*const (), _>(std::ptr::null()))
+},
+```
+
+**Why safe**: The null pointer is NEVER dereferenced. `acquire_resume_state()` unconditionally
+overwrites all fields (including `compiled_fn`) before returning the Box to callers.
+The sentinel only exists as a placeholder in pooled allocations between release and reuse.
+
+**Mitigation**: The `acquire_resume_state()` function signature requires a valid `EvmCompilerFn`
+parameter, making it impossible to use the pooled entry without providing a real function pointer.
+
 ### Parallel Compilation (G-5, 2026-02-27)
 
 The parallel compilation thread pool (`CompilerThreadPool` in `compiler_thread.rs`) introduces
@@ -322,7 +345,7 @@ dual-execution validation (G-3) and 10 dedicated tests.
 | CRITICAL | 4 | JIT compilation, transmute, FFI calls (x2) |
 | HIGH | 1 | Memory leak (intentional) |
 | MEDIUM | 1 | Pointer type erasure |
-| LOW | 3 | Manual Send/Sync impls (x3) |
+| LOW | 4 | Manual Send/Sync impls (x3), null sentinel transmute |
 
 The CRITICAL-risk blocks are inherent to any JIT compilation system: compiling
 user-controlled bytecode to native code and invoking it requires unsafe operations

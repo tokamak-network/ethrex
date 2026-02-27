@@ -40,11 +40,15 @@ use revmc_context::EvmCompilerFn;
 /// live function counts to enforce this.
 pub struct ArenaCompiler {
     arena_id: ArenaId,
-    /// Type-erased compilers. Each `Box<dyn Any + Send>` is an
+    /// Type-erased compilers. Each `Box<dyn Any>` is an
     /// `EvmCompiler<EvmLlvmBackend<'_>>` that owns its LLVM execution engine
     /// and the JIT code memory for one compiled function. Dropping these
     /// frees the JIT code.
-    compilers: Vec<Box<dyn std::any::Any + Send>>,
+    ///
+    /// Note: `Send` is intentionally omitted — `EvmCompiler` contains raw LLVM
+    /// pointers that aren't `Send`. This is safe because `ArenaCompiler` is only
+    /// used in `thread_local!` storage, never sent between threads.
+    compilers: Vec<Box<dyn std::any::Any>>,
     compiled_count: u16,
     capacity: u16,
 }
@@ -217,6 +221,15 @@ impl TokamakCompiler {
             // Store compiler in arena instead of leaking it.
             // The compiler owns the LLVM execution engine which owns the JIT
             // code. Dropping the arena drops all compilers, freeing JIT memory.
+            //
+            // SAFETY: The compiler has lifetime 'ctx tied to the thread-local
+            // LLVM context (from `with_llvm_context`). This ArenaCompiler lives
+            // in `thread_local!` storage on the same thread, so it is dropped
+            // before (or concurrently with) the LLVM context. Erasing 'ctx to
+            // 'static is safe because both share thread lifetime.
+            #[expect(unsafe_code)]
+            let compiler: EvmCompiler<EvmLlvmBackend<'static>> =
+                unsafe { std::mem::transmute(compiler) };
             arena.compilers.push(Box::new(compiler));
             arena.compiled_count += 1;
 

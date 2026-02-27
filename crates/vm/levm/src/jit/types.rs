@@ -197,6 +197,23 @@ pub struct JitMetrics {
     pub bytecode_cache_hits: AtomicU64,
 }
 
+/// Point-in-time snapshot of all JIT metrics counters.
+///
+/// Uses named fields instead of a positional tuple so that adding new
+/// metrics doesn't break every destructuring site in the codebase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetricsSnapshot {
+    pub jit_executions: u64,
+    pub jit_fallbacks: u64,
+    pub compilations: u64,
+    pub compilation_skips: u64,
+    pub validation_successes: u64,
+    pub validation_mismatches: u64,
+    pub jit_to_jit_dispatches: u64,
+    pub precompile_fast_dispatches: u64,
+    pub bytecode_cache_hits: u64,
+}
+
 impl JitMetrics {
     /// Create a new metrics instance with all counters at zero.
     pub fn new() -> Self {
@@ -236,19 +253,19 @@ impl JitMetrics {
         self.bytecode_cache_hits.store(0, Ordering::Relaxed);
     }
 
-    /// Get a snapshot of all metrics.
-    pub fn snapshot(&self) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
-        (
-            self.jit_executions.load(Ordering::Relaxed),
-            self.jit_fallbacks.load(Ordering::Relaxed),
-            self.compilations.load(Ordering::Relaxed),
-            self.compilation_skips.load(Ordering::Relaxed),
-            self.validation_successes.load(Ordering::Relaxed),
-            self.validation_mismatches.load(Ordering::Relaxed),
-            self.jit_to_jit_dispatches.load(Ordering::Relaxed),
-            self.precompile_fast_dispatches.load(Ordering::Relaxed),
-            self.bytecode_cache_hits.load(Ordering::Relaxed),
-        )
+    /// Get a snapshot of all metrics as a named struct.
+    pub fn snapshot(&self) -> MetricsSnapshot {
+        MetricsSnapshot {
+            jit_executions: self.jit_executions.load(Ordering::Relaxed),
+            jit_fallbacks: self.jit_fallbacks.load(Ordering::Relaxed),
+            compilations: self.compilations.load(Ordering::Relaxed),
+            compilation_skips: self.compilation_skips.load(Ordering::Relaxed),
+            validation_successes: self.validation_successes.load(Ordering::Relaxed),
+            validation_mismatches: self.validation_mismatches.load(Ordering::Relaxed),
+            jit_to_jit_dispatches: self.jit_to_jit_dispatches.load(Ordering::Relaxed),
+            precompile_fast_dispatches: self.precompile_fast_dispatches.load(Ordering::Relaxed),
+            bytecode_cache_hits: self.bytecode_cache_hits.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -272,10 +289,19 @@ mod tests {
         metrics.validation_successes.store(7, Ordering::Relaxed);
         metrics.validation_mismatches.store(1, Ordering::Relaxed);
 
-        assert_eq!(metrics.snapshot(), (10, 5, 3, 2, 7, 1, 0, 0, 0));
+        let snap = metrics.snapshot();
+        assert_eq!(snap.jit_executions, 10);
+        assert_eq!(snap.jit_fallbacks, 5);
+        assert_eq!(snap.compilations, 3);
+        assert_eq!(snap.compilation_skips, 2);
+        assert_eq!(snap.validation_successes, 7);
+        assert_eq!(snap.validation_mismatches, 1);
+        assert_eq!(snap.jit_to_jit_dispatches, 0);
 
         metrics.reset();
 
-        assert_eq!(metrics.snapshot(), (0, 0, 0, 0, 0, 0, 0, 0, 0));
+        let snap = metrics.snapshot();
+        assert_eq!(snap.jit_executions, 0);
+        assert_eq!(snap.validation_successes, 0);
     }
 }

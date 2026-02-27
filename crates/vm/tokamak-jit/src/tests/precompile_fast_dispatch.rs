@@ -292,7 +292,7 @@ fn test_g8_precompile_loop_sha256() {
 #[cfg(feature = "revmc-backend")]
 #[test]
 fn test_g8_precompile_jit_matches_interpreter() {
-    use ethrex_levm::jit::dispatch::JIT_STATE;
+    use ethrex_levm::vm::JIT_STATE;
 
     JIT_STATE.reset_for_testing();
 
@@ -333,7 +333,7 @@ fn test_g8_precompile_jit_matches_interpreter() {
 #[cfg(feature = "revmc-backend")]
 #[test]
 fn test_g8_precompile_fast_dispatch_metric_tracked() {
-    use ethrex_levm::jit::dispatch::JIT_STATE;
+    use ethrex_levm::vm::JIT_STATE;
     use std::sync::atomic::Ordering;
 
     JIT_STATE.reset_for_testing();
@@ -370,7 +370,7 @@ fn test_g8_precompile_fast_dispatch_metric_tracked() {
 #[cfg(feature = "revmc-backend")]
 #[test]
 fn test_g8_precompile_loop_jit_differential() {
-    use ethrex_levm::jit::dispatch::JIT_STATE;
+    use ethrex_levm::vm::JIT_STATE;
 
     JIT_STATE.reset_for_testing();
 
@@ -411,7 +411,7 @@ fn test_g8_precompile_loop_jit_differential() {
 #[cfg(feature = "revmc-backend")]
 #[test]
 fn test_g8_sha256_jit_differential() {
-    use ethrex_levm::jit::dispatch::JIT_STATE;
+    use ethrex_levm::vm::JIT_STATE;
 
     JIT_STATE.reset_for_testing();
 
