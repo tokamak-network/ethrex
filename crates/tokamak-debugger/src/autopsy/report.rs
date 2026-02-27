@@ -50,7 +50,7 @@ impl AutopsyReport {
     ) -> Self {
         let total_steps = steps.len();
         let execution_overview = Self::compute_overview(steps);
-        let key_steps = Self::identify_key_steps(&attack_patterns, &fund_flows);
+        let key_steps = Self::identify_key_steps(&attack_patterns, &fund_flows, steps);
         let affected_contracts = Self::collect_affected_contracts(
             steps,
             &attack_patterns,
@@ -97,7 +97,7 @@ impl AutopsyReport {
         // Execution Overview
         md.push_str("## Execution Overview\n\n");
         let ov = &self.execution_overview;
-        md.push_str("| Metric | Value |\n|--------|-------|\n");
+        md.push_str("| Metric | Value |\n|---|---|\n");
         md.push_str(&format!("| Max call depth | {} |\n", ov.max_call_depth));
         md.push_str(&format!("| Unique contracts | {} |\n", ov.unique_contracts));
         md.push_str(&format!(
@@ -159,22 +159,28 @@ impl AutopsyReport {
                 }
             }
             md.push_str("| Step | From | To | Value | Token |\n");
-            md.push_str("|------|------|-----|-------|-------|\n");
+            md.push_str("|---|---|---|---|---|\n");
             for flow in &self.fund_flows {
                 let token = flow
                     .token
                     .map(|t| format_addr(&t))
                     .unwrap_or_else(|| "ETH".to_string());
+                let value_str = if flow.value.is_zero() && flow.token.is_some() {
+                    "(undecoded)".to_string()
+                } else {
+                    format!("{}", flow.value)
+                };
                 md.push_str(&format!(
                     "| {} | {} | {} | {} | {} |\n",
                     flow.step_index,
                     format_addr(&flow.from),
                     format_addr(&flow.to),
-                    flow.value,
+                    value_str,
                     token
                 ));
             }
-            md.push('\n');
+            md.push_str("\n> **Note**: Only ERC-20 Transfer events and ETH value transfers are captured. ");
+            md.push_str("Flash loan amounts detected via callback analysis are not reflected here.\n\n");
         }
 
         // Storage Changes (with value interpretation)
@@ -187,19 +193,19 @@ impl AutopsyReport {
                 self.storage_diffs.len()
             ));
             md.push_str("| Contract | Slot | Old Value | New Value | Interpretation |\n");
-            md.push_str("|----------|------|-----------|----------|----------------|\n");
+            md.push_str("|---|---|---|---|---|\n");
             for diff in &self.storage_diffs {
                 let interp = interpret_value(&diff.old_value, &diff.new_value);
                 md.push_str(&format!(
-                    "| {} | `0x{:x}` | `{}` | `{}` | {} |\n",
+                    "| {} | `{}` | `{}` | `{}` | {} |\n",
                     format_addr(&diff.address),
-                    diff.slot,
+                    truncate_slot(&diff.slot),
                     diff.old_value,
                     diff.new_value,
                     interp
                 ));
             }
-            md.push('\n');
+            md.push_str("\n> Slot decoding requires contract ABI — raw hashes shown (truncated).\n\n");
         }
 
         // Key Steps
@@ -232,12 +238,22 @@ impl AutopsyReport {
                 self.affected_contracts.len()
             ));
             md.push_str("| Address | Role |\n");
-            md.push_str("|---------|------|\n");
+            md.push_str("|---|---|\n");
             for addr in &self.affected_contracts {
                 let role = self.contract_role(addr);
                 md.push_str(&format!("| {} | {} |\n", format_addr(addr), role));
             }
-            md.push('\n');
+            let has_unlabeled = self
+                .affected_contracts
+                .iter()
+                .any(|a| known_label(a).is_none());
+            if has_unlabeled {
+                md.push_str(
+                    "\n> Unlabeled contracts require manual identification via block explorer.\n\n",
+                );
+            } else {
+                md.push('\n');
+            }
         }
 
         // Suggested Fixes
@@ -265,22 +281,22 @@ impl AutopsyReport {
     }
 
     /// Determine the role of a contract in this transaction.
-    fn contract_role(&self, addr: &Address) -> &'static str {
-        // Check if it's a flash loan provider
+    fn contract_role(&self, addr: &Address) -> String {
+        // Check if it's a flash loan provider (heuristic)
         for pattern in &self.attack_patterns {
             if let AttackPattern::FlashLoan {
                 provider: Some(p), ..
             } = pattern
             {
                 if p == addr {
-                    return "Flash Loan Provider";
+                    return "Suspected Flash Loan Provider".to_string();
                 }
             }
         }
 
         // Check if it has storage modifications
         if self.storage_diffs.iter().any(|d| d.address == *addr) {
-            return "Storage Modified";
+            return "Storage Modified".to_string();
         }
 
         // Check if it's a fund flow participant
@@ -289,10 +305,10 @@ impl AutopsyReport {
             .iter()
             .any(|f| f.from == *addr || f.to == *addr)
         {
-            return "Fund Transfer";
+            return "Fund Transfer".to_string();
         }
 
-        "Interacted"
+        "Interacted".to_string()
     }
 
     /// Generate a verdict-first summary.
@@ -325,7 +341,7 @@ impl AutopsyReport {
                         .map(|l| format!(" ({l})"))
                         .unwrap_or_default();
                     parts.push(format!(
-                        "Flash loan provider: `0x{p:x}`{label}.",
+                        "Suspected flash loan provider: `0x{p:x}`{label} (heuristic — first CALL at entry depth).",
                     ));
                 }
             }
@@ -403,8 +419,9 @@ impl AutopsyReport {
 
                     parts.push(format!(
                         "This transaction exhibits a **Flash Loan** attack pattern. \
-                         The attacker used {provider_str} as the flash loan source, \
-                         executing the exploit within a callback spanning steps {borrow_step}–{repay_step} \
+                         The suspected provider is {provider_str} \
+                         (identified heuristically as the first external CALL at entry depth). \
+                         The exploit executed within a callback spanning steps {borrow_step}–{repay_step} \
                          ({callback_pct}% of total execution)."
                     ));
                 }
@@ -437,27 +454,32 @@ impl AutopsyReport {
             }
         }
 
-        // Timeline
-        if !self.key_steps.is_empty() {
-            parts.push("\n\n**Attack timeline:**".to_string());
-            for step in &self.key_steps {
-                parts.push(format!(
-                    "\n{}. Step {}: {}",
-                    match step.severity {
-                        Severity::Critical => "CRITICAL",
-                        Severity::Warning => "WARNING",
-                        Severity::Info => "INFO",
-                    },
-                    step.step_index,
-                    step.annotation
-                ));
-            }
+        // Storage impact analysis (unique insight, not timeline copy)
+        if !self.storage_diffs.is_empty() {
+            let storage_desc: Vec<String> = self
+                .storage_diffs
+                .iter()
+                .map(|diff| {
+                    let interp = interpret_value(&diff.old_value, &diff.new_value);
+                    format!(
+                        "{}: {}",
+                        format_addr(&diff.address),
+                        interp.to_lowercase()
+                    )
+                })
+                .collect();
+            parts.push(format!(
+                "\n\n**Storage impact:** {}.",
+                storage_desc.join("; ")
+            ));
         }
 
-        // Affected scope
+        // Affected scope + defense recommendation
         if !self.affected_contracts.is_empty() {
             parts.push(format!(
-                "\n\n{} contract(s) were involved, with {} storage modification(s).",
+                "\n\n{} contract(s) were involved, with {} storage modification(s). \
+                 Manual analysis of the affected contracts is recommended to confirm \
+                 the attack vector and assess full impact.",
                 self.affected_contracts.len(),
                 self.storage_diffs.len()
             ));
@@ -518,8 +540,13 @@ impl AutopsyReport {
         }
     }
 
-    fn identify_key_steps(patterns: &[AttackPattern], flows: &[FundFlow]) -> Vec<AnnotatedStep> {
+    fn identify_key_steps(
+        patterns: &[AttackPattern],
+        flows: &[FundFlow],
+        steps: &[StepRecord],
+    ) -> Vec<AnnotatedStep> {
         let mut key = Vec::new();
+        let mut used_indices = std::collections::HashSet::new();
 
         for pattern in patterns {
             match pattern {
@@ -528,11 +555,13 @@ impl AutopsyReport {
                     state_modified_step,
                     ..
                 } => {
+                    used_indices.insert(*reentrant_call_step);
                     key.push(AnnotatedStep {
                         step_index: *reentrant_call_step,
                         annotation: "Re-entrant call detected".to_string(),
                         severity: Severity::Critical,
                     });
+                    used_indices.insert(*state_modified_step);
                     key.push(AnnotatedStep {
                         step_index: *state_modified_step,
                         annotation: "State modified after re-entry".to_string(),
@@ -546,7 +575,6 @@ impl AutopsyReport {
                     provider,
                     ..
                 } => {
-                    // Fix W2: show "amount unknown" for callback-detected flash loans
                     let borrow_desc = if *borrow_amount > U256::zero() {
                         format!("Flash loan borrow: {borrow_amount} wei")
                     } else {
@@ -561,11 +589,13 @@ impl AutopsyReport {
                             "Flash loan callback entry{prov} (amount unknown — detected via depth analysis)"
                         )
                     };
+                    used_indices.insert(*borrow_step);
                     key.push(AnnotatedStep {
                         step_index: *borrow_step,
                         annotation: borrow_desc,
                         severity: Severity::Warning,
                     });
+                    used_indices.insert(*repay_step);
                     key.push(AnnotatedStep {
                         step_index: *repay_step,
                         annotation: "Flash loan callback exit / repayment".to_string(),
@@ -578,16 +608,19 @@ impl AutopsyReport {
                     oracle_read_after,
                     ..
                 } => {
+                    used_indices.insert(*oracle_read_before);
                     key.push(AnnotatedStep {
                         step_index: *oracle_read_before,
                         annotation: "Oracle price read (before manipulation)".to_string(),
                         severity: Severity::Warning,
                     });
+                    used_indices.insert(*swap_step);
                     key.push(AnnotatedStep {
                         step_index: *swap_step,
                         annotation: "Swap / price manipulation".to_string(),
                         severity: Severity::Critical,
                     });
+                    used_indices.insert(*oracle_read_after);
                     key.push(AnnotatedStep {
                         step_index: *oracle_read_after,
                         annotation: "Oracle price read (after manipulation)".to_string(),
@@ -595,6 +628,7 @@ impl AutopsyReport {
                     });
                 }
                 AttackPattern::AccessControlBypass { sstore_step, .. } => {
+                    used_indices.insert(*sstore_step);
                     key.push(AnnotatedStep {
                         step_index: *sstore_step,
                         annotation: "SSTORE without access control check".to_string(),
@@ -604,12 +638,75 @@ impl AutopsyReport {
             }
         }
 
-        // Annotate large ETH transfers
+        // Annotate ETH transfers
         for flow in flows {
             if flow.token.is_none() && flow.value > U256::zero() {
+                used_indices.insert(flow.step_index);
                 key.push(AnnotatedStep {
                     step_index: flow.step_index,
                     annotation: format!("ETH transfer: {} wei", flow.value),
+                    severity: Severity::Info,
+                });
+            }
+        }
+
+        // Annotate ERC-20 transfers
+        for flow in flows {
+            if flow.token.is_some() && !used_indices.contains(&flow.step_index) {
+                let token_str = flow
+                    .token
+                    .map(|t| format_addr(&t))
+                    .unwrap_or_default();
+                used_indices.insert(flow.step_index);
+                key.push(AnnotatedStep {
+                    step_index: flow.step_index,
+                    annotation: format!(
+                        "ERC-20 transfer ({}): {} → {}",
+                        token_str,
+                        format_addr(&flow.from),
+                        format_addr(&flow.to)
+                    ),
+                    severity: Severity::Info,
+                });
+            }
+        }
+
+        // Annotate SSTORE events (state changes)
+        for step in steps {
+            if step.opcode == 0x55 && !used_indices.contains(&step.step_index) {
+                let desc = if let Some(writes) = &step.storage_writes {
+                    if let Some(w) = writes.first() {
+                        let interp = interpret_value(&w.old_value, &w.new_value);
+                        format!("SSTORE on {}: {}", format_addr(&step.code_address), interp)
+                    } else {
+                        format!("SSTORE on {}", format_addr(&step.code_address))
+                    }
+                } else {
+                    format!("SSTORE on {}", format_addr(&step.code_address))
+                };
+                used_indices.insert(step.step_index);
+                key.push(AnnotatedStep {
+                    step_index: step.step_index,
+                    annotation: desc,
+                    severity: Severity::Info,
+                });
+            }
+        }
+
+        // Annotate CREATE/CREATE2 events
+        for step in steps {
+            if (step.opcode == 0xF0 || step.opcode == 0xF5)
+                && !used_indices.contains(&step.step_index)
+            {
+                let op_name = if step.opcode == 0xF0 {
+                    "CREATE"
+                } else {
+                    "CREATE2"
+                };
+                used_indices.insert(step.step_index);
+                key.push(AnnotatedStep {
+                    step_index: step.step_index,
+                    annotation: format!("{op_name} by {}", format_addr(&step.code_address)),
                     severity: Severity::Info,
                 });
             }
@@ -724,7 +821,10 @@ fn format_pattern_detail(pattern: &AttackPattern) -> String {
         } => {
             let mut detail = String::new();
             if let Some(p) = provider {
-                detail.push_str(&format!("- **Provider**: {}\n", format_addr(p)));
+                detail.push_str(&format!(
+                    "- **Suspected provider** (heuristic): {}\n",
+                    format_addr(p)
+                ));
             }
             if let Some(t) = token {
                 detail.push_str(&format!("- **Token**: {}\n", format_addr(t)));
@@ -783,6 +883,16 @@ fn format_addr(addr: &Address) -> String {
         format!("`0x{addr:x}` ({label})")
     } else {
         format!("`0x{addr:x}`")
+    }
+}
+
+/// Truncate a storage slot hash for display: `0xabcdef01…89abcdef`.
+fn truncate_slot(slot: &H256) -> String {
+    let hex = format!("{:x}", slot);
+    if hex.len() > 16 {
+        format!("0x{}…{}", &hex[..8], &hex[hex.len() - 8..])
+    } else {
+        format!("0x{hex}")
     }
 }
 
