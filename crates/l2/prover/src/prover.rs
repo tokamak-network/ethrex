@@ -85,6 +85,22 @@ pub async fn start_prover(config: ProverConfig) {
             let prover = Prover::new(OpenVmBackend::new(), &config, registry);
             prover.start().await;
         }
+        #[cfg(feature = "tokamak")]
+        BackendType::Tokamak => {
+            use crate::backend::TokamakBackend;
+            let backend = TokamakBackend::new(
+                config
+                    .tokamak_cli_path
+                    .clone()
+                    .unwrap_or_else(|| "tokamak-cli".into()),
+                config
+                    .tokamak_resource_dir
+                    .clone()
+                    .unwrap_or_else(|| ".".into()),
+            );
+            let prover = Prover::new(backend, &config, registry);
+            prover.start().await;
+        }
     }
 }
 

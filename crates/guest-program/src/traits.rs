@@ -10,6 +10,7 @@ pub mod backends {
     pub const ZISK: &str = "zisk";
     pub const OPENVM: &str = "openvm";
     pub const EXEC: &str = "exec";
+    pub const TOKAMAK: &str = "tokamak";
 }
 
 /// Error type for guest program operations.

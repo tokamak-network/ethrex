@@ -14,4 +14,12 @@ pub struct ProverConfig {
     /// Optional path to a TOML file that configures which guest programs to load.
     #[serde(default)]
     pub programs_config_path: Option<String>,
+    /// Path to the `tokamak-cli` binary.
+    #[cfg(feature = "tokamak")]
+    #[serde(default)]
+    pub tokamak_cli_path: Option<std::path::PathBuf>,
+    /// Path to the Tokamak resource directory (QAP, setup parameters, etc.).
+    #[cfg(feature = "tokamak")]
+    #[serde(default)]
+    pub tokamak_resource_dir: Option<std::path::PathBuf>,
 }

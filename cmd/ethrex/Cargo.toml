@@ -124,6 +124,7 @@ l2 = [
 ]
 l2-sql = ["ethrex-storage-rollup/sql"]
 sp1 = ["ethrex-prover/sp1", "ethrex-l2/sp1"]
+tokamak = ["ethrex-prover/tokamak"]
 gpu = ["ethrex-prover/gpu"]
 risc0 = ["ethrex-prover/risc0", "ethrex-l2/risc0"]
 
