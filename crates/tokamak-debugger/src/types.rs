@@ -1,7 +1,7 @@
 //! Core data types for the time-travel debugger.
 
 use bytes::Bytes;
-use ethrex_common::{Address, U256};
+use ethrex_common::{Address, H256, U256};
 use ethrex_levm::opcodes::Opcode;
 use serde::Serialize;
 
@@ -18,6 +18,15 @@ impl Default for ReplayConfig {
             stack_top_capture: 8,
         }
     }
+}
+
+/// A storage write captured during SSTORE execution.
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageWrite {
+    pub address: Address,
+    pub slot: H256,
+    pub old_value: U256,
+    pub new_value: U256,
 }
 
 /// A single opcode execution step captured during replay.
@@ -41,6 +50,18 @@ pub struct StepRecord {
     pub memory_size: usize,
     /// Address of the contract being executed.
     pub code_address: Address,
+
+    /// ETH value sent with CALL/CREATE opcodes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_value: Option<U256>,
+
+    /// Storage writes for SSTORE opcodes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_writes: Option<Vec<StorageWrite>>,
+
+    /// Log topics for LOG0-LOG4 opcodes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_topics: Option<Vec<H256>>,
 }
 
 impl StepRecord {
