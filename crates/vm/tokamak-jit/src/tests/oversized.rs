@@ -46,7 +46,7 @@ mod tests {
 
         let (contract_addr, sender_addr, accounts) =
             make_contract_accounts(code, FxHashMap::default());
-        let mut db = make_test_db(accounts);
+        let db = make_test_db(accounts);
         let env = make_test_env(sender_addr);
         let tx = make_test_tx(contract_addr, Bytes::new());
 
