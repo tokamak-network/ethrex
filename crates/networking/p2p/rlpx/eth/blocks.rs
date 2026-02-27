@@ -346,18 +346,21 @@ impl RLPxMessage for BlockBodies {
 
 // Custom extension for ZK Verifier Mode
 // https://github.com/ethereum/devp2p/blob/master/caps/eth.md (Extended)
+#[cfg(feature = "l2")]
 #[derive(Debug, Clone)]
 pub struct GetBlockProofs {
     pub id: u64,
     pub block_hashes: Vec<BlockHash>,
 }
 
+#[cfg(feature = "l2")]
 impl GetBlockProofs {
     pub fn new(id: u64, block_hashes: Vec<BlockHash>) -> Self {
         Self { block_hashes, id }
     }
 }
 
+#[cfg(feature = "l2")]
 impl RLPxMessage for GetBlockProofs {
     const CODE: u8 = 0x12; // Picked a code that doesn't collide with standard eth/68
     fn encode(&self, buf: &mut dyn BufMut) -> Result<(), RLPEncodeError> {
@@ -382,18 +385,21 @@ impl RLPxMessage for GetBlockProofs {
     }
 }
 
+#[cfg(feature = "l2")]
 #[derive(Debug, Clone)]
 pub struct BlockProofs {
     pub id: u64,
     pub block_proofs: Vec<ethrex_common::types::BlockProof>,
 }
 
+#[cfg(feature = "l2")]
 impl BlockProofs {
     pub fn new(id: u64, block_proofs: Vec<ethrex_common::types::BlockProof>) -> Self {
         Self { block_proofs, id }
     }
 }
 
+#[cfg(feature = "l2")]
 impl RLPxMessage for BlockProofs {
     const CODE: u8 = 0x13; // Picked a code that doesn't collide with standard eth/68
     fn encode(&self, buf: &mut dyn BufMut) -> Result<(), RLPEncodeError> {

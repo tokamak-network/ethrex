@@ -571,19 +571,16 @@ impl PeerHandler {
         let block_hashes_len = block_hashes.len();
         let request_id = rand::random();
         let request = RLPxMessage::L2(crate::rlpx::l2::messages::L2Message::GetBlockProofs(
-            crate::rlpx::eth::blocks::GetBlockProofs {
-                id: request_id,
-                block_hashes: block_hashes.to_vec(),
-            },
+            crate::rlpx::eth::blocks::GetBlockProofs::new(
+                request_id,
+                block_hashes.to_vec(),
+            ),
         ));
         match self.get_random_peer(&SUPPORTED_BASED_CAPABILITIES).await? {
             None => Ok(None),
             Some((peer_id, mut connection)) => {
                 if let Ok(RLPxMessage::L2(crate::rlpx::l2::messages::L2Message::BlockProofs(
-                    crate::rlpx::eth::blocks::BlockProofs {
-                        id: _,
-                        block_proofs,
-                    },
+                    response_msg
                 ))) = PeerHandler::make_request(
                     &mut self.peer_table,
                     peer_id,
@@ -593,6 +590,7 @@ impl PeerHandler {
                 )
                 .await
                 {
+                    let block_proofs = response_msg.block_proofs;
                     if !block_proofs.is_empty() && block_proofs.len() <= block_hashes_len {
                         self.peer_table.record_success(&peer_id).await?;
                         return Ok(Some(block_proofs));
