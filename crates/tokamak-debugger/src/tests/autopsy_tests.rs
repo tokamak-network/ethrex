@@ -471,13 +471,13 @@ fn test_trace_mixed_eth_and_erc20() {
 
 #[test]
 fn test_report_empty() {
-    let report = AutopsyReport::build(H256::zero(), 12345, 0, vec![], vec![], vec![]);
+    let report = AutopsyReport::build(H256::zero(), 12345, &[], vec![], vec![], vec![]);
     assert_eq!(report.total_steps, 0);
     assert!(report.attack_patterns.is_empty());
     assert!(report.fund_flows.is_empty());
     assert!(report.key_steps.is_empty());
     assert!(report.suggested_fixes.is_empty());
-    assert!(report.summary.contains("No attack patterns"));
+    assert!(report.summary.contains("No known attack patterns"));
 }
 
 #[test]
@@ -489,7 +489,7 @@ fn test_report_with_reentrancy() {
         call_depth_at_entry: 1,
     }];
 
-    let report = AutopsyReport::build(H256::zero(), 100, 50, patterns, vec![], vec![]);
+    let report = AutopsyReport::build(H256::zero(), 100, &[], patterns, vec![], vec![]);
 
     assert_eq!(report.attack_patterns.len(), 1);
     assert!(report.summary.contains("Reentrancy"));
@@ -504,7 +504,7 @@ fn test_report_with_reentrancy() {
 
 #[test]
 fn test_report_json_roundtrip() {
-    let report = AutopsyReport::build(H256::zero(), 100, 10, vec![], vec![], vec![]);
+    let report = AutopsyReport::build(H256::zero(), 100, &[], vec![], vec![], vec![]);
     let json = report.to_json().expect("should serialize");
     assert!(json.contains("\"block_number\""));
     assert!(json.contains("\"total_steps\""));
@@ -533,11 +533,11 @@ fn test_report_markdown_sections() {
         new_value: U256::from(1),
     }];
 
-    let report = AutopsyReport::build(H256::zero(), 100, 20, patterns, flows, diffs);
+    let report = AutopsyReport::build(H256::zero(), 100, &[], patterns, flows, diffs);
     let md = report.to_markdown();
 
     assert!(md.contains("# Smart Contract Autopsy Report"));
-    assert!(md.contains("## Attack Patterns Detected"));
+    assert!(md.contains("## Attack Patterns"));
     assert!(md.contains("## Fund Flow"));
     assert!(md.contains("## Storage Changes"));
     assert!(md.contains("## Key Steps"));
@@ -559,7 +559,7 @@ fn test_report_key_steps_sorted() {
         },
     ];
 
-    let report = AutopsyReport::build(H256::zero(), 100, 50, patterns, vec![], vec![]);
+    let report = AutopsyReport::build(H256::zero(), 100, &[], patterns, vec![], vec![]);
 
     // Key steps should be sorted by step_index
     let indices: Vec<usize> = report.key_steps.iter().map(|s| s.step_index).collect();
@@ -587,7 +587,7 @@ fn test_report_affected_contracts_deduped() {
         },
     ];
 
-    let report = AutopsyReport::build(H256::zero(), 100, 10, vec![], flows, vec![]);
+    let report = AutopsyReport::build(H256::zero(), 100, &[], vec![], flows, vec![]);
 
     // addr(1) should appear only once
     let count = report
@@ -607,7 +607,7 @@ fn test_report_severity_levels() {
         call_depth_at_entry: 1,
     }];
 
-    let report = AutopsyReport::build(H256::zero(), 100, 50, patterns, vec![], vec![]);
+    let report = AutopsyReport::build(H256::zero(), 100, &[], patterns, vec![], vec![]);
 
     assert!(
         report

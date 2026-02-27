@@ -305,7 +305,7 @@ fn run_autopsy(
     let report = AutopsyReport::build(
         tx_hash,
         block_num,
-        trace.steps.len(),
+        &trace.steps,
         patterns,
         flows,
         storage_diffs,
