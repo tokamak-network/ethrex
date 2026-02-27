@@ -3,9 +3,23 @@
 use ethrex_common::{Address, H256, U256};
 use serde::Serialize;
 
-use crate::types::StorageWrite;
+use crate::types::{StepRecord, StorageWrite};
 
 use super::types::{AnnotatedStep, AttackPattern, FundFlow, Severity};
+
+/// Execution statistics derived from the opcode trace.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExecutionOverview {
+    pub max_call_depth: usize,
+    pub unique_contracts: usize,
+    pub call_count: usize,
+    pub sstore_count: usize,
+    pub sload_count: usize,
+    pub log_count: usize,
+    pub create_count: usize,
+    /// Top 5 most frequent opcodes: (opcode_byte, name, count)
+    pub top_opcodes: Vec<(u8, String, usize)>,
+}
 
 /// Complete autopsy report for a single transaction.
 #[derive(Debug, Clone, Serialize)]
@@ -13,6 +27,7 @@ pub struct AutopsyReport {
     pub tx_hash: H256,
     pub block_number: u64,
     pub summary: String,
+    pub execution_overview: ExecutionOverview,
     pub attack_patterns: Vec<AttackPattern>,
     pub fund_flows: Vec<FundFlow>,
     pub storage_diffs: Vec<StorageWrite>,
@@ -27,20 +42,23 @@ impl AutopsyReport {
     pub fn build(
         tx_hash: H256,
         block_number: u64,
-        total_steps: usize,
+        steps: &[StepRecord],
         attack_patterns: Vec<AttackPattern>,
         fund_flows: Vec<FundFlow>,
         storage_diffs: Vec<StorageWrite>,
     ) -> Self {
+        let total_steps = steps.len();
+        let execution_overview = Self::compute_overview(steps);
         let key_steps = Self::identify_key_steps(&attack_patterns, &fund_flows);
         let affected_contracts = Self::collect_affected_contracts(&fund_flows, &storage_diffs);
         let suggested_fixes = Self::suggest_fixes(&attack_patterns);
-        let summary = Self::generate_summary(&attack_patterns, &fund_flows);
+        let summary = Self::generate_summary(&attack_patterns, &fund_flows, &execution_overview);
 
         Self {
             tx_hash,
             block_number,
             summary,
+            execution_overview,
             attack_patterns,
             fund_flows,
             storage_diffs,
@@ -70,9 +88,37 @@ impl AutopsyReport {
         md.push_str(&self.summary);
         md.push_str("\n\n");
 
-        // Attack Patterns
-        if !self.attack_patterns.is_empty() {
-            md.push_str("## Attack Patterns Detected\n\n");
+        // Execution Overview (always shown)
+        md.push_str("## Execution Overview\n\n");
+        let ov = &self.execution_overview;
+        md.push_str(&format!("| Metric | Value |\n|--------|-------|\n"));
+        md.push_str(&format!("| Max call depth | {} |\n", ov.max_call_depth));
+        md.push_str(&format!("| Unique contracts | {} |\n", ov.unique_contracts));
+        md.push_str(&format!(
+            "| CALL/STATICCALL/DELEGATECALL | {} |\n",
+            ov.call_count
+        ));
+        md.push_str(&format!("| CREATE/CREATE2 | {} |\n", ov.create_count));
+        md.push_str(&format!("| SLOAD | {} |\n", ov.sload_count));
+        md.push_str(&format!("| SSTORE | {} |\n", ov.sstore_count));
+        md.push_str(&format!("| LOG0-LOG4 | {} |\n\n", ov.log_count));
+
+        if !ov.top_opcodes.is_empty() {
+            md.push_str("**Top opcodes**: ");
+            let parts: Vec<String> = ov
+                .top_opcodes
+                .iter()
+                .map(|(_, name, count)| format!("{name}({count})"))
+                .collect();
+            md.push_str(&parts.join(", "));
+            md.push_str("\n\n");
+        }
+
+        // Attack Patterns (always shown)
+        md.push_str("## Attack Patterns\n\n");
+        if self.attack_patterns.is_empty() {
+            md.push_str("No known attack patterns detected.\n\n");
+        } else {
             for (i, pattern) in self.attack_patterns.iter().enumerate() {
                 md.push_str(&format!(
                     "### Pattern {} — {}\n\n",
@@ -84,9 +130,11 @@ impl AutopsyReport {
             }
         }
 
-        // Fund Flows
-        if !self.fund_flows.is_empty() {
-            md.push_str("## Fund Flow\n\n");
+        // Fund Flows (always shown)
+        md.push_str("## Fund Flow\n\n");
+        if self.fund_flows.is_empty() {
+            md.push_str("No fund transfers detected.\n\n");
+        } else {
             md.push_str("| Step | From | To | Value | Token |\n");
             md.push_str("|------|------|-----|-------|-------|\n");
             for flow in &self.fund_flows {
@@ -102,9 +150,11 @@ impl AutopsyReport {
             md.push('\n');
         }
 
-        // Storage Diffs
-        if !self.storage_diffs.is_empty() {
-            md.push_str("## Storage Changes\n\n");
+        // Storage Diffs (always shown)
+        md.push_str("## Storage Changes\n\n");
+        if self.storage_diffs.is_empty() {
+            md.push_str("No storage modifications detected.\n\n");
+        } else {
             md.push_str("| Contract | Slot | Old Value | New Value |\n");
             md.push_str("|----------|------|-----------|----------|\n");
             for diff in &self.storage_diffs {
@@ -116,14 +166,16 @@ impl AutopsyReport {
             md.push('\n');
         }
 
-        // Key Steps
-        if !self.key_steps.is_empty() {
-            md.push_str("## Key Steps\n\n");
+        // Key Steps (always shown)
+        md.push_str("## Key Steps\n\n");
+        if self.key_steps.is_empty() {
+            md.push_str("No key steps identified.\n\n");
+        } else {
             for step in &self.key_steps {
                 let icon = match step.severity {
-                    Severity::Critical => "🔴",
-                    Severity::Warning => "🟡",
-                    Severity::Info => "🔵",
+                    Severity::Critical => "[CRITICAL]",
+                    Severity::Warning => "[WARNING]",
+                    Severity::Info => "[INFO]",
                 };
                 md.push_str(&format!(
                     "- {icon} **Step {}**: {}\n",
@@ -133,18 +185,22 @@ impl AutopsyReport {
             md.push('\n');
         }
 
-        // Affected Contracts
-        if !self.affected_contracts.is_empty() {
-            md.push_str("## Affected Contracts\n\n");
+        // Affected Contracts (always shown)
+        md.push_str("## Affected Contracts\n\n");
+        if self.affected_contracts.is_empty() {
+            md.push_str("None identified.\n\n");
+        } else {
             for addr in &self.affected_contracts {
                 md.push_str(&format!("- `0x{addr:x}`\n"));
             }
             md.push('\n');
         }
 
-        // Suggested Fixes
-        if !self.suggested_fixes.is_empty() {
-            md.push_str("## Suggested Fixes\n\n");
+        // Suggested Fixes (always shown)
+        md.push_str("## Suggested Fixes\n\n");
+        if self.suggested_fixes.is_empty() {
+            md.push_str("No specific fixes suggested (no attack patterns detected).\n\n");
+        } else {
             for fix in &self.suggested_fixes {
                 md.push_str(&format!("- {fix}\n"));
             }
@@ -154,12 +210,18 @@ impl AutopsyReport {
         md
     }
 
-    fn generate_summary(patterns: &[AttackPattern], flows: &[FundFlow]) -> String {
-        if patterns.is_empty() && flows.is_empty() {
-            return "No attack patterns or fund flows detected.".to_string();
-        }
-
+    fn generate_summary(
+        patterns: &[AttackPattern],
+        flows: &[FundFlow],
+        overview: &ExecutionOverview,
+    ) -> String {
         let mut parts = Vec::new();
+
+        // Execution context
+        parts.push(format!(
+            "Execution reached depth {} across {} contract(s) with {} external calls.",
+            overview.max_call_depth, overview.unique_contracts, overview.call_count
+        ));
 
         if !patterns.is_empty() {
             let names: Vec<&str> = patterns.iter().map(pattern_name).collect();
@@ -189,7 +251,68 @@ impl AutopsyReport {
             ));
         }
 
+        if overview.sstore_count > 0 {
+            parts.push(format!(
+                "{} storage write(s).",
+                overview.sstore_count
+            ));
+        }
+
+        if patterns.is_empty() && flows.is_empty() {
+            parts.push("No known attack patterns detected.".to_string());
+        }
+
         parts.join(" ")
+    }
+
+    fn compute_overview(steps: &[StepRecord]) -> ExecutionOverview {
+        use std::collections::{HashMap, HashSet};
+
+        let mut max_depth: usize = 0;
+        let mut contracts = HashSet::new();
+        let mut call_count = 0usize;
+        let mut sstore_count = 0usize;
+        let mut sload_count = 0usize;
+        let mut log_count = 0usize;
+        let mut create_count = 0usize;
+        let mut opcode_freq: HashMap<u8, usize> = HashMap::new();
+
+        for step in steps {
+            if (step.depth as usize) > max_depth {
+                max_depth = step.depth as usize;
+            }
+            contracts.insert(step.code_address);
+            *opcode_freq.entry(step.opcode).or_default() += 1;
+
+            match step.opcode {
+                0xF1 | 0xF2 | 0xF4 | 0xFA => call_count += 1, // CALL, CALLCODE, DELEGATECALL, STATICCALL
+                0xF0 | 0xF5 => create_count += 1,               // CREATE, CREATE2
+                0x54 => sload_count += 1,                        // SLOAD
+                0x55 => sstore_count += 1,                       // SSTORE
+                0xA0..=0xA4 => log_count += 1,                   // LOG0-LOG4
+                _ => {}
+            }
+        }
+
+        // Top 5 opcodes
+        let mut freq_vec: Vec<(u8, usize)> = opcode_freq.into_iter().collect();
+        freq_vec.sort_by(|a, b| b.1.cmp(&a.1));
+        let top_opcodes: Vec<(u8, String, usize)> = freq_vec
+            .into_iter()
+            .take(5)
+            .map(|(op, count)| (op, opcode_name(op).to_string(), count))
+            .collect();
+
+        ExecutionOverview {
+            max_call_depth: max_depth,
+            unique_contracts: contracts.len(),
+            call_count,
+            sstore_count,
+            sload_count,
+            log_count,
+            create_count,
+            top_opcodes,
+        }
     }
 
     fn identify_key_steps(patterns: &[AttackPattern], flows: &[FundFlow]) -> Vec<AnnotatedStep> {
@@ -383,5 +506,37 @@ fn format_pattern_detail(pattern: &AttackPattern) -> String {
                  - **Contract**: `0x{contract:x}`\n"
             )
         }
+    }
+}
+
+fn opcode_name(op: u8) -> &'static str {
+    match op {
+        0x00 => "STOP", 0x01 => "ADD", 0x02 => "MUL", 0x03 => "SUB",
+        0x04 => "DIV", 0x05 => "SDIV", 0x06 => "MOD", 0x10 => "LT",
+        0x11 => "GT", 0x14 => "EQ", 0x15 => "ISZERO", 0x16 => "AND",
+        0x17 => "OR", 0x18 => "XOR", 0x19 => "NOT", 0x1A => "BYTE",
+        0x1B => "SHL", 0x1C => "SHR", 0x1D => "SAR",
+        0x20 => "KECCAK256", 0x30 => "ADDRESS", 0x31 => "BALANCE",
+        0x32 => "ORIGIN", 0x33 => "CALLER", 0x34 => "CALLVALUE",
+        0x35 => "CALLDATALOAD", 0x36 => "CALLDATASIZE", 0x37 => "CALLDATACOPY",
+        0x38 => "CODESIZE", 0x39 => "CODECOPY", 0x3A => "GASPRICE",
+        0x3B => "EXTCODESIZE", 0x3C => "EXTCODECOPY", 0x3D => "RETURNDATASIZE",
+        0x3E => "RETURNDATACOPY", 0x3F => "EXTCODEHASH",
+        0x40 => "BLOCKHASH", 0x41 => "COINBASE", 0x42 => "TIMESTAMP",
+        0x43 => "NUMBER", 0x44 => "PREVRANDAO", 0x45 => "GASLIMIT",
+        0x46 => "CHAINID", 0x47 => "SELFBALANCE",
+        0x50 => "POP", 0x51 => "MLOAD", 0x52 => "MSTORE",
+        0x53 => "MSTORE8", 0x54 => "SLOAD", 0x55 => "SSTORE",
+        0x56 => "JUMP", 0x57 => "JUMPI", 0x58 => "PC",
+        0x59 => "MSIZE", 0x5A => "GAS", 0x5B => "JUMPDEST",
+        0x5F => "PUSH0",
+        0x60..=0x7F => "PUSHn", 0x80..=0x8F => "DUPn", 0x90..=0x9F => "SWAPn",
+        0xA0 => "LOG0", 0xA1 => "LOG1", 0xA2 => "LOG2",
+        0xA3 => "LOG3", 0xA4 => "LOG4",
+        0xF0 => "CREATE", 0xF1 => "CALL", 0xF2 => "CALLCODE",
+        0xF3 => "RETURN", 0xF4 => "DELEGATECALL", 0xF5 => "CREATE2",
+        0xFA => "STATICCALL", 0xFD => "REVERT", 0xFE => "INVALID",
+        0xFF => "SELFDESTRUCT",
+        _ => "UNKNOWN",
     }
 }
