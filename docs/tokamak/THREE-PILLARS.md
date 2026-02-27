@@ -25,7 +25,7 @@ Three pillars form a closed feedback loop: JIT compiles EVM bytecode to native c
 
 ## Pillar 1: JIT-Compiled EVM
 
-**Status**: ~88% complete | **Codebase**: ~9,266 lines Rust | **Tests**: 187+
+**Status**: ~92% complete | **Codebase**: ~9,266 lines Rust | **Tests**: 138+
 
 > "Be the fastest."
 
@@ -38,8 +38,8 @@ Tokamak JIT compiles frequently-executed EVM bytecodes into native machine code 
 | Component | Location | Lines | Tests |
 |-----------|----------|-------|-------|
 | LEVM JIT Infrastructure | `crates/vm/levm/src/jit/` (9 files) | 2,773 | 80 |
-| tokamak-jit Crate | `crates/vm/tokamak-jit/src/` (14 files) | 6,493 | 73 |
-| **Total** | | **9,266** | **153** |
+| tokamak-jit Crate | `crates/vm/tokamak-jit/src/` (14 files) | 6,493 | 58 |
+| **Total** | | **9,266** | **138** |
 
 ### Key Achievements
 
@@ -223,7 +223,7 @@ PR opened/updated
 
 ## Pillar 3: Time-Travel Debugger
 
-**Status**: ~85% complete | **Codebase**: ~1,830 lines Rust | **Tests**: 51
+**Status**: ~85% complete | **Codebase**: ~1,830 lines Rust | **Tests**: 55
 
 > "Show exactly why."
 
@@ -235,9 +235,9 @@ Records every opcode execution during a transaction, then allows developers to n
 
 | Component | Location | Lines | Tests |
 |-----------|----------|-------|-------|
-| tokamak-debugger Crate | `crates/tokamak-debugger/src/` (14 files) | 1,803 | 45 |
+| tokamak-debugger Crate | `crates/tokamak-debugger/src/` (14 files) | 1,803 | 55 |
 | LEVM Debugger Hook | `crates/vm/levm/src/debugger_hook.rs` | 27 | — |
-| **Total** | | **1,830** | **45** |
+| **Total** | | **1,830** | **55** |
 
 ### Key Achievements
 
@@ -294,10 +294,10 @@ The debugger directly feeds back into JIT optimization:
 
 | Pillar | Completion | Lines | Tests | Phases |
 |--------|-----------|-------|-------|--------|
-| JIT-Compiled EVM | **~88%** | 9,266+ | 187+ | 2-8, B-1/2/3, D-1/2/3, F-4, G-1/2/3/4/5/6/7/8 |
+| JIT-Compiled EVM | **~92%** | 9,266+ | 138+ | 2-8, B-1/2/3, D-1/2/3, F-4, G-1/2/3/4/5/6/7/8 |
 | Continuous Benchmarking | **~80%** | 4,411 | 134 | 8-9, C-1/2/3, F-1/2 |
-| Time-Travel Debugger | **~85%** | 1,830 | 45 | E-1/2/3 |
-| **Total** | **~85%** | **15,507+** | **366+** | |
+| Time-Travel Debugger | **~85%** | 1,830 | 55 | E-1/2/3 |
+| **Total** | **~87%** | **15,507+** | **327+** | |
 
 Plus L2 integration scaffolding (F-3): 7 tests connecting JIT policy to L2 hook system.
 

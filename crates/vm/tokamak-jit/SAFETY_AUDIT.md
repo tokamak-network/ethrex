@@ -223,6 +223,44 @@ by default. Incorrect Send/Sync can cause data races.
 executable memory. Consider wrapping in a newtype that documents the
 Send/Sync invariants.
 
+### Parallel Compilation (G-5, 2026-02-27)
+
+The parallel compilation thread pool (`CompilerThreadPool` in `compiler_thread.rs`) introduces
+multi-worker LLVM compilation using `crossbeam-channel` for work distribution.
+
+**Safety notes**:
+1. **Thread-local LLVM context**: Each worker thread maintains its own `thread_local! ArenaState`,
+   preserving LLVM's thread-affinity requirement. ArenaCompiler is created and dropped on the
+   same thread.
+2. **Deduplication guard**: `compiling_in_progress` set in `JitState` prevents duplicate
+   compilations when multiple workers could receive the same bytecode hash.
+3. **No new unsafe code**: Uses `crossbeam_channel::unbounded()` (safe) and existing
+   `ArenaCompiler` (safe wrapper around unsafe LLVM compilation).
+4. **Handler function**: Wrapped in `Arc<F>` where `F: Fn + Send + Sync + 'static` —
+   thread-safe shared access across workers.
+
+**Risk assessment**: LOW — thread safety guaranteed by crossbeam-channel primitives and
+thread-local LLVM context isolation.
+
+### LRU Cache Eviction (G-6, 2026-02-27)
+
+The LRU cache eviction (`cache.rs`) replaces FIFO `VecDeque` ordering with per-entry
+`AtomicU64` timestamps for least-recently-used eviction.
+
+**Safety notes**:
+1. **Atomic hot path**: `get()` updates `AtomicU64` last_access under read lock only —
+   no write lock needed for cache hits (~2-5ns overhead from 2 atomic ops).
+2. **`access_counter: Arc<AtomicU64>`**: Monotonic counter lives outside `RwLock`, shared
+   across clones. `fetch_add(1, Relaxed)` is safe for timestamp generation (exact ordering
+   not required, only relative recency).
+3. **CacheEntry wrapper**: Private struct `{ code: Arc<CompiledCode>, last_access: AtomicU64 }` —
+   `AtomicU64` is `Send + Sync`, `Arc<CompiledCode>` inherits Send/Sync from manual impls (#8-9).
+4. **Eviction scan**: O(n) `min_by_key` over `max_cache_entries` (1024) on `insert()` only —
+   acceptable since insert happens after LLVM compilation (~100ms), not on hot path.
+
+**Risk assessment**: LOW — no new unsafe code. AtomicU64 operations are well-defined,
+and the `Arc<AtomicU64>` pattern avoids lock contention on the read path.
+
 ### Precompile Fast Dispatch (G-8, 2026-02-27)
 
 The precompile fast dispatch path adds metric tracking when JIT-compiled parent contracts

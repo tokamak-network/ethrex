@@ -320,7 +320,7 @@
 - Removed `insertion_order: VecDeque<CacheKey>` entirely ✅
 - **Verification**: 9 cache unit tests + 5 integration tests, 53 total tokamak-jit tests ✅
 - **Dependency**: G-1 ✅
-- **Completed**: 2026-02-27 — AtomicU64 LRU eviction replacing FIFO
+- **Completed**: 2026-02-27 — AtomicU64 LRU eviction replacing FIFO (3b2861bc2)
 
 ### G-7. Constant Folding Enhancement — Expanded Opcodes [P2] ✅ DONE
 - Expanded D-3 optimizer from 6 binary opcodes to 20 binary + 2 unary opcodes (22 total) ✅
@@ -342,7 +342,7 @@
 - Metric tracking in `handle_jit_subcall()` precompile path ✅
 - **Verification**: 9 tests (5 interpreter correctness + 4 JIT differential), 58 total tokamak-jit tests ✅
 - **Dependency**: None (independent)
-- **Completed**: 2026-02-27 — Precompile fast dispatch + metric tracking
+- **Completed**: 2026-02-27 — Precompile fast dispatch + metric tracking (ccf34e6b2)
 
 ---
 
