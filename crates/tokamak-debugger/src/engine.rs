@@ -123,4 +123,9 @@ impl ReplayEngine {
     pub fn trace(&self) -> &ReplayTrace {
         &self.trace
     }
+
+    /// Consume the engine and return the owned trace.
+    pub fn into_trace(self) -> ReplayTrace {
+        self.trace
+    }
 }

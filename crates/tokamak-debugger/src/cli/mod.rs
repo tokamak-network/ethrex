@@ -11,7 +11,9 @@ use clap::{Parser, Subcommand};
 use ethrex_common::{
     Address, U256,
     constants::EMPTY_TRIE_HASH,
-    types::{Account, BlockHeader, Code, EIP1559Transaction, Transaction, TxKind},
+    types::{
+        Account, BlockHeader, Code, EIP1559Transaction, LegacyTransaction, Transaction, TxKind,
+    },
 };
 use ethrex_levm::{Environment, db::gen_db::GeneralizedDatabase};
 use rustc_hash::FxHashMap;
@@ -42,12 +44,40 @@ pub enum InputMode {
         #[arg(long, default_value = "9223372036854775806")]
         gas_limit: u64,
     },
+
+    /// Analyze a historical transaction (Smart Contract Autopsy Lab)
+    #[cfg(feature = "autopsy")]
+    #[command(name = "autopsy")]
+    Autopsy {
+        /// Transaction hash to analyze
+        #[arg(long)]
+        tx_hash: String,
+
+        /// Ethereum archive node RPC URL
+        #[arg(long)]
+        rpc_url: String,
+
+        /// Block number (auto-detected from tx if omitted)
+        #[arg(long)]
+        block_number: Option<u64>,
+
+        /// Output format: json or markdown
+        #[arg(long, default_value = "markdown")]
+        format: String,
+    },
 }
 
 /// Run the debugger CLI.
 pub fn run(args: Args) -> Result<(), DebuggerError> {
     match args.command {
         InputMode::Bytecode { code, gas_limit } => run_bytecode(&code, gas_limit),
+        #[cfg(feature = "autopsy")]
+        InputMode::Autopsy {
+            tx_hash,
+            rpc_url,
+            block_number,
+            format,
+        } => run_autopsy(&tx_hash, &rpc_url, block_number, &format),
     }
 }
 
@@ -122,4 +152,178 @@ fn make_cli_db(
         Arc::new(vm_db),
         cache,
     ))
+}
+
+#[cfg(feature = "autopsy")]
+fn run_autopsy(
+    tx_hash_hex: &str,
+    rpc_url: &str,
+    block_number_override: Option<u64>,
+    output_format: &str,
+) -> Result<(), DebuggerError> {
+    use ethrex_common::H256;
+
+    use crate::autopsy::{
+        classifier::AttackClassifier,
+        enrichment::{collect_sstore_slots, enrich_storage_writes},
+        fund_flow::FundFlowTracer,
+        remote_db::RemoteVmDatabase,
+        report::AutopsyReport,
+        rpc_client::EthRpcClient,
+    };
+
+    eprintln!("[autopsy] Fetching transaction...");
+
+    // Parse tx hash
+    let hash_hex = tx_hash_hex.strip_prefix("0x").unwrap_or(tx_hash_hex);
+    let hash_bytes: Vec<u8> = (0..hash_hex.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&hash_hex[i..i + 2], 16)
+                .map_err(|e| DebuggerError::Rpc(format!("invalid tx hash: {e}")))
+        })
+        .collect::<Result<_, _>>()?;
+    if hash_bytes.len() != 32 {
+        return Err(DebuggerError::Rpc("tx hash must be 32 bytes".into()));
+    }
+    let tx_hash = H256::from_slice(&hash_bytes);
+
+    // Use a temporary client to fetch the transaction and determine block
+    let temp_client = EthRpcClient::new(rpc_url, 0);
+    let rpc_tx = temp_client
+        .eth_get_transaction_by_hash(tx_hash)
+        .map_err(|e| DebuggerError::Rpc(format!("fetch tx: {e}")))?;
+
+    let block_num = block_number_override
+        .or(rpc_tx.block_number)
+        .ok_or_else(|| {
+            DebuggerError::Rpc("could not determine block number — provide --block-number".into())
+        })?;
+
+    eprintln!("[autopsy] Block #{block_num}, setting up remote database...");
+
+    // Create remote database at the block BEFORE the tx
+    let pre_block = block_num.saturating_sub(1);
+    let remote_db = RemoteVmDatabase::from_rpc(rpc_url, pre_block)
+        .map_err(|e| DebuggerError::Rpc(format!("remote db: {e}")))?;
+
+    // Fetch block header for environment
+    let client = remote_db.client();
+    let block_header = client
+        .eth_get_block_by_number(block_num)
+        .map_err(|e| DebuggerError::Rpc(format!("fetch block: {e}")))?;
+
+    // Build environment with proper gas fields
+    let base_fee = block_header.base_fee_per_gas.unwrap_or(0);
+    let effective_gas_price = if let Some(max_fee) = rpc_tx.max_fee_per_gas {
+        // EIP-1559: min(max_fee, base_fee + max_priority_fee)
+        let priority = rpc_tx.max_priority_fee_per_gas.unwrap_or(0);
+        std::cmp::min(max_fee, base_fee + priority)
+    } else {
+        // Legacy: gas_price
+        rpc_tx.gas_price.unwrap_or(0)
+    };
+
+    let env = Environment {
+        origin: rpc_tx.from,
+        gas_limit: rpc_tx.gas,
+        block_gas_limit: block_header.gas_limit,
+        block_number: block_header.number.into(),
+        coinbase: block_header.coinbase,
+        timestamp: block_header.timestamp.into(),
+        base_fee_per_gas: U256::from(base_fee),
+        gas_price: U256::from(effective_gas_price),
+        tx_max_fee_per_gas: rpc_tx.max_fee_per_gas.map(U256::from),
+        tx_max_priority_fee_per_gas: rpc_tx.max_priority_fee_per_gas.map(U256::from),
+        tx_nonce: rpc_tx.nonce,
+        ..Default::default()
+    };
+
+    // Build transaction — detect legacy vs EIP-1559 by checking max_fee_per_gas
+    let tx_to = rpc_tx.to.map(TxKind::Call).unwrap_or(TxKind::Create);
+    let tx_data = Bytes::from(rpc_tx.input);
+    let tx = if let Some(max_fee) = rpc_tx.max_fee_per_gas {
+        Transaction::EIP1559Transaction(EIP1559Transaction {
+            to: tx_to,
+            data: tx_data,
+            value: rpc_tx.value,
+            nonce: rpc_tx.nonce,
+            gas_limit: rpc_tx.gas,
+            max_fee_per_gas: max_fee,
+            max_priority_fee_per_gas: rpc_tx.max_priority_fee_per_gas.unwrap_or(0),
+            ..Default::default()
+        })
+    } else {
+        Transaction::LegacyTransaction(LegacyTransaction {
+            to: tx_to,
+            data: tx_data,
+            value: rpc_tx.value,
+            nonce: rpc_tx.nonce,
+            gas: rpc_tx.gas,
+            gas_price: U256::from(rpc_tx.gas_price.unwrap_or(0)),
+            ..Default::default()
+        })
+    };
+
+    eprintln!("[autopsy] Replaying transaction...");
+
+    let mut db = GeneralizedDatabase::new(Arc::new(remote_db));
+    let engine = ReplayEngine::record(&mut db, env, &tx, ReplayConfig::default())?;
+
+    eprintln!("[autopsy] Recorded {} steps. Analyzing...", engine.len());
+
+    // Enrich storage writes with old_value
+    let mut trace = engine.into_trace();
+    let slots = collect_sstore_slots(&trace.steps);
+    let mut initial_values = rustc_hash::FxHashMap::default();
+
+    // Fetch initial storage values for SSTORE slots from the pre-block state
+    let pre_client = EthRpcClient::new(rpc_url, pre_block);
+    for (addr, slot) in &slots {
+        if let Ok(val) = pre_client.eth_get_storage_at(*addr, *slot) {
+            initial_values.insert((*addr, *slot), val);
+        }
+    }
+    enrich_storage_writes(&mut trace, &initial_values);
+
+    // Classify attack patterns
+    let patterns = AttackClassifier::classify(&trace.steps);
+
+    // Trace fund flows
+    let flows = FundFlowTracer::trace(&trace.steps);
+
+    // Collect storage diffs
+    let storage_diffs: Vec<_> = trace
+        .steps
+        .iter()
+        .filter_map(|s| s.storage_writes.as_ref())
+        .flatten()
+        .cloned()
+        .collect();
+
+    // Build report
+    let report = AutopsyReport::build(
+        tx_hash,
+        block_num,
+        trace.steps.len(),
+        patterns,
+        flows,
+        storage_diffs,
+    );
+
+    // Output
+    match output_format {
+        "json" => {
+            let json = report
+                .to_json()
+                .map_err(|e| DebuggerError::Report(format!("JSON serialization: {e}")))?;
+            println!("{json}");
+        }
+        _ => {
+            println!("{}", report.to_markdown());
+        }
+    }
+
+    eprintln!("[autopsy] Done.");
+    Ok(())
 }

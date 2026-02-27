@@ -10,3 +10,6 @@ mod serde_tests;
 
 #[cfg(feature = "cli")]
 mod cli_tests;
+
+#[cfg(feature = "autopsy")]
+mod autopsy_tests;

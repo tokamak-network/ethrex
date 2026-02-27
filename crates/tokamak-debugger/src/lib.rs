@@ -12,5 +12,8 @@ pub mod types;
 #[cfg(feature = "cli")]
 pub mod cli;
 
+#[cfg(feature = "autopsy")]
+pub mod autopsy;
+
 #[cfg(test)]
 mod tests;

@@ -13504,10 +13504,12 @@ dependencies = [
  "ethrex-storage",
  "ethrex-vm",
  "hex",
+ "reqwest",
  "rustc-hash 2.1.1",
  "rustyline",
  "serde",
  "serde_json",
+ "sha3",
  "thiserror 2.0.18",
 ]
 

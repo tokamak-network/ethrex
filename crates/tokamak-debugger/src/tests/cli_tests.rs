@@ -120,6 +120,9 @@ fn make_sample_step(step_index: usize, pc: usize, opcode: u8, gas: i64) -> StepR
         stack_depth: 2,
         memory_size: 0,
         code_address: Address::zero(),
+        call_value: None,
+        storage_writes: None,
+        log_topics: None,
     }
 }
 
@@ -171,6 +174,9 @@ fn format_stack_empty() {
         stack_depth: 0,
         memory_size: 0,
         code_address: Address::zero(),
+        call_value: None,
+        storage_writes: None,
+        log_topics: None,
     };
     let output = formatter::format_stack(&step);
     assert!(output.contains("(empty)"));

@@ -17,4 +17,12 @@ pub enum DebuggerError {
     #[cfg(feature = "cli")]
     #[error("Invalid bytecode: {0}")]
     InvalidBytecode(String),
+
+    #[cfg(feature = "autopsy")]
+    #[error("RPC error: {0}")]
+    Rpc(String),
+
+    #[cfg(feature = "autopsy")]
+    #[error("Report error: {0}")]
+    Report(String),
 }
