@@ -478,11 +478,31 @@ fn format_pattern_detail(pattern: &AttackPattern) -> String {
             borrow_amount,
             repay_step,
             repay_amount,
+            provider,
+            token,
         } => {
-            format!(
-                "- **Borrow at step**: {borrow_step} ({borrow_amount} wei)\n\
-                 - **Repay at step**: {repay_step} ({repay_amount} wei)\n"
-            )
+            let mut detail = String::new();
+            if let Some(p) = provider {
+                detail.push_str(&format!("- **Provider**: `0x{p:x}`\n"));
+            }
+            if let Some(t) = token {
+                detail.push_str(&format!("- **Token**: `0x{t:x}`\n"));
+            }
+            if *borrow_amount > U256::zero() {
+                detail.push_str(&format!(
+                    "- **Borrow at step**: {borrow_step} ({borrow_amount} wei)\n"
+                ));
+            } else {
+                detail.push_str(&format!("- **Borrow at step**: {borrow_step}\n"));
+            }
+            if *repay_amount > U256::zero() {
+                detail.push_str(&format!(
+                    "- **Repay at step**: {repay_step} ({repay_amount} wei)\n"
+                ));
+            } else {
+                detail.push_str(&format!("- **Repay at step**: {repay_step}\n"));
+            }
+            detail
         }
         AttackPattern::PriceManipulation {
             oracle_read_before,

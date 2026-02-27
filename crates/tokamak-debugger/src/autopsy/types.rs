@@ -20,6 +20,12 @@ pub enum AttackPattern {
         borrow_amount: U256,
         repay_step: usize,
         repay_amount: U256,
+        /// The flash loan provider contract (if detected via callback pattern).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<Address>,
+        /// The token involved (None = ETH, Some = ERC-20).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token: Option<Address>,
     },
 
     /// Price manipulation: oracle read → swap → oracle read with price delta.

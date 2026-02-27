@@ -82,7 +82,10 @@ impl AttackClassifier {
         patterns
     }
 
-    /// Detect flash loan: large ETH CALL value early → matching reverse transfer near end.
+    /// Detect flash loan patterns using three complementary strategies:
+    /// 1. ETH value: large CALL value early → matching repay late
+    /// 2. ERC-20: matching Transfer events (same token, to/from same address)
+    /// 3. Callback: depth sandwich pattern (entry → deep operations → exit)
     fn detect_flash_loan(steps: &[StepRecord]) -> Vec<AttackPattern> {
         let mut patterns = Vec::new();
         let total = steps.len();
@@ -90,7 +93,7 @@ impl AttackClassifier {
             return patterns;
         }
 
-        // Find large value transfers in first quarter of trace
+        // === Strategy 1: ETH value-based flash loan ===
         let first_quarter = total / 4;
         let last_quarter_start = total - (total / 4);
 
@@ -107,10 +110,8 @@ impl AttackClassifier {
             .collect();
 
         for &(borrow_idx, borrow_amount) in &borrows {
-            // Look for repayment of similar size in last quarter
             let repay = steps[last_quarter_start..].iter().find(|s| {
                 if let Some(value) = &s.call_value {
-                    // Repay amount should be >= borrow (borrow + fee)
                     *value >= borrow_amount && s.step_index > borrow_idx
                 } else {
                     false
@@ -123,6 +124,164 @@ impl AttackClassifier {
                     borrow_amount,
                     repay_step: repay_step.step_index,
                     repay_amount: repay_step.call_value.unwrap_or(U256::zero()),
+                    provider: None,
+                    token: None,
+                });
+            }
+        }
+
+        // === Strategy 2: ERC-20 token-based flash loan ===
+        patterns.extend(Self::detect_flash_loan_erc20(steps));
+
+        // === Strategy 3: Callback-based flash loan ===
+        patterns.extend(Self::detect_flash_loan_callback(steps));
+
+        patterns
+    }
+
+    /// Detect ERC-20 flash loans: matching Transfer events where the same token
+    /// is sent TO and later FROM the same address.
+    fn detect_flash_loan_erc20(steps: &[StepRecord]) -> Vec<AttackPattern> {
+        let mut patterns = Vec::new();
+
+        // Collect all ERC-20 Transfer events
+        let transfers: Vec<Erc20Transfer> = steps
+            .iter()
+            .filter(|s| s.opcode == OP_LOG3)
+            .filter_map(|s| {
+                let topics = s.log_topics.as_ref()?;
+                if topics.len() < 3 {
+                    return None;
+                }
+                if !is_transfer_topic(&topics[0]) {
+                    return None;
+                }
+                let from = address_from_topic(&topics[1]);
+                let to = address_from_topic(&topics[2]);
+                let token = s.code_address;
+                Some(Erc20Transfer {
+                    step_index: s.step_index,
+                    token,
+                    from,
+                    to,
+                })
+            })
+            .collect();
+
+        // For each incoming transfer (token → address X), look for a matching
+        // outgoing transfer (address X → token) later in the trace.
+        let total = steps.len();
+        let half = total / 2;
+
+        for incoming in &transfers {
+            if incoming.step_index >= half {
+                continue; // Only look at first half for borrows
+            }
+            let recipient = incoming.to;
+            let token = incoming.token;
+
+            // Look for matching outgoing transfer in second half
+            let outgoing = transfers.iter().find(|t| {
+                t.step_index > incoming.step_index
+                    && t.step_index >= half
+                    && t.token == token
+                    && t.from == recipient
+            });
+
+            if let Some(repay) = outgoing {
+                patterns.push(AttackPattern::FlashLoan {
+                    borrow_step: incoming.step_index,
+                    borrow_amount: U256::zero(), // Amount in log data, not captured
+                    repay_step: repay.step_index,
+                    repay_amount: U256::zero(),
+                    provider: Some(incoming.from),
+                    token: Some(token),
+                });
+            }
+        }
+
+        patterns
+    }
+
+    /// Detect callback-based flash loans by analyzing the depth profile.
+    ///
+    /// Flash loan callbacks have a distinctive depth pattern:
+    /// - Entry at shallow depth (the top-level call)
+    /// - CALL to flash loan provider
+    /// - Provider calls back at deeper depth (the callback)
+    /// - Most operations execute at this deeper depth
+    /// - Return to shallow depth
+    ///
+    /// If >60% of operations happen at depth > entry_depth + 1, this indicates
+    /// a callback wrapper pattern typical of flash loans.
+    fn detect_flash_loan_callback(steps: &[StepRecord]) -> Vec<AttackPattern> {
+        let mut patterns = Vec::new();
+        let total = steps.len();
+        if total < 10 {
+            return patterns;
+        }
+
+        let entry_depth = steps[0].depth;
+
+        // Count steps per depth
+        let mut depth_counts: FxHashMap<usize, usize> = FxHashMap::default();
+        for step in steps {
+            *depth_counts.entry(step.depth).or_default() += 1;
+        }
+
+        // Count steps deeper than entry_depth + 1 (inside the callback)
+        let deep_steps: usize = depth_counts
+            .iter()
+            .filter(|&(&d, _)| d > entry_depth + 1)
+            .map(|(_, &c)| c)
+            .sum();
+
+        let deep_ratio = deep_steps as f64 / total as f64;
+
+        // If >60% of steps are deep, this is a callback pattern
+        if deep_ratio < 0.6 {
+            return patterns;
+        }
+
+        // Find the CALL that initiates the depth transition (flash loan call)
+        let flash_loan_call = steps.iter().find(|s| {
+            is_call_opcode(s.opcode) && s.depth == entry_depth
+        });
+
+        // Find the provider: the target of that CALL
+        let provider = flash_loan_call.and_then(extract_call_target);
+
+        // Find the callback entry: first step at depth > entry_depth + 1
+        let callback_entry = steps
+            .iter()
+            .find(|s| s.depth > entry_depth + 1);
+
+        // Find the last deep step (approximate end of callback)
+        let callback_exit = steps
+            .iter()
+            .rev()
+            .find(|s| s.depth > entry_depth + 1);
+
+        if let (Some(entry), Some(exit)) = (callback_entry, callback_exit) {
+            // Count state-modifying ops inside the callback to confirm it's non-trivial
+            let inner_sstores = steps
+                .iter()
+                .filter(|s| {
+                    s.depth > entry_depth + 1
+                        && matches!(s.opcode, OP_SSTORE | OP_CALL | OP_DELEGATECALL)
+                })
+                .count();
+
+            if inner_sstores >= 1 {
+                patterns.push(AttackPattern::FlashLoan {
+                    borrow_step: flash_loan_call
+                        .map(|s| s.step_index)
+                        .unwrap_or(entry.step_index),
+                    borrow_amount: U256::zero(),
+                    repay_step: exit.step_index,
+                    repay_amount: U256::zero(),
+                    provider,
+                    token: None,
                 });
             }
         }
@@ -244,14 +403,27 @@ fn extract_call_target_static(step: &StepRecord) -> Option<Address> {
 /// Check if a LOG step has the ERC-20 Transfer event topic.
 fn has_transfer_topic(step: &StepRecord) -> bool {
     if let Some(topics) = &step.log_topics {
-        // Transfer(address,address,uint256) = 0xddf252ad...
-        topics.first().is_some_and(|t| {
-            t.as_bytes()[0] == 0xdd
-                && t.as_bytes()[1] == 0xf2
-                && t.as_bytes()[2] == 0x52
-                && t.as_bytes()[3] == 0xad
-        })
+        topics.first().is_some_and(|t| is_transfer_topic(t))
     } else {
         false
     }
+}
+
+/// Check if a topic hash matches the ERC-20 Transfer event signature.
+fn is_transfer_topic(topic: &ethrex_common::H256) -> bool {
+    let b = topic.as_bytes();
+    b[0] == 0xdd && b[1] == 0xf2 && b[2] == 0x52 && b[3] == 0xad
+}
+
+/// Extract an address from a 32-byte topic (last 20 bytes).
+fn address_from_topic(topic: &ethrex_common::H256) -> Address {
+    Address::from_slice(&topic.as_bytes()[12..])
+}
+
+/// Parsed ERC-20 Transfer event.
+struct Erc20Transfer {
+    step_index: usize,
+    token: Address,
+    from: Address,
+    to: Address,
 }
