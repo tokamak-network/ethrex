@@ -82,6 +82,8 @@ pub struct TokamakBackend {
     /// Tokamak-zk-EVM repository root directory.
     /// The CLI reads/writes to `{resource_dir}/dist/resource/`.
     resource_dir: PathBuf,
+    /// L2 RPC URL for the synthesizer to fetch state from.
+    l2_rpc_url: Option<String>,
 }
 
 impl TokamakBackend {
@@ -89,7 +91,13 @@ impl TokamakBackend {
         Self {
             cli_path,
             resource_dir,
+            l2_rpc_url: None,
         }
+    }
+
+    pub fn with_l2_rpc_url(mut self, url: Option<String>) -> Self {
+        self.l2_rpc_url = url;
+        self
     }
 
     /// Returns the `dist/` directory under the Tokamak resource root.
@@ -189,16 +197,47 @@ impl TokamakBackend {
         Ok(())
     }
 
-    /// Serialize ProgramInput into a Tokamak-compatible config JSON.
+    /// Serialize ProgramInput into a Tokamak synthesizer config JSON.
     ///
-    /// TODO: The exact mapping from ethrex block data to Tokamak circuit
-    /// inputs depends on the Tokamak-zk-EVM synthesizer input format.
-    /// For now we write a minimal JSON with the block data.
+    /// The Tokamak synthesizer expects a config JSON matching the
+    /// `L2TONTransferConfig` type (see `examples/L2TONTransfer/input.json`).
+    /// It also needs an RPC URL in `{resource_dir}/packages/frontend/synthesizer/.env`
+    /// to fetch contract state.
+    ///
+    /// Currently, ProgramInput from ethrex contains block/transaction data.
+    /// We extract what we can and write the synthesizer config.
+    ///
+    /// NOTE: Full integration requires the L2 node to be running and accessible
+    /// via the configured `l2_rpc_url`. The synthesizer fetches storage proofs
+    /// from the L2 node at the specified block number.
     fn write_input_config(
         &self,
         input: &ProgramInput,
         config_path: &Path,
     ) -> Result<(), BackendError> {
+        // Update the synthesizer .env with the L2 RPC URL
+        if let Some(ref rpc_url) = self.l2_rpc_url {
+            let env_path = self
+                .resource_dir
+                .join("packages/frontend/synthesizer/.env");
+            let env_content = format!("RPC_URL='{rpc_url}'\n");
+            std::fs::write(&env_path, env_content).map_err(|e| {
+                BackendError::serialization(format!(
+                    "failed to write synthesizer .env at {}: {e}",
+                    env_path.display()
+                ))
+            })?;
+            info!("Tokamak: set synthesizer RPC_URL to {rpc_url}");
+        }
+
+        // Write ProgramInput as JSON for now.
+        // TODO: Transform ProgramInput fields into the Tokamak synthesizer
+        // config format (L2TONTransferConfig) once the transaction-level
+        // mapping is defined:
+        //   - blockNumber from input header
+        //   - contractAddress from transaction `to` field
+        //   - callData (transferSelector + arguments)
+        //   - privateKeySeedsL2 / addressListL1 (participant identities)
         let json = serde_json::to_string_pretty(input).map_err(|e| {
             BackendError::serialization(format!("failed to serialize ProgramInput: {e}"))
         })?;

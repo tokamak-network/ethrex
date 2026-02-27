@@ -97,7 +97,8 @@ pub async fn start_prover(config: ProverConfig) {
                     .tokamak_resource_dir
                     .clone()
                     .unwrap_or_else(|| ".".into()),
-            );
+            )
+            .with_l2_rpc_url(config.tokamak_l2_rpc_url.clone());
             let prover = Prover::new(backend, &config, registry);
             prover.start().await;
         }

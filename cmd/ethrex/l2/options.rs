@@ -1135,6 +1135,15 @@ pub struct ProverClientOptions {
         help_heading = "Prover client options"
     )]
     pub tokamak_resource_dir: Option<std::path::PathBuf>,
+    #[cfg(feature = "tokamak")]
+    #[arg(
+        long = "tokamak-l2-rpc-url",
+        value_name = "URL",
+        env = "ETHREX_TOKAMAK_L2_RPC_URL",
+        help = "L2 RPC URL for the Tokamak synthesizer to fetch state from",
+        help_heading = "Prover client options"
+    )]
+    pub tokamak_l2_rpc_url: Option<String>,
 }
 
 impl From<ProverClientOptions> for ProverConfig {
@@ -1151,6 +1160,8 @@ impl From<ProverClientOptions> for ProverConfig {
             tokamak_cli_path: config.tokamak_cli_path,
             #[cfg(feature = "tokamak")]
             tokamak_resource_dir: config.tokamak_resource_dir,
+            #[cfg(feature = "tokamak")]
+            tokamak_l2_rpc_url: config.tokamak_l2_rpc_url,
         }
     }
 }
@@ -1172,6 +1183,8 @@ impl Default for ProverClientOptions {
             tokamak_cli_path: None,
             #[cfg(feature = "tokamak")]
             tokamak_resource_dir: None,
+            #[cfg(feature = "tokamak")]
+            tokamak_l2_rpc_url: None,
         }
     }
 }

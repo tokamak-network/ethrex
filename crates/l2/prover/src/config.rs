@@ -18,8 +18,14 @@ pub struct ProverConfig {
     #[cfg(feature = "tokamak")]
     #[serde(default)]
     pub tokamak_cli_path: Option<std::path::PathBuf>,
-    /// Path to the Tokamak resource directory (QAP, setup parameters, etc.).
+    /// Path to the Tokamak-zk-EVM repository root directory.
+    /// The CLI reads/writes to `{resource_dir}/dist/resource/`.
     #[cfg(feature = "tokamak")]
     #[serde(default)]
     pub tokamak_resource_dir: Option<std::path::PathBuf>,
+    /// L2 RPC URL for the Tokamak synthesizer to fetch state from.
+    /// Required when running the full prove pipeline.
+    #[cfg(feature = "tokamak")]
+    #[serde(default)]
+    pub tokamak_l2_rpc_url: Option<String>,
 }

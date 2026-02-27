@@ -245,6 +245,9 @@ do_start() {
             --proof-coordinators tcp://127.0.0.1:$PROOF_COORDINATOR_PORT \
             --backend tokamak \
             --programs-config "$PROGRAMS_CONFIG" \
+            --tokamak-cli-path "$TOKAMAK_CLI_PATH" \
+            --tokamak-resource-dir "$TOKAMAK_RESOURCE_DIR" \
+            --tokamak-l2-rpc-url "http://localhost:$L2_PORT" \
             > "$RUNDIR/prover.log" 2>&1 &
         echo $! > "$RUNDIR/prover.pid"
         prover_status="running (PID: $(cat "$RUNDIR/prover.pid"))"
