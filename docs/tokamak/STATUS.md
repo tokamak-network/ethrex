@@ -1,8 +1,8 @@
 # Tokamak Client Status Report
 
-**Date**: 2026-02-27
-**Branch**: `feat/tokamak-proven-execution`
-**Overall Completion**: ~99%
+**Date**: 2026-02-28
+**Branch**: `feat/tokamak-autopsy-lab`
+**Overall Completion**: ~96% (Phase H not started)
 
 ---
 
@@ -68,7 +68,7 @@
 - State root differential testing
 - Precompile timing export
 
-### Feature #21: Time-Travel Debugger (~85%)
+### Feature #21: Time-Travel Debugger & Autopsy Lab (~95%)
 
 **Completed:**
 - `tokamak-debugger` crate with replay engine (E-1)
@@ -80,10 +80,31 @@
 - rustyline REPL with auto-history, `--bytecode <hex>` input mode
 - `debug_timeTravel` JSON-RPC endpoint (E-3) — full TX replay over RPC with step windowing
 - Serde serialization for all debugger types (StepRecord, ReplayTrace, ReplayConfig)
-- 51 tests: basic replay (4), navigation (5), gas tracking (3), nested calls (2), serde (4), CLI parsing (12), formatter (6), execution (9), RPC handler (6)
+- Smart Contract Autopsy Lab (E-4) — post-hoc attack analysis:
+  - `RemoteVmDatabase`: LEVM `Database` over archive RPC (`reqwest::blocking`), lazy caching
+  - `AttackClassifier`: reentrancy, flash loan (3 strategies), price manipulation, access control bypass
+  - `FundFlowTracer`: ETH transfers + ERC-20 Transfer events
+  - `AutopsyReport`: verdict-first Markdown/JSON, known contract labels (~20 mainnet addresses), storage interpretation, key step timeline, conclusion with storage impact
+  - CLI `autopsy` subcommand with `--tx-hash`, `--rpc-url`, `--format`, `--output`
+- 100 tests: replay (14), CLI (27), RPC (10), enrichment (4), classifier (9), fund flow (5), report (8), recorder (4), StepRecord serde (2), autopsy integration (17)
 
 **Remaining:**
 - Web UI (optional)
+
+### Feature #22: Real-Time Attack Detection — Sentinel (0%)
+
+**Purpose:** Transform the post-hoc Autopsy Lab into a real-time monitoring system. When the ethrex full node processes new blocks, suspicious transactions are automatically analyzed and alerts are generated.
+
+**Planned:**
+- H-1: Block execution recording hook (conditional `DebugRecorder` activation during block processing)
+- H-2: Lightweight pre-filter (TX screening by call depth / gas / external calls / watchlist)
+- H-3: Real-time classification pipeline (async producer-consumer with `AttackClassifier` + `FundFlowTracer`)
+- H-4: Alert & notification system (webhook / Slack / log, severity mapping, de-duplication, rate limiting)
+- H-5: Sentinel dashboard (live WebSocket feed, historical alert browsing, Grafana metrics export)
+
+**Architecture:** All E-4 analysis components reused directly. New code focuses on triggering, filtering, and alerting.
+
+**Key constraint:** <1% overhead on block processing when sentinel is enabled but TX doesn't match pre-filter. Zero overhead when feature disabled (compile-time gate).
 
 ---
 
@@ -111,9 +132,9 @@ Measured after Volkov R21-R23 fixes (corrected measurement order).
 | LEVM JIT infra | `crates/vm/levm/src/jit/` (9 files) | ~2,700 |
 | tokamak-jit crate | `crates/vm/tokamak-jit/src/` (14 files) | ~5,650 |
 | tokamak-bench crate | `crates/tokamak-bench/src/` (11 files) | ~1,700 |
-| tokamak-debugger | `crates/tokamak-debugger/src/` (14 files) | ~1,310 |
+| tokamak-debugger | `crates/tokamak-debugger/src/` (22 files) | ~3,100 |
 | LEVM debugger hook | `crates/vm/levm/src/debugger_hook.rs` | ~27 |
-| **Total** | | **~10,990** |
+| **Total** | | **~12,780** |
 
 Base ethrex codebase: ~103K lines Rust.
 
@@ -193,7 +214,11 @@ R23(5.0) -> R24(8.0)
 ### Recently Completed (Phase D continued)
 - Recursive CALL runtime optimization (D-1 v1.1) — 3-tier optimization without revmc modifications: Tier 1 bytecode zero-copy (`CompiledCode.cached_bytecode: Option<Arc<Bytes>>`), Tier 2 resume state pool (thread-local 16-entry pool), Tier 3 TX-scoped bytecode cache (`VM.bytecode_cache`), `bytecode_cache_hits` metric, 11 tests (69 total tokamak-jit)
 
+### Recently Completed (Phase E continued)
+- Smart Contract Autopsy Lab (E-4) — RemoteVmDatabase (archive RPC + LEVM Database impl), StepRecord enrichment (CALL value/LOG topics/SSTORE capture), AttackClassifier (4 patterns, 3-strategy flash loan detection), FundFlowTracer (ETH + ERC-20), AutopsyReport (verdict-first MD/JSON, known labels, storage interpretation, key step timeline), CLI subcommand with file output, 42 autopsy tests (100 total debugger tests)
+
 ### Not Started
+- Phase H: Real-Time Attack Detection (Sentinel) — 5 tasks planned (H-1 through H-5)
 - EF grant application
 - External node operator adoption
 

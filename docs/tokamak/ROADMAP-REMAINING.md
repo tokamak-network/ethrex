@@ -1,7 +1,7 @@
 # Tokamak Remaining Work Roadmap
 
-**Created**: 2026-02-24 | **Updated**: 2026-02-27
-**Context**: Overall ~95% complete. JIT core done (Phases 2-8). Phase A: ALL P0 COMPLETE (A-1 ✅ A-2 ✅ A-3 ✅ A-4 ✅). Phase B: B-1 ✅ B-2 ✅ B-3 ✅ — ALL COMPLETE. Phase C: C-1 ✅ C-2 ✅ C-3 ✅ — ALL COMPLETE. Phase D: D-1 ✅ DONE (v1.1 runtime opt), D-2 ✅ DONE, D-3 ✅ DONE. Phase E: E-1 ✅ DONE, E-2 ✅ DONE, E-3 ✅ DONE — ALL COMPLETE. Phase F: F-1 ✅ DONE, F-2 ✅ DONE, F-3 ✅ DONE (scaffolding), F-4 ✅ DONE, F-5 CI CONFIGURED (awaiting sync run). Phase G: G-1 ✅ DONE (arena allocator), G-2 ✅ DONE (auto-resolved by G-1), G-3 ✅ DONE (CALL/CREATE dual-execution validation), G-4 ✅ DONE (JIT-to-JIT direct dispatch), G-5 ✅ DONE (parallel compilation pool), G-6 ✅ DONE (LRU cache eviction — AtomicU64 timestamps), G-7 ✅ DONE (constant folding enhancement — 22 opcodes + unary patterns), G-8 ✅ DONE (precompile JIT acceleration — fast dispatch + metric tracking).
+**Created**: 2026-02-24 | **Updated**: 2026-02-28
+**Context**: Overall ~96% complete. JIT core done (Phases 2-8). Phase A: ALL P0 COMPLETE (A-1 ✅ A-2 ✅ A-3 ✅ A-4 ✅). Phase B: B-1 ✅ B-2 ✅ B-3 ✅ — ALL COMPLETE. Phase C: C-1 ✅ C-2 ✅ C-3 ✅ — ALL COMPLETE. Phase D: D-1 ✅ DONE (v1.1 runtime opt), D-2 ✅ DONE, D-3 ✅ DONE. Phase E: E-1 ✅ DONE, E-2 ✅ DONE, E-3 ✅ DONE, E-4 ✅ DONE (Smart Contract Autopsy Lab) — ALL COMPLETE. Phase F: F-1 ✅ DONE, F-2 ✅ DONE, F-3 ✅ DONE (scaffolding), F-4 ✅ DONE, F-5 CI CONFIGURED (awaiting sync run). Phase G: ALL COMPLETE (8/8). Phase H: Real-Time Attack Detection — NOT STARTED (5 tasks).
 
 ---
 
@@ -197,7 +197,20 @@
 - Feature-gated `tokamak-debugger` feature in ethrex-rpc ✅
 - **Verification**: 6 RPC handler tests + 4 serde tests passing ✅
 - **Dependency**: E-1 ✅, E-2 ✅
-- **Completed**: Phase E fully complete
+- **Completed**: Phase E-3 complete
+
+### E-4. Smart Contract Autopsy Lab [P2] ✅ DONE
+- Post-hack analysis tool: replay historical TX via archive RPC → detect attack patterns → generate report ✅
+- `RemoteVmDatabase`: implements LEVM `Database` trait over JSON-RPC (`reqwest::blocking`), lazy caching (account/storage/code/block_hash) ✅
+- `StepRecord` enrichment: `call_value` (CALL/CREATE value), `log_topics` (LOG0-LOG4), `storage_writes` (SSTORE key/value) ✅
+- `AttackClassifier`: 4 pattern detectors — reentrancy (re-entry + SSTORE), flash loan (3 strategies: ETH value, ERC-20 Transfer, callback depth), price manipulation (oracle read-swap-read), access control bypass (SSTORE without CALLER) ✅
+- `FundFlowTracer`: ETH transfers (CALL with value > 0) + ERC-20 transfers (LOG3 Transfer topic) ✅
+- `AutopsyReport`: JSON + Markdown output — verdict-first summary, execution overview, attack patterns, fund flow, storage changes (with interpretation), key steps (SSTORE/CREATE/ERC-20/pattern events), affected contracts (with roles + known labels for ~20 mainnet addresses), suggested fixes, conclusion with storage impact analysis ✅
+- CLI `autopsy` subcommand: `--tx-hash`, `--rpc-url`, `--block-number`, `--format json|markdown`, `--output` file save ✅
+- Feature-gated `autopsy` (reqwest/sha3/serde_json/rustc-hash) ✅
+- **Verification**: 42 autopsy tests, 100 total tokamak-debugger tests (`--features "cli,autopsy"`) ✅
+- **Dependency**: E-1 ✅, E-2 ✅
+- **Completed**: Smart Contract Autopsy Lab with 3 devil review iterations (6.8→7.3→8.9/10)
 
 ---
 
@@ -351,6 +364,67 @@
 
 ---
 
+## Phase H: Real-Time Attack Detection — Sentinel (P2)
+
+> "Autopsy analyzes the dead. Sentinel protects the living."
+
+The Autopsy Lab (E-4) provides post-hoc analysis of historical transactions. Phase H extends this into **real-time detection**: when the node processes a new block, suspicious transactions are automatically analyzed and alerts are generated. All E-4 analysis components (AttackClassifier, FundFlowTracer, AutopsyReport) are reused directly.
+
+### H-1. Block Execution Recording Hook [P2]
+- Hook into block processing pipeline to conditionally enable `DebugRecorder` during TX execution
+- Feature-gated: `tokamak-sentinel` (separate from `tokamak-debugger` to avoid recording overhead by default)
+- Zero overhead when disabled (compile-time feature gate, not runtime check)
+- When enabled, recorder activates only for TXs passing the pre-filter (H-2)
+- Output: `ReplayTrace` per suspicious TX, fed to classifier pipeline (H-3)
+- **Key concern**: must not slow block processing for non-suspicious TXs (<1% overhead target)
+- **Dependency**: E-1 ✅ (OpcodeRecorder already exists)
+- **Estimate**: 16-24h
+
+### H-2. Lightweight Pre-Filter [P2]
+- TX-level pre-screening to decide which TXs deserve full opcode recording
+- Configurable criteria via TOML sentinel config:
+  - `min_call_depth`: only record TXs with call depth > N (default: 3)
+  - `min_gas_used`: only record TXs consuming > N gas (default: 500,000)
+  - `min_external_calls`: only record TXs with > N CALL/DELEGATECALL (default: 5)
+  - `watchlist`: always record TXs interacting with specific contract addresses
+  - `blacklist`: never record TXs from known benign contracts (e.g., token transfers)
+- Two-phase approach: (1) cheap pre-execution heuristic (gas limit, to-address), (2) post-execution check (actual depth/calls) triggers full re-execution with recorder
+- **Alternative**: single-pass approach using a lightweight counter-only recorder (counts depth/calls without capturing full stack) → if thresholds exceeded, re-execute with full recorder
+- **Dependency**: H-1
+- **Estimate**: 8-16h
+
+### H-3. Real-Time Classification Pipeline [P2]
+- Background async processing: block execution (producer) → analysis thread (consumer)
+- Queue-based: `crossbeam_channel::bounded` channel with backpressure (don't unboundedly buffer)
+- Consumer thread runs per-TX: `AttackClassifier::classify()` + `FundFlowTracer::trace()` + `AutopsyReport::build()`
+- Pattern-detected reports stored in local DB/file (rotating log)
+- Metrics: `sentinel_txs_analyzed`, `sentinel_patterns_detected`, `sentinel_analysis_latency_ms`
+- **Dependency**: H-1, H-2, E-4 ✅ (classifier/tracer/report reused directly)
+- **Estimate**: 12-20h
+
+### H-4. Alert & Notification System [P2]
+- Dispatch alerts when `AttackClassifier` detects patterns
+- Configurable alert channels:
+  - Webhook URL (generic POST with JSON report body)
+  - Slack incoming webhook (formatted message with verdict + TX hash + provider)
+  - Log file (append-only, JSON-lines format)
+  - Stdout (for containerized deployments)
+- Alert severity mapping: Flash Loan / Reentrancy → Critical, Price Manipulation → High, Access Control → Medium
+- De-duplication: same pattern + same target contract within N blocks → suppress duplicate alert
+- Rate limiting: max N alerts per minute (prevent alert storm during mass-attack events)
+- **Dependency**: H-3
+- **Estimate**: 8-12h
+
+### H-5. Sentinel Dashboard [P3]
+- Live WebSocket feed of detected events (subscribe to `sentinel_events` channel)
+- Historical alert browsing (paginated, filterable by pattern type / severity / block range)
+- Integration with existing F-2 dashboard infrastructure (Astro + React islands)
+- Optional: Grafana/Prometheus metrics export for `sentinel_*` metrics
+- **Dependency**: H-3, H-4, F-2 ✅
+- **Estimate**: 24-40h
+
+---
+
 ## Execution Order
 
 ```
@@ -365,7 +439,10 @@ Week 8:  [P3] F-3 ✅ (L2 scaffolding)
 Week 9:  [P1] G-1 ✅ (arena allocator) + G-3 ✅ (CALL/CREATE validation) + G-5 ✅ (parallel compilation) + G-7 ✅ (constant folding 22 opcodes)
 Week 10: [P1] G-4 ✅ (JIT-to-JIT direct dispatch) + G-6 ✅ (LRU cache eviction)
 Week 11: [P2] G-8 ✅ (precompile JIT acceleration — fast dispatch + metric tracking)
+Week 12: [P2] E-4 ✅ (Smart Contract Autopsy Lab — post-hoc attack analysis)
 Later:   [P3] F-5
+Future:  [P2] H-1 → H-2 → H-3 → H-4 (real-time sentinel pipeline)
+Future:  [P3] H-5 (sentinel dashboard)
 ```
 
 ---
