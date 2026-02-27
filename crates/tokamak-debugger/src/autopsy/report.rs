@@ -17,7 +17,8 @@ pub struct ExecutionOverview {
     pub sload_count: usize,
     pub log_count: usize,
     pub create_count: usize,
-    /// Top 5 most frequent opcodes: (opcode_byte, name, count)
+    /// Top 5 most frequent opcode categories: (opcode_byte, name, count).
+    /// PUSHn/DUPn/SWAPn are aggregated by category.
     pub top_opcodes: Vec<(u8, String, usize)>,
 }
 
@@ -50,7 +51,12 @@ impl AutopsyReport {
         let total_steps = steps.len();
         let execution_overview = Self::compute_overview(steps);
         let key_steps = Self::identify_key_steps(&attack_patterns, &fund_flows);
-        let affected_contracts = Self::collect_affected_contracts(&fund_flows, &storage_diffs);
+        let affected_contracts = Self::collect_affected_contracts(
+            steps,
+            &attack_patterns,
+            &fund_flows,
+            &storage_diffs,
+        );
         let suggested_fixes = Self::suggest_fixes(&attack_patterns);
         let summary = Self::generate_summary(&attack_patterns, &fund_flows, &execution_overview);
 
@@ -83,15 +89,15 @@ impl AutopsyReport {
         md.push_str(&format!("**Block**: {}\n", self.block_number));
         md.push_str(&format!("**Total Steps**: {}\n\n", self.total_steps));
 
-        // Summary
+        // Summary (verdict-first)
         md.push_str("## Summary\n\n");
         md.push_str(&self.summary);
         md.push_str("\n\n");
 
-        // Execution Overview (always shown)
+        // Execution Overview
         md.push_str("## Execution Overview\n\n");
         let ov = &self.execution_overview;
-        md.push_str(&format!("| Metric | Value |\n|--------|-------|\n"));
+        md.push_str("| Metric | Value |\n|--------|-------|\n");
         md.push_str(&format!("| Max call depth | {} |\n", ov.max_call_depth));
         md.push_str(&format!("| Unique contracts | {} |\n", ov.unique_contracts));
         md.push_str(&format!(
@@ -114,11 +120,15 @@ impl AutopsyReport {
             md.push_str("\n\n");
         }
 
-        // Attack Patterns (always shown)
+        // Attack Patterns
         md.push_str("## Attack Patterns\n\n");
         if self.attack_patterns.is_empty() {
             md.push_str("No known attack patterns detected.\n\n");
         } else {
+            md.push_str(&format!(
+                "{} pattern(s) detected in this transaction.\n\n",
+                self.attack_patterns.len()
+            ));
             for (i, pattern) in self.attack_patterns.iter().enumerate() {
                 md.push_str(&format!(
                     "### Pattern {} — {}\n\n",
@@ -130,47 +140,74 @@ impl AutopsyReport {
             }
         }
 
-        // Fund Flows (always shown)
+        // Fund Flows (with context linking to attack patterns)
         md.push_str("## Fund Flow\n\n");
         if self.fund_flows.is_empty() {
             md.push_str("No fund transfers detected.\n\n");
         } else {
+            if !self.attack_patterns.is_empty() {
+                if let Some(AttackPattern::FlashLoan {
+                    borrow_step,
+                    repay_step,
+                    ..
+                }) = self.attack_patterns.first()
+                {
+                    md.push_str(&format!(
+                        "The following transfers occurred within the flash loan callback span (steps {}–{}).\n\n",
+                        borrow_step, repay_step
+                    ));
+                }
+            }
             md.push_str("| Step | From | To | Value | Token |\n");
             md.push_str("|------|------|-----|-------|-------|\n");
             for flow in &self.fund_flows {
                 let token = flow
                     .token
-                    .map(|t| format!("`0x{t:x}`"))
+                    .map(|t| format_addr(&t))
                     .unwrap_or_else(|| "ETH".to_string());
                 md.push_str(&format!(
-                    "| {} | `0x{:x}` | `0x{:x}` | {} | {} |\n",
-                    flow.step_index, flow.from, flow.to, flow.value, token
+                    "| {} | {} | {} | {} | {} |\n",
+                    flow.step_index,
+                    format_addr(&flow.from),
+                    format_addr(&flow.to),
+                    flow.value,
+                    token
                 ));
             }
             md.push('\n');
         }
 
-        // Storage Diffs (always shown)
+        // Storage Changes (with value interpretation)
         md.push_str("## Storage Changes\n\n");
         if self.storage_diffs.is_empty() {
             md.push_str("No storage modifications detected.\n\n");
         } else {
-            md.push_str("| Contract | Slot | Old Value | New Value |\n");
-            md.push_str("|----------|------|-----------|----------|\n");
+            md.push_str(&format!(
+                "{} storage slot(s) modified during execution.\n\n",
+                self.storage_diffs.len()
+            ));
+            md.push_str("| Contract | Slot | Old Value | New Value | Interpretation |\n");
+            md.push_str("|----------|------|-----------|----------|----------------|\n");
             for diff in &self.storage_diffs {
+                let interp = interpret_value(&diff.old_value, &diff.new_value);
                 md.push_str(&format!(
-                    "| `0x{:x}` | `0x{:x}` | `{}` | `{}` |\n",
-                    diff.address, diff.slot, diff.old_value, diff.new_value
+                    "| {} | `0x{:x}` | `{}` | `{}` | {} |\n",
+                    format_addr(&diff.address),
+                    diff.slot,
+                    diff.old_value,
+                    diff.new_value,
+                    interp
                 ));
             }
             md.push('\n');
         }
 
-        // Key Steps (always shown)
+        // Key Steps
         md.push_str("## Key Steps\n\n");
         if self.key_steps.is_empty() {
             md.push_str("No key steps identified.\n\n");
         } else {
+            md.push_str("Critical moments in the execution trace:\n\n");
             for step in &self.key_steps {
                 let icon = match step.severity {
                     Severity::Critical => "[CRITICAL]",
@@ -185,18 +222,25 @@ impl AutopsyReport {
             md.push('\n');
         }
 
-        // Affected Contracts (always shown)
+        // Affected Contracts (all contracts with roles and labels)
         md.push_str("## Affected Contracts\n\n");
         if self.affected_contracts.is_empty() {
             md.push_str("None identified.\n\n");
         } else {
+            md.push_str(&format!(
+                "{} contract(s) involved in this transaction.\n\n",
+                self.affected_contracts.len()
+            ));
+            md.push_str("| Address | Role |\n");
+            md.push_str("|---------|------|\n");
             for addr in &self.affected_contracts {
-                md.push_str(&format!("- `0x{addr:x}`\n"));
+                let role = self.contract_role(addr);
+                md.push_str(&format!("| {} | {} |\n", format_addr(addr), role));
             }
             md.push('\n');
         }
 
-        // Suggested Fixes (always shown)
+        // Suggested Fixes
         md.push_str("## Suggested Fixes\n\n");
         if self.suggested_fixes.is_empty() {
             md.push_str("No specific fixes suggested (no attack patterns detected).\n\n");
@@ -204,12 +248,54 @@ impl AutopsyReport {
             for fix in &self.suggested_fixes {
                 md.push_str(&format!("- {fix}\n"));
             }
-            md.push('\n');
+            md.push_str("\n> **Note**: These are generic recommendations based on detected patterns. ");
+            md.push_str("Analyze the specific vulnerable contract for targeted fixes.\n\n");
         }
+
+        // Conclusion
+        md.push_str("## Conclusion\n\n");
+        md.push_str(&self.generate_conclusion());
+        md.push_str("\n\n---\n\n");
+        md.push_str(
+            "*This report was generated automatically by the Tokamak Smart Contract Autopsy Lab. \
+             Manual analysis is recommended for comprehensive assessment.*\n",
+        );
 
         md
     }
 
+    /// Determine the role of a contract in this transaction.
+    fn contract_role(&self, addr: &Address) -> &'static str {
+        // Check if it's a flash loan provider
+        for pattern in &self.attack_patterns {
+            if let AttackPattern::FlashLoan {
+                provider: Some(p), ..
+            } = pattern
+            {
+                if p == addr {
+                    return "Flash Loan Provider";
+                }
+            }
+        }
+
+        // Check if it has storage modifications
+        if self.storage_diffs.iter().any(|d| d.address == *addr) {
+            return "Storage Modified";
+        }
+
+        // Check if it's a fund flow participant
+        if self
+            .fund_flows
+            .iter()
+            .any(|f| f.from == *addr || f.to == *addr)
+        {
+            return "Fund Transfer";
+        }
+
+        "Interacted"
+    }
+
+    /// Generate a verdict-first summary.
     fn generate_summary(
         patterns: &[AttackPattern],
         flows: &[FundFlow],
@@ -217,19 +303,32 @@ impl AutopsyReport {
     ) -> String {
         let mut parts = Vec::new();
 
+        // Verdict first
+        if !patterns.is_empty() {
+            let names: Vec<&str> = patterns.iter().map(pattern_name).collect();
+            parts.push(format!("**VERDICT: {} detected.**", names.join(" + ")));
+        } else {
+            parts.push("**VERDICT: No known attack patterns detected.**".to_string());
+        }
+
         // Execution context
         parts.push(format!(
             "Execution reached depth {} across {} contract(s) with {} external calls.",
             overview.max_call_depth, overview.unique_contracts, overview.call_count
         ));
 
-        if !patterns.is_empty() {
-            let names: Vec<&str> = patterns.iter().map(pattern_name).collect();
-            parts.push(format!(
-                "Detected {} attack pattern(s): {}.",
-                patterns.len(),
-                names.join(", ")
-            ));
+        // Flash loan provider identification
+        for pattern in patterns {
+            if let AttackPattern::FlashLoan { provider, .. } = pattern {
+                if let Some(p) = provider {
+                    let label = known_label(p)
+                        .map(|l| format!(" ({l})"))
+                        .unwrap_or_default();
+                    parts.push(format!(
+                        "Flash loan provider: `0x{p:x}`{label}.",
+                    ));
+                }
+            }
         }
 
         let eth_flows: Vec<_> = flows.iter().filter(|f| f.token.is_none()).collect();
@@ -252,17 +351,119 @@ impl AutopsyReport {
         }
 
         if overview.sstore_count > 0 {
-            parts.push(format!(
-                "{} storage write(s).",
-                overview.sstore_count
-            ));
-        }
-
-        if patterns.is_empty() && flows.is_empty() {
-            parts.push("No known attack patterns detected.".to_string());
+            parts.push(format!("{} storage write(s).", overview.sstore_count));
         }
 
         parts.join(" ")
+    }
+
+    /// Generate a conclusion paragraph summarizing the attack.
+    fn generate_conclusion(&self) -> String {
+        let mut parts = Vec::new();
+
+        if self.attack_patterns.is_empty() {
+            parts.push(format!(
+                "This transaction executed {} opcode steps across {} contract(s) \
+                 with no recognized attack patterns.",
+                self.total_steps, self.execution_overview.unique_contracts
+            ));
+            if !self.storage_diffs.is_empty() {
+                parts.push(format!(
+                    "{} storage slot(s) were modified.",
+                    self.storage_diffs.len()
+                ));
+            }
+            return parts.join(" ");
+        }
+
+        // Describe detected patterns
+        for pattern in &self.attack_patterns {
+            match pattern {
+                AttackPattern::FlashLoan {
+                    borrow_step,
+                    repay_step,
+                    provider,
+                    ..
+                } => {
+                    let provider_str = provider
+                        .map(|p| {
+                            let label = known_label(&p)
+                                .map(|l| format!(" ({l})"))
+                                .unwrap_or_default();
+                            format!("`0x{p:x}`{label}")
+                        })
+                        .unwrap_or_else(|| "an unidentified provider".to_string());
+
+                    let callback_pct = if self.total_steps > 0 {
+                        let span = repay_step.saturating_sub(*borrow_step);
+                        (span as f64 / self.total_steps as f64 * 100.0) as u32
+                    } else {
+                        0
+                    };
+
+                    parts.push(format!(
+                        "This transaction exhibits a **Flash Loan** attack pattern. \
+                         The attacker used {provider_str} as the flash loan source, \
+                         executing the exploit within a callback spanning steps {borrow_step}–{repay_step} \
+                         ({callback_pct}% of total execution)."
+                    ));
+                }
+                AttackPattern::Reentrancy {
+                    target_contract,
+                    reentrant_call_step,
+                    state_modified_step,
+                    ..
+                } => {
+                    parts.push(format!(
+                        "A **Reentrancy** attack was detected targeting {}. \
+                         Re-entry occurred at step {reentrant_call_step}, \
+                         followed by state modification at step {state_modified_step}.",
+                        format_addr(target_contract)
+                    ));
+                }
+                AttackPattern::PriceManipulation { .. } => {
+                    parts.push(
+                        "A **Price Manipulation** pattern was detected: \
+                         oracle reads before and after a swap suggest price influence."
+                            .to_string(),
+                    );
+                }
+                AttackPattern::AccessControlBypass { contract, .. } => {
+                    parts.push(format!(
+                        "An **Access Control Bypass** was detected on {}.",
+                        format_addr(contract)
+                    ));
+                }
+            }
+        }
+
+        // Timeline
+        if !self.key_steps.is_empty() {
+            parts.push("\n\n**Attack timeline:**".to_string());
+            for step in &self.key_steps {
+                parts.push(format!(
+                    "\n{}. Step {}: {}",
+                    match step.severity {
+                        Severity::Critical => "CRITICAL",
+                        Severity::Warning => "WARNING",
+                        Severity::Info => "INFO",
+                    },
+                    step.step_index,
+                    step.annotation
+                ));
+            }
+        }
+
+        // Affected scope
+        if !self.affected_contracts.is_empty() {
+            parts.push(format!(
+                "\n\n{} contract(s) were involved, with {} storage modification(s).",
+                self.affected_contracts.len(),
+                self.storage_diffs.len()
+            ));
+        }
+
+        parts.join("")
     }
 
     fn compute_overview(steps: &[StepRecord]) -> ExecutionOverview {
@@ -275,32 +476,34 @@ impl AutopsyReport {
         let mut sload_count = 0usize;
         let mut log_count = 0usize;
         let mut create_count = 0usize;
-        let mut opcode_freq: HashMap<u8, usize> = HashMap::new();
+
+        // Aggregate opcodes by display name to avoid PUSHn/DUPn/SWAPn duplicates
+        let mut name_freq: HashMap<&str, usize> = HashMap::new();
 
         for step in steps {
-            if (step.depth as usize) > max_depth {
-                max_depth = step.depth as usize;
+            if step.depth > max_depth {
+                max_depth = step.depth;
             }
             contracts.insert(step.code_address);
-            *opcode_freq.entry(step.opcode).or_default() += 1;
+            *name_freq.entry(opcode_name(step.opcode)).or_default() += 1;
 
             match step.opcode {
-                0xF1 | 0xF2 | 0xF4 | 0xFA => call_count += 1, // CALL, CALLCODE, DELEGATECALL, STATICCALL
-                0xF0 | 0xF5 => create_count += 1,               // CREATE, CREATE2
-                0x54 => sload_count += 1,                        // SLOAD
-                0x55 => sstore_count += 1,                       // SSTORE
-                0xA0..=0xA4 => log_count += 1,                   // LOG0-LOG4
+                0xF1 | 0xF2 | 0xF4 | 0xFA => call_count += 1,
+                0xF0 | 0xF5 => create_count += 1,
+                0x54 => sload_count += 1,
+                0x55 => sstore_count += 1,
+                0xA0..=0xA4 => log_count += 1,
                 _ => {}
             }
         }
 
-        // Top 5 opcodes
-        let mut freq_vec: Vec<(u8, usize)> = opcode_freq.into_iter().collect();
+        // Top 5 opcodes (aggregated by name — no PUSHn duplicates)
+        let mut freq_vec: Vec<(&str, usize)> = name_freq.into_iter().collect();
         freq_vec.sort_by(|a, b| b.1.cmp(&a.1));
         let top_opcodes: Vec<(u8, String, usize)> = freq_vec
             .into_iter()
             .take(5)
-            .map(|(op, count)| (op, opcode_name(op).to_string(), count))
+            .map(|(name, count)| (0, name.to_string(), count))
             .collect();
 
         ExecutionOverview {
@@ -340,16 +543,32 @@ impl AutopsyReport {
                     borrow_step,
                     repay_step,
                     borrow_amount,
+                    provider,
                     ..
                 } => {
+                    // Fix W2: show "amount unknown" for callback-detected flash loans
+                    let borrow_desc = if *borrow_amount > U256::zero() {
+                        format!("Flash loan borrow: {borrow_amount} wei")
+                    } else {
+                        let prov = provider
+                            .map(|p| {
+                                known_label(&p)
+                                    .map(|l| format!(" via {l}"))
+                                    .unwrap_or_default()
+                            })
+                            .unwrap_or_default();
+                        format!(
+                            "Flash loan callback entry{prov} (amount unknown — detected via depth analysis)"
+                        )
+                    };
                     key.push(AnnotatedStep {
                         step_index: *borrow_step,
-                        annotation: format!("Flash loan borrow: {borrow_amount} wei"),
+                        annotation: borrow_desc,
                         severity: Severity::Warning,
                     });
                     key.push(AnnotatedStep {
                         step_index: *repay_step,
-                        annotation: "Flash loan repayment".to_string(),
+                        annotation: "Flash loan callback exit / repayment".to_string(),
                         severity: Severity::Warning,
                     });
                 }
@@ -400,21 +619,46 @@ impl AutopsyReport {
         key
     }
 
-    fn collect_affected_contracts(flows: &[FundFlow], diffs: &[StorageWrite]) -> Vec<Address> {
+    /// Collect ALL contracts involved in the transaction, not just fund flow/storage participants.
+    fn collect_affected_contracts(
+        steps: &[StepRecord],
+        patterns: &[AttackPattern],
+        flows: &[FundFlow],
+        diffs: &[StorageWrite],
+    ) -> Vec<Address> {
         let mut addrs: Vec<Address> = Vec::new();
+        let mut push_unique = |addr: Address| {
+            if !addrs.contains(&addr) {
+                addrs.push(addr);
+            }
+        };
+
+        // All contracts from execution trace (preserves first-seen order)
+        for step in steps {
+            push_unique(step.code_address);
+        }
+
+        // Flash loan providers
+        for pattern in patterns {
+            if let AttackPattern::FlashLoan {
+                provider: Some(p), ..
+            } = pattern
+            {
+                push_unique(*p);
+            }
+        }
+
+        // Fund flow participants
         for flow in flows {
-            if !addrs.contains(&flow.from) {
-                addrs.push(flow.from);
-            }
-            if !addrs.contains(&flow.to) {
-                addrs.push(flow.to);
-            }
+            push_unique(flow.from);
+            push_unique(flow.to);
         }
+
+        // Storage diff targets
         for diff in diffs {
-            if !addrs.contains(&diff.address) {
-                addrs.push(diff.address);
-            }
+            push_unique(diff.address);
         }
+
         addrs
     }
 
@@ -427,11 +671,8 @@ impl AutopsyReport {
                     fixes.push("Follow the checks-effects-interactions pattern: update state before external calls.".to_string());
                 }
                 AttackPattern::FlashLoan { .. } => {
-                    fixes.push("Add flash loan protection: check that token balances haven't been temporarily inflated.".to_string());
-                    fixes.push(
-                        "Use time-weighted average prices (TWAP) instead of spot prices."
-                            .to_string(),
-                    );
+                    fixes.push("Validate account solvency after all balance-modifying operations (e.g., donateToReserves, mint, burn).".to_string());
+                    fixes.push("Add flash loan protection: ensure functions that destroy collateral check the caller's liquidity position.".to_string());
                 }
                 AttackPattern::PriceManipulation { .. } => {
                     fixes.push("Use a decentralized oracle (e.g., Chainlink) with TWAP instead of spot AMM prices.".to_string());
@@ -443,7 +684,6 @@ impl AutopsyReport {
                 }
             }
         }
-        // Deduplicate
         fixes.dedup();
         fixes
     }
@@ -467,10 +707,11 @@ fn format_pattern_detail(pattern: &AttackPattern) -> String {
             call_depth_at_entry,
         } => {
             format!(
-                "- **Target**: `0x{target_contract:x}`\n\
+                "- **Target**: {}\n\
                  - **Re-entrant call at step**: {reentrant_call_step}\n\
                  - **State modified at step**: {state_modified_step}\n\
-                 - **Entry depth**: {call_depth_at_entry}\n"
+                 - **Entry depth**: {call_depth_at_entry}\n",
+                format_addr(target_contract)
             )
         }
         AttackPattern::FlashLoan {
@@ -483,17 +724,19 @@ fn format_pattern_detail(pattern: &AttackPattern) -> String {
         } => {
             let mut detail = String::new();
             if let Some(p) = provider {
-                detail.push_str(&format!("- **Provider**: `0x{p:x}`\n"));
+                detail.push_str(&format!("- **Provider**: {}\n", format_addr(p)));
             }
             if let Some(t) = token {
-                detail.push_str(&format!("- **Token**: `0x{t:x}`\n"));
+                detail.push_str(&format!("- **Token**: {}\n", format_addr(t)));
             }
             if *borrow_amount > U256::zero() {
                 detail.push_str(&format!(
                     "- **Borrow at step**: {borrow_step} ({borrow_amount} wei)\n"
                 ));
             } else {
-                detail.push_str(&format!("- **Borrow at step**: {borrow_step}\n"));
+                detail.push_str(&format!(
+                    "- **Borrow at step**: {borrow_step} (detected via callback depth analysis)\n"
+                ));
             }
             if *repay_amount > U256::zero() {
                 detail.push_str(&format!(
@@ -523,9 +766,72 @@ fn format_pattern_detail(pattern: &AttackPattern) -> String {
         } => {
             format!(
                 "- **SSTORE at step**: {sstore_step}\n\
-                 - **Contract**: `0x{contract:x}`\n"
+                 - **Contract**: {}\n",
+                format_addr(contract)
             )
         }
+    }
+}
+
+// ============================================================
+// Helper functions
+// ============================================================
+
+/// Format an address with a known label if available.
+fn format_addr(addr: &Address) -> String {
+    if let Some(label) = known_label(addr) {
+        format!("`0x{addr:x}` ({label})")
+    } else {
+        format!("`0x{addr:x}`")
+    }
+}
+
+/// Look up well-known mainnet contract addresses.
+fn known_label(addr: &Address) -> Option<&'static str> {
+    let hex = format!("{addr:x}");
+    match hex.as_str() {
+        // Stablecoins & tokens
+        "6b175474e89094c44da98b954eedeac495271d0f" => Some("DAI"),
+        "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" => Some("USDC"),
+        "dac17f958d2ee523a2206206994597c13d831ec7" => Some("USDT"),
+        "c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" => Some("WETH"),
+        "2260fac5e5542a773aa44fbcfedf7c193bc2c599" => Some("WBTC"),
+        // Lido
+        "ae7ab96520de3a18e5e111b5eaab095312d7fe84" => Some("Lido stETH"),
+        "7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0" => Some("wstETH"),
+        // Aave V2
+        "7d2768de32b0b80b7a3454c06bdac94a69ddc7a9" => Some("Aave V2 Pool"),
+        "028171bca77440897b824ca71d1c56cac55b68a3" => Some("Aave aDAI"),
+        "030ba81f1c18d280636f32af80b9aad02cf0854e" => Some("Aave aWETH"),
+        "1982b2f5814301d4e9a8b0201555376e62f82428" => Some("Aave astETH"),
+        // Aave V3
+        "87870bca3f3fd6335c3f4ce8392d69350b4fa4e2" => Some("Aave V3 Pool"),
+        // Uniswap
+        "7a250d5630b4cf539739df2c5dacb4c659f2488d" => Some("Uniswap V2 Router"),
+        "e592427a0aece92de3edee1f18e0157c05861564" => Some("Uniswap V3 Router"),
+        "68b3465833fb72a70ecdf485e0e4c7bd8665fc45" => Some("Uniswap V3 Router 02"),
+        // Curve
+        "bebc44782c7db0a1a60cb6fe97d0b483032ff1c7" => Some("Curve 3pool"),
+        // Euler (hack-related)
+        "27182842e098f60e3d576794a5bffb0777e025d3" => Some("Euler Protocol"),
+        _ => None,
+    }
+}
+
+/// Interpret a storage value change for human readability.
+fn interpret_value(old: &U256, new: &U256) -> &'static str {
+    if *new == U256::MAX {
+        "MAX_UINT256 (infinite approval)"
+    } else if old.is_zero() && !new.is_zero() {
+        "New allocation (0 → nonzero)"
+    } else if !old.is_zero() && new.is_zero() {
+        "Cleared (nonzero → 0)"
+    } else if *new > *old {
+        "Increased"
+    } else if *new < *old {
+        "Decreased"
+    } else {
+        "Unchanged"
     }
 }
 

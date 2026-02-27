@@ -590,7 +590,7 @@ fn test_report_empty() {
     assert!(report.fund_flows.is_empty());
     assert!(report.key_steps.is_empty());
     assert!(report.suggested_fixes.is_empty());
-    assert!(report.summary.contains("No known attack patterns"));
+    assert!(report.summary.contains("No known attack patterns detected"));
 }
 
 #[test]
@@ -655,6 +655,7 @@ fn test_report_markdown_sections() {
     assert!(md.contains("## Storage Changes"));
     assert!(md.contains("## Key Steps"));
     assert!(md.contains("## Suggested Fixes"));
+    assert!(md.contains("## Conclusion"));
 }
 
 #[test]
