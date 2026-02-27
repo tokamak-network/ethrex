@@ -34,11 +34,30 @@ pub struct FormattedPreprocess {
     pub preprocess_entries_part2: Vec<String>,
 }
 
+/// Public inputs from the Tokamak synthesizer (instance.json).
+///
+/// Contains three arrays that are concatenated to form the full public
+/// inputs vector for the verifier:
+///   publicInputs = a_pub_user ++ a_pub_block ++ a_pub_function
+#[derive(Debug, Clone, Deserialize)]
+pub struct InstanceJson {
+    pub a_pub_user: Vec<String>,
+    pub a_pub_block: Vec<String>,
+    pub a_pub_function: Vec<String>,
+}
+
+/// Setup parameters from setupParams.json.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetupParams {
+    pub s_max: u64,
+}
+
 /// Combined output of the Tokamak proving pipeline.
 pub struct TokamakProveOutput {
     pub proof: FormattedProof,
     pub preprocess: FormattedPreprocess,
     /// Public inputs as hex strings (uint256 values).
+    /// Concatenation of a_pub_user + a_pub_block + a_pub_function.
     pub public_inputs: Vec<String>,
     pub smax: u64,
 }
@@ -51,12 +70,17 @@ pub struct TokamakProveOutput {
 /// It uses an external CLI (`tokamak-cli`) with a three-stage pipeline:
 ///   synthesize → preprocess → prove
 ///
+/// The CLI operates from the Tokamak-zk-EVM repository root and writes
+/// all outputs to `{root}/dist/resource/`. We set `TOKAMAK_ZK_EVM_ROOT`
+/// env var to control the root directory.
+///
 /// Because the CLI has heavy GPU/ICICLE dependencies, we invoke it as an
 /// external process rather than linking it as a library.
 pub struct TokamakBackend {
     /// Path to the `tokamak-cli` binary.
     cli_path: PathBuf,
-    /// Resource directory containing QAP, setup parameters, etc.
+    /// Tokamak-zk-EVM repository root directory.
+    /// The CLI reads/writes to `{resource_dir}/dist/resource/`.
     resource_dir: PathBuf,
 }
 
@@ -68,13 +92,22 @@ impl TokamakBackend {
         }
     }
 
+    /// Returns the `dist/` directory under the Tokamak resource root.
+    fn dist_dir(&self) -> PathBuf {
+        self.resource_dir.join("dist")
+    }
+
     /// Run the full Tokamak proving pipeline.
     ///
-    /// 1. Write ProgramInput as a Tokamak config JSON to a temp directory.
-    /// 2. `tokamak-cli --synthesize <config>`
+    /// The CLI operates from the Tokamak-zk-EVM repo root and writes
+    /// outputs to fixed paths under `{root}/dist/resource/`.
+    ///
+    /// Pipeline:
+    /// 1. Write ProgramInput as a Tokamak synthesizer config JSON.
+    /// 2. `tokamak-cli --synthesize <config.json>`
     /// 3. `tokamak-cli --preprocess`
     /// 4. (if `prove`) `tokamak-cli --prove`
-    /// 5. Parse `proof.json` and `preprocess.json` from the output.
+    /// 5. Parse outputs from `dist/resource/`.
     fn run_pipeline(
         &self,
         input: &ProgramInput,
@@ -90,34 +123,23 @@ impl TokamakBackend {
 
         // 2. Synthesize
         info!("Tokamak: running synthesize");
-        self.run_cli(&[
-            "--synthesize",
-            &config_path.to_string_lossy(),
-            "--output-dir",
-            &work_dir.path().to_string_lossy(),
-        ])?;
+        self.run_cli(&["--synthesize", &config_path.to_string_lossy()])?;
 
         // 3. Preprocess
         info!("Tokamak: running preprocess");
-        self.run_cli(&[
-            "--preprocess",
-            "--work-dir",
-            &work_dir.path().to_string_lossy(),
-        ])?;
+        self.run_cli(&["--preprocess"])?;
 
         if prove {
             // 4. Prove
             info!("Tokamak: running prove");
-            self.run_cli(&[
-                "--prove",
-                "--work-dir",
-                &work_dir.path().to_string_lossy(),
-            ])?;
+            self.run_cli(&["--prove"])?;
 
-            // 5. Parse outputs
-            let proof = self.read_proof(work_dir.path())?;
-            let preprocess = self.read_preprocess(work_dir.path())?;
-            let (public_inputs, smax) = self.extract_public_inputs(work_dir.path())?;
+            // 5. Parse outputs from dist/resource/
+            let dist = self.dist_dir();
+            let proof = self.read_proof(&dist)?;
+            let preprocess = self.read_preprocess(&dist)?;
+            let public_inputs = self.read_public_inputs(&dist)?;
+            let smax = self.read_smax(&dist)?;
 
             Ok(TokamakProveOutput {
                 proof,
@@ -133,9 +155,19 @@ impl TokamakBackend {
     }
 
     /// Invoke `tokamak-cli` with the given arguments.
+    ///
+    /// Sets `TOKAMAK_ZK_EVM_ROOT` so the CLI uses our resource directory
+    /// as the repo root.
     fn run_cli(&self, args: &[&str]) -> Result<(), BackendError> {
+        info!(
+            "Tokamak: executing {} {}",
+            self.cli_path.display(),
+            args.join(" ")
+        );
+
         let output = Command::new(&self.cli_path)
             .args(args)
+            .env("TOKAMAK_ZK_EVM_ROOT", &self.resource_dir)
             .current_dir(&self.resource_dir)
             .output()
             .map_err(|e| {
@@ -176,9 +208,9 @@ impl TokamakBackend {
         Ok(())
     }
 
-    /// Read and parse `proof.json` from the work directory.
-    fn read_proof(&self, work_dir: &Path) -> Result<FormattedProof, BackendError> {
-        let path = work_dir.join("proof.json");
+    /// Read and parse `proof.json` from `dist/resource/prove/output/`.
+    fn read_proof(&self, dist_dir: &Path) -> Result<FormattedProof, BackendError> {
+        let path = dist_dir.join("resource/prove/output/proof.json");
         let data = std::fs::read_to_string(&path).map_err(|e| {
             BackendError::proving(format!("failed to read {}: {e}", path.display()))
         })?;
@@ -187,9 +219,9 @@ impl TokamakBackend {
         })
     }
 
-    /// Read and parse `preprocess.json` from the work directory.
-    fn read_preprocess(&self, work_dir: &Path) -> Result<FormattedPreprocess, BackendError> {
-        let path = work_dir.join("preprocess.json");
+    /// Read and parse `preprocess.json` from `dist/resource/preprocess/output/`.
+    fn read_preprocess(&self, dist_dir: &Path) -> Result<FormattedPreprocess, BackendError> {
+        let path = dist_dir.join("resource/preprocess/output/preprocess.json");
         let data = std::fs::read_to_string(&path).map_err(|e| {
             BackendError::proving(format!("failed to read {}: {e}", path.display()))
         })?;
@@ -198,32 +230,47 @@ impl TokamakBackend {
         })
     }
 
-    /// Extract public inputs and smax from the work directory.
+    /// Read public inputs from `instance.json`.
     ///
-    /// Reads `public_inputs.json` which contains:
+    /// The instance.json produced by the Tokamak synthesizer has this structure:
     /// ```json
-    /// { "public_inputs": ["0x...", ...], "smax": 12345 }
+    /// {
+    ///   "a_pub_user": ["0x...", ...],
+    ///   "a_pub_block": ["0x...", ...],
+    ///   "a_pub_function": ["0x...", ...]
+    /// }
     /// ```
-    fn extract_public_inputs(
-        &self,
-        work_dir: &Path,
-    ) -> Result<(Vec<String>, u64), BackendError> {
-        let path = work_dir.join("public_inputs.json");
+    ///
+    /// The full public inputs vector is the concatenation of all three arrays.
+    fn read_public_inputs(&self, dist_dir: &Path) -> Result<Vec<String>, BackendError> {
+        let path = dist_dir.join("resource/synthesizer/output/instance.json");
         let data = std::fs::read_to_string(&path).map_err(|e| {
             BackendError::proving(format!("failed to read {}: {e}", path.display()))
         })?;
-
-        #[derive(Deserialize)]
-        struct PublicInputsFile {
-            public_inputs: Vec<String>,
-            smax: u64,
-        }
-
-        let parsed: PublicInputsFile = serde_json::from_str(&data).map_err(|e| {
-            BackendError::proving(format!("failed to parse public_inputs.json: {e}"))
+        let instance: InstanceJson = serde_json::from_str(&data).map_err(|e| {
+            BackendError::proving(format!("failed to parse instance.json: {e}"))
         })?;
 
-        Ok((parsed.public_inputs, parsed.smax))
+        // Concatenate: a_pub_user ++ a_pub_block ++ a_pub_function
+        let mut public_inputs = instance.a_pub_user;
+        public_inputs.extend(instance.a_pub_block);
+        public_inputs.extend(instance.a_pub_function);
+        Ok(public_inputs)
+    }
+
+    /// Read `s_max` from `setupParams.json`.
+    ///
+    /// `s_max` is a circuit-level parameter set during trusted setup.
+    /// Valid values: 64, 128, 256, 512, 1024, 2048.
+    fn read_smax(&self, dist_dir: &Path) -> Result<u64, BackendError> {
+        let path = dist_dir.join("resource/qap-compiler/library/setupParams.json");
+        let data = std::fs::read_to_string(&path).map_err(|e| {
+            BackendError::proving(format!("failed to read {}: {e}", path.display()))
+        })?;
+        let params: SetupParams = serde_json::from_str(&data).map_err(|e| {
+            BackendError::proving(format!("failed to parse setupParams.json: {e}"))
+        })?;
+        Ok(params.s_max)
     }
 }
 
@@ -506,5 +553,125 @@ mod tests {
     fn prover_type_is_tokamak() {
         let backend = TokamakBackend::new("tokamak-cli".into(), ".".into());
         assert_eq!(backend.prover_type(), ProverType::Tokamak);
+    }
+
+    /// Test parsing actual proof.json from Tokamak-zk-EVM output.
+    #[test]
+    fn parse_real_proof_json() {
+        let json = r#"{
+            "proof_entries_part1": [
+                "0x14707e7c13706ad855a0110bd1a95fbe",
+                "0x10d6824c08b9845d68190898015afe56"
+            ],
+            "proof_entries_part2": [
+                "0x751730d725d624d4d65dc9ece3c952d054255c31b1dd297e2f1458ab472e2185",
+                "0xec91fa306f8fd2dc4254d1a93e0c634da644750b1373c57843c45bd87dd2ed1b"
+            ]
+        }"#;
+        let proof: FormattedProof = serde_json::from_str(json).unwrap();
+        assert_eq!(proof.proof_entries_part1.len(), 2);
+        assert_eq!(proof.proof_entries_part2.len(), 2);
+        // part1 values should fit in u128
+        let val = parse_hex_u256(&proof.proof_entries_part1[0]).unwrap();
+        assert!(val <= U256::from(u128::MAX));
+    }
+
+    /// Test parsing actual preprocess.json from Tokamak-zk-EVM output.
+    #[test]
+    fn parse_real_preprocess_json() {
+        let json = r#"{
+            "preprocess_entries_part1": [
+                "0x0592ea049faa4b7c5464a5779e3d59a3",
+                "0x100a2db829d1551e0980d52175ce0ea6",
+                "0x08c69f68d7c3c93aad10d3e65c3bf996",
+                "0x0c0aab59c18db9b3269af60b2eb8b947"
+            ],
+            "preprocess_entries_part2": [
+                "0x193316eb55d3413d82ac47f71a412d5eaee3e1f39469a882a0d0cffc84aeadf9",
+                "0x8631b5cb57934d8ac49c9c7e1f294ceed762aab6e7c2b42d268e9fa43641cbb3",
+                "0xfe348e5ecc24c936bb564a82b96d1795942b6297b3c174b8e44f7673075552bd",
+                "0x1305c8a83e9950c060dc85b4964fc2ebc96261e8f9d7148a988acc81782c936c"
+            ]
+        }"#;
+        let pp: FormattedPreprocess = serde_json::from_str(json).unwrap();
+        assert_eq!(pp.preprocess_entries_part1.len(), 4);
+        assert_eq!(pp.preprocess_entries_part2.len(), 4);
+    }
+
+    /// Test parsing instance.json (public inputs) format.
+    #[test]
+    fn parse_instance_json() {
+        let json = r#"{
+            "a_pub_user": ["0x1", "0x2", "0x3"],
+            "a_pub_block": ["0x4", "0x5"],
+            "a_pub_function": ["0x6"]
+        }"#;
+        let instance: InstanceJson = serde_json::from_str(json).unwrap();
+        assert_eq!(instance.a_pub_user.len(), 3);
+        assert_eq!(instance.a_pub_block.len(), 2);
+        assert_eq!(instance.a_pub_function.len(), 1);
+
+        // Concatenation order
+        let mut all = instance.a_pub_user;
+        all.extend(instance.a_pub_block);
+        all.extend(instance.a_pub_function);
+        assert_eq!(all, vec!["0x1", "0x2", "0x3", "0x4", "0x5", "0x6"]);
+    }
+
+    /// Test parsing setupParams.json for s_max.
+    #[test]
+    fn parse_setup_params() {
+        let json = r#"{"l":512,"l_user_out":8,"l_user":40,"l_block":64,"l_D":2560,"m_D":13251,"n":2048,"s_D":23,"s_max":256}"#;
+        let params: SetupParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.s_max, 256);
+    }
+
+    /// Test ABI encoding with real-sized proof data (38 part1 + 42 part2).
+    #[test]
+    fn abi_encode_real_sized_proof() {
+        let proof_part1: Vec<String> = (0..38)
+            .map(|i| format!("0x{:032x}", i + 1))
+            .collect();
+        let proof_part2: Vec<String> = (0..42)
+            .map(|i| format!("0x{:064x}", i + 100))
+            .collect();
+        let preprocess_part1: Vec<String> = (0..4)
+            .map(|i| format!("0x{:032x}", i + 200))
+            .collect();
+        let preprocess_part2: Vec<String> = (0..4)
+            .map(|i| format!("0x{:064x}", i + 300))
+            .collect();
+        // 40 + 24 + 448 = 512 public inputs (real size)
+        let public_inputs: Vec<String> = (0..512)
+            .map(|i| format!("0x{:x}", i))
+            .collect();
+
+        let output = TokamakProveOutput {
+            proof: FormattedProof {
+                proof_entries_part1: proof_part1,
+                proof_entries_part2: proof_part2,
+            },
+            preprocess: FormattedPreprocess {
+                preprocess_entries_part1: preprocess_part1,
+                preprocess_entries_part2: preprocess_part2,
+            },
+            public_inputs,
+            smax: 256,
+        };
+
+        let encoded = abi_encode_tokamak_proof(&output).unwrap();
+
+        // Head: 6 * 32 = 192
+        // proof_part1: 32 + 38*32 = 1248
+        // proof_part2: 32 + 42*32 = 1376
+        // preprocess_part1: 32 + 4*32 = 160
+        // preprocess_part2: 32 + 4*32 = 160
+        // public_inputs: 32 + 512*32 = 16416
+        // Total: 192 + 1248 + 1376 + 160 + 160 + 16416 = 19552
+        assert_eq!(encoded.len(), 19552);
+
+        // Verify smax at slot 5
+        let smax_bytes = U256::from(256).to_big_endian();
+        assert_eq!(&encoded[160..192], &smax_bytes);
     }
 }
