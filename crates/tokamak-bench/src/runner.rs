@@ -87,6 +87,18 @@ pub fn default_scenarios() -> Vec<Scenario> {
             name: "ERC20Mint",
             iterations: 500,
         },
+        Scenario {
+            name: "KeccakLoop",
+            iterations: 57,
+        },
+        Scenario {
+            name: "BitwiseOps",
+            iterations: 57,
+        },
+        Scenario {
+            name: "Exponentiation",
+            iterations: 57,
+        },
     ]
 }
 
