@@ -304,7 +304,7 @@ fn test_detect_reentrancy() {
 }
 
 #[test]
-fn test_detect_flash_loan() {
+fn test_detect_flash_loan_eth() {
     let lender = addr(0x10);
     let borrower = addr(0x20);
 
@@ -345,6 +345,119 @@ fn test_detect_flash_loan() {
         .filter(|p| matches!(p, AttackPattern::FlashLoan { .. }))
         .collect();
     assert!(!flash_loans.is_empty());
+    // ETH flash loan: no provider/token
+    if let AttackPattern::FlashLoan {
+        provider, token, ..
+    } = &flash_loans[0]
+    {
+        assert!(provider.is_none());
+        assert!(token.is_none());
+    }
+}
+
+#[test]
+fn test_detect_flash_loan_erc20() {
+    let token_addr = addr(0xDEAD);
+    let lender_pool = addr(0x10);
+    let borrower = addr(0x20);
+
+    let mut steps: Vec<StepRecord> = Vec::new();
+
+    // Step 0: ERC-20 Transfer from lender → borrower (borrow)
+    steps.push(make_log3_transfer(0, 0, token_addr, lender_pool, borrower));
+
+    // Fill with ops in the middle (total ~100 steps)
+    for i in 1..80 {
+        steps.push(make_step(i, 0x01, 0, borrower)); // ADD ops
+    }
+
+    // Step 80: ERC-20 Transfer from borrower → lender (repay)
+    steps.push(make_log3_transfer(80, 0, token_addr, borrower, lender_pool));
+
+    for i in 81..100 {
+        steps.push(make_step(i, 0x00, 0, borrower));
+    }
+
+    let patterns = AttackClassifier::classify(&steps);
+    let flash_loans: Vec<_> = patterns
+        .iter()
+        .filter(|p| matches!(p, AttackPattern::FlashLoan { .. }))
+        .collect();
+    assert!(!flash_loans.is_empty(), "should detect ERC-20 flash loan");
+    if let AttackPattern::FlashLoan {
+        token, provider, ..
+    } = &flash_loans[0]
+    {
+        assert_eq!(*token, Some(token_addr));
+        assert_eq!(*provider, Some(lender_pool));
+    }
+}
+
+#[test]
+fn test_detect_flash_loan_callback() {
+    let attacker = addr(0x99);
+    let flash_provider = addr(0xAA);
+
+    // Simulate: attacker (depth 0) → flash provider (depth 1) → callback to
+    // attacker (depth 2+) where most execution happens.
+    let mut steps: Vec<StepRecord> = Vec::new();
+
+    // Entry: attacker calls flash provider at depth 0
+    steps.push(make_call_step(0, 0, attacker, flash_provider, U256::zero()));
+
+    // Flash provider calls back at depth 1
+    steps.push(make_call_step(1, 1, flash_provider, attacker, U256::zero()));
+
+    // 90% of execution at depth 2+ (inside callback)
+    for i in 2..92 {
+        steps.push(make_step(i, 0x01, 2, attacker)); // ADD ops at depth 2
+    }
+
+    // SSTORE inside the callback (state modification = non-trivial)
+    steps.push(make_sstore_step(92, 2, attacker, slot(1), U256::from(42)));
+
+    // CALL inside callback
+    steps.push(make_call_step(93, 2, attacker, addr(0xBB), U256::zero()));
+
+    // More ops at depth 2
+    for i in 94..98 {
+        steps.push(make_step(i, 0x01, 2, attacker));
+    }
+
+    // Return to depth 0
+    steps.push(make_step(98, 0xF3, 1, flash_provider)); // RETURN
+    steps.push(make_step(99, 0x00, 0, attacker)); // STOP
+
+    let patterns = AttackClassifier::classify(&steps);
+    let flash_loans: Vec<_> = patterns
+        .iter()
+        .filter(|p| matches!(p, AttackPattern::FlashLoan { .. }))
+        .collect();
+    assert!(
+        !flash_loans.is_empty(),
+        "should detect callback-based flash loan"
+    );
+    if let AttackPattern::FlashLoan { provider, .. } = &flash_loans[0] {
+        assert_eq!(*provider, Some(flash_provider));
+    }
+}
+
+#[test]
+fn test_no_flash_loan_for_shallow_execution() {
+    let contract = addr(0x42);
+
+    // All execution at depth 0 — no callback pattern
+    let mut steps: Vec<StepRecord> = Vec::new();
+    for i in 0..100 {
+        steps.push(make_step(i, 0x01, 0, contract));
+    }
+
+    let patterns = AttackClassifier::classify(&steps);
+    let flash_loans: Vec<_> = patterns
+        .iter()
+        .filter(|p| matches!(p, AttackPattern::FlashLoan { .. }))
+        .collect();
+    assert!(flash_loans.is_empty(), "shallow execution should not trigger flash loan");
 }
 
 #[test]
