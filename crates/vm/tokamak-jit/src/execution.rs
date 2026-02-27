@@ -21,6 +21,8 @@
 //! pipeline: only valid function pointers produced by revmc/LLVM are stored in
 //! the code cache.
 
+use std::cell::RefCell;
+
 use bytes::Bytes;
 use revm_bytecode::Bytecode;
 use revm_interpreter::{
@@ -44,6 +46,19 @@ use ethrex_levm::jit::types::{
     JitCallScheme, JitOutcome, JitResumeState, JitSubCall, SubCallResult,
 };
 use ethrex_levm::vm::Substate;
+
+/// Maximum number of `JitResumeStateInner` instances to retain in the
+/// thread-local pool. Limits memory usage for threads that process deeply
+/// nested CALL chains. 16 covers the vast majority of DeFi transactions.
+const RESUME_STATE_POOL_CAP: usize = 16;
+
+thread_local! {
+    /// Thread-local pool of `JitResumeStateInner` boxes to reduce heap
+    /// allocation churn during suspend/resume cycles. Each CALL suspend
+    /// pops from the pool (or allocates), each resume pushes back.
+    static RESUME_STATE_POOL: RefCell<Vec<Box<JitResumeStateInner>>> =
+        RefCell::new(Vec::new());
+}
 
 /// Internal resume state preserved across suspend/resume cycles.
 /// Private to tokamak-jit; exposed to LEVM only as `JitResumeState(Box<dyn Any + Send>)`.
@@ -73,6 +88,60 @@ struct JitResumeStateInner {
 #[expect(unsafe_code)]
 unsafe impl Send for JitResumeStateInner {}
 
+/// Acquire a `JitResumeStateInner` box from the thread-local pool, or
+/// allocate a new one if the pool is empty. All fields will be overwritten
+/// by the caller before use — the pool only retains heap allocations
+/// (the Box itself and the storage_journal's capacity).
+fn acquire_resume_state(
+    interpreter: Interpreter,
+    compiled_fn: EvmCompilerFn,
+    gas_limit: u64,
+    return_memory_offset: usize,
+    return_memory_size: usize,
+    storage_journal: Vec<(
+        ethrex_common::Address,
+        ethrex_common::H256,
+        ethrex_common::U256,
+    )>,
+) -> Box<JitResumeStateInner> {
+    let mut state = RESUME_STATE_POOL
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_else(|| {
+            Box::new(JitResumeStateInner {
+                interpreter: Interpreter::default(),
+                // SAFETY: null pointer as sentinel — overwritten immediately below.
+                #[expect(unsafe_code)]
+                compiled_fn: unsafe {
+                    EvmCompilerFn::new(std::mem::transmute::<*const (), _>(std::ptr::null()))
+                },
+                gas_limit: 0,
+                return_memory_offset: 0,
+                return_memory_size: 0,
+                storage_journal: Vec::new(),
+            })
+        });
+    state.interpreter = interpreter;
+    state.compiled_fn = compiled_fn;
+    state.gas_limit = gas_limit;
+    state.return_memory_offset = return_memory_offset;
+    state.return_memory_size = return_memory_size;
+    state.storage_journal = storage_journal;
+    state
+}
+
+/// Return a `JitResumeStateInner` box to the thread-local pool.
+/// The journal is cleared to free memory, but its allocation is retained.
+fn release_resume_state(mut state: Box<JitResumeStateInner>) {
+    state.storage_journal.clear();
+    RESUME_STATE_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < RESUME_STATE_POOL_CAP {
+            pool.push(state);
+        }
+        // else: drop the state (pool is full)
+    });
+}
+
 /// Execute JIT-compiled bytecode against LEVM state (single step).
 ///
 /// Returns `JitOutcome::Success`/`Revert` for terminal execution, or
@@ -95,10 +164,14 @@ pub fn execute_jit(
 
     let spec_id = fork_to_spec_id(env.config.fork);
 
-    // Build revm Interpreter from LEVM CallFrame
-    let bytecode_raw = Bytecode::new_raw(revm_primitives::Bytes(Bytes::copy_from_slice(
-        &call_frame.bytecode.bytecode,
-    )));
+    // Build revm Interpreter from LEVM CallFrame.
+    // Use cached bytecode from CompiledCode when available (zero-copy via Arc::clone),
+    // falling back to copy_from_slice for CompiledCode entries without cached bytes.
+    let bytecode_bytes = match &compiled.cached_bytecode {
+        Some(cached) => revm_primitives::Bytes((**cached).clone()),
+        None => revm_primitives::Bytes(Bytes::copy_from_slice(&call_frame.bytecode.bytecode)),
+    };
+    let bytecode_raw = Bytecode::new_raw(bytecode_bytes);
     let ext_bytecode = ExtBytecode::new(bytecode_raw);
     let input = InputsImpl {
         target_address: levm_address_to_revm(&call_frame.to),
@@ -164,26 +237,33 @@ pub fn execute_jit_resume(
     env: &Environment,
     storage_original_values: &mut ethrex_levm::jit::dispatch::StorageOriginalValues,
 ) -> Result<JitOutcome, JitError> {
-    // Downcast the opaque state
-    let inner = resume_state
+    // Downcast the opaque state and extract fields.
+    // The Box is returned to the thread-local pool after extracting values.
+    let mut inner = resume_state
         .0
         .downcast::<JitResumeStateInner>()
         .map_err(|_| JitError::AdapterError("invalid JitResumeState type".to_string()))?;
 
-    let mut interpreter = inner.interpreter;
     let f = inner.compiled_fn;
     let gas_limit = inner.gas_limit;
     let return_memory_offset = inner.return_memory_offset;
     let return_memory_size = inner.return_memory_size;
-    let restored_journal = inner.storage_journal;
+    // Take journal out of inner (leaves empty Vec in place — cheap)
+    let restored_journal = std::mem::take(&mut inner.storage_journal);
 
     // Apply sub-call result to interpreter: gas credit, stack push, memory write, return_data
     apply_subcall_result(
-        &mut interpreter,
+        &mut inner.interpreter,
         &sub_result,
         return_memory_offset,
         return_memory_size,
     );
+
+    // Take interpreter out of inner for the execution call
+    let mut interpreter = std::mem::take(&mut inner.interpreter);
+
+    // Return inner to pool now — it's no longer needed
+    release_resume_state(inner);
 
     // Build new Host for this invocation (scoped borrows)
     let mut host = LevmHost::new(
@@ -285,15 +365,16 @@ fn handle_interpreter_action(
             // suspend/resume cycles (M2 fix — Volkov R21).
             let journal = std::mem::take(&mut host.storage_journal);
 
-            // Pack interpreter + fn into opaque resume state
-            let resume_state = JitResumeState(Box::new(JitResumeStateInner {
+            // Reuse a pooled JitResumeStateInner to avoid heap allocation.
+            let inner = acquire_resume_state(
                 interpreter,
                 compiled_fn,
                 gas_limit,
                 return_memory_offset,
                 return_memory_size,
-                storage_journal: journal,
-            }));
+                journal,
+            );
+            let resume_state = JitResumeState(inner as Box<dyn std::any::Any + Send>);
 
             Ok(JitOutcome::Suspended {
                 resume_state,

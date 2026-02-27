@@ -132,14 +132,18 @@ impl TokamakCompiler {
 
             let raw_fn = f.into_inner();
 
+            // Cache bytecode bytes for zero-copy reuse during JIT execution.
+            let bytecode_bytes = bytes::Bytes::copy_from_slice(analyzed.bytecode.as_ref());
+
             #[expect(unsafe_code, clippy::as_conversions)]
             let compiled = unsafe {
-                CompiledCode::new(
+                CompiledCode::new_with_bytecode(
                     raw_fn as *const (),
                     analyzed.bytecode.len(),
                     analyzed.basic_blocks.len(),
                     None, // No arena — standalone leak path
                     analyzed.has_external_calls,
+                    bytecode_bytes,
                 )
             };
 
@@ -194,14 +198,19 @@ impl TokamakCompiler {
 
             let raw_fn = f.into_inner();
 
+            // Cache bytecode bytes for zero-copy reuse during JIT execution.
+            // This eliminates per-CALL `Bytes::copy_from_slice` overhead (~1-5μs).
+            let bytecode_bytes = bytes::Bytes::copy_from_slice(analyzed.bytecode.as_ref());
+
             #[expect(unsafe_code, clippy::as_conversions)]
             let compiled = unsafe {
-                CompiledCode::new(
+                CompiledCode::new_with_bytecode(
                     raw_fn as *const (),
                     analyzed.bytecode.len(),
                     analyzed.basic_blocks.len(),
                     Some((arena_id, slot_idx)),
                     analyzed.has_external_calls,
+                    bytecode_bytes,
                 )
             };
 

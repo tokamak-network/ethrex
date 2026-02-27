@@ -4,6 +4,7 @@
 //! The cache is thread-safe and designed for concurrent read access
 //! with infrequent writes (compilation events).
 
+use bytes::Bytes;
 use ethrex_common::H256;
 use ethrex_common::types::Fork;
 use std::collections::HashMap;
@@ -43,6 +44,10 @@ pub struct CompiledCode {
     /// Whether the original bytecode contains CALL/CALLCODE/DELEGATECALL/STATICCALL/CREATE/CREATE2.
     /// Cached from `AnalyzedBytecode::has_external_calls` to avoid re-scanning bytecode on each dispatch.
     pub has_external_calls: bool,
+    /// Cached raw bytecode bytes for zero-copy reuse during JIT execution.
+    /// Populated at compilation time and shared via Arc across all JIT
+    /// invocations — eliminates per-CALL `Bytes::copy_from_slice` (~1-5μs).
+    pub cached_bytecode: Option<Arc<Bytes>>,
 }
 
 impl CompiledCode {
@@ -67,6 +72,31 @@ impl CompiledCode {
             basic_block_count,
             arena_slot,
             has_external_calls,
+            cached_bytecode: None,
+        }
+    }
+
+    /// Create a new `CompiledCode` with a cached bytecode for zero-copy reuse.
+    ///
+    /// # Safety
+    ///
+    /// Same safety requirements as [`new`](Self::new).
+    #[allow(unsafe_code)]
+    pub unsafe fn new_with_bytecode(
+        ptr: *const (),
+        bytecode_size: usize,
+        basic_block_count: usize,
+        arena_slot: Option<FuncSlot>,
+        has_external_calls: bool,
+        bytecode: Bytes,
+    ) -> Self {
+        Self {
+            ptr,
+            bytecode_size,
+            basic_block_count,
+            arena_slot,
+            has_external_calls,
+            cached_bytecode: Some(Arc::new(bytecode)),
         }
     }
 
@@ -92,6 +122,10 @@ impl std::fmt::Debug for CompiledCode {
             .field("basic_block_count", &self.basic_block_count)
             .field("arena_slot", &self.arena_slot)
             .field("has_external_calls", &self.has_external_calls)
+            .field(
+                "cached_bytecode",
+                &self.cached_bytecode.as_ref().map(|b| b.len()),
+            )
             .finish()
     }
 }

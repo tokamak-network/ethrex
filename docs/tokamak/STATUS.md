@@ -46,6 +46,7 @@
 - JIT-to-JIT direct dispatch (G-4) — VM-layer fast dispatch for child CALL bytecodes, cache lookup + direct JIT execution, recursive suspend/resume, configurable + metrics, 10 tests
 - LRU cache eviction (G-6) — replaced FIFO with AtomicU64-based LRU timestamps, lock-free get() hot path, O(n) eviction scan on insert(), 9 cache unit + 5 integration tests
 - Precompile JIT acceleration (G-8) — `precompile_fast_dispatches` metric in JitMetrics, `enable_precompile_fast_dispatch` config toggle, metric tracking in `handle_jit_subcall()` precompile path, 9 tests (5 interpreter + 4 JIT differential)
+- Recursive CALL runtime optimization (D-1 v1.1) — 3-tier optimization: (1) bytecode zero-copy caching via `Arc<Bytes>` in CompiledCode, (2) thread-local resume state pool (16-entry cap), (3) TX-scoped bytecode cache in VM (`FxHashMap<H256, Code>`), 11 tests (69 total tokamak-jit)
 
 **Remaining:**
 - Tiered optimization (profile-guided optimization)
@@ -188,6 +189,9 @@ R23(5.0) -> R24(8.0)
 - JIT-to-JIT Direct Dispatch (G-4) — VM-layer fast dispatch: child CALL bytecodes checked against JIT cache and executed directly via `execute_jit()`, recursive suspend/resume for nested JIT calls, `enable_jit_dispatch` config + `jit_to_jit_dispatches` metric, 10 tests (2026-02-27)
 - LRU Cache Eviction (G-6) — Replaced FIFO (VecDeque) with LRU eviction: per-entry AtomicU64 timestamps, monotonic access_counter outside RwLock, atomic-only get() hot path, O(n) min_by_key eviction on insert(), 9+5 tests (2026-02-27)
 - Precompile JIT Acceleration (G-8) — `precompile_fast_dispatches` metric in JitMetrics, `enable_precompile_fast_dispatch` config toggle in JitConfig, `is_precompile_fast_dispatch_enabled()` on JitState, metric tracking in `handle_jit_subcall()` precompile path, 9 tests (5 interpreter correctness + 4 JIT differential), 58 total tokamak-jit tests (2026-02-27)
+
+### Recently Completed (Phase D continued)
+- Recursive CALL runtime optimization (D-1 v1.1) — 3-tier optimization without revmc modifications: Tier 1 bytecode zero-copy (`CompiledCode.cached_bytecode: Option<Arc<Bytes>>`), Tier 2 resume state pool (thread-local 16-entry pool), Tier 3 TX-scoped bytecode cache (`VM.bytecode_cache`), `bytecode_cache_hits` metric, 11 tests (69 total tokamak-jit)
 
 ### Not Started
 - EF grant application

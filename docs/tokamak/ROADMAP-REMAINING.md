@@ -1,7 +1,7 @@
 # Tokamak Remaining Work Roadmap
 
 **Created**: 2026-02-24 | **Updated**: 2026-02-27
-**Context**: Overall ~95% complete. JIT core done (Phases 2-8). Phase A: ALL P0 COMPLETE (A-1 ✅ A-2 ✅ A-3 ✅ A-4 ✅). Phase B: B-1 ✅ B-2 ✅ B-3 ✅ — ALL COMPLETE. Phase C: C-1 ✅ C-2 ✅ C-3 ✅ — ALL COMPLETE. Phase D: D-1 decided (accept), D-2 ✅ DONE, D-3 ✅ DONE. Phase E: E-1 ✅ DONE, E-2 ✅ DONE, E-3 ✅ DONE — ALL COMPLETE. Phase F: F-1 ✅ DONE, F-2 ✅ DONE, F-3 ✅ DONE (scaffolding), F-4 ✅ DONE, F-5 CI CONFIGURED (awaiting sync run). Phase G: G-1 ✅ DONE (arena allocator), G-2 ✅ DONE (auto-resolved by G-1), G-3 ✅ DONE (CALL/CREATE dual-execution validation), G-4 ✅ DONE (JIT-to-JIT direct dispatch), G-5 ✅ DONE (parallel compilation pool), G-6 ✅ DONE (LRU cache eviction — AtomicU64 timestamps), G-7 ✅ DONE (constant folding enhancement — 22 opcodes + unary patterns), G-8 ✅ DONE (precompile JIT acceleration — fast dispatch + metric tracking).
+**Context**: Overall ~95% complete. JIT core done (Phases 2-8). Phase A: ALL P0 COMPLETE (A-1 ✅ A-2 ✅ A-3 ✅ A-4 ✅). Phase B: B-1 ✅ B-2 ✅ B-3 ✅ — ALL COMPLETE. Phase C: C-1 ✅ C-2 ✅ C-3 ✅ — ALL COMPLETE. Phase D: D-1 ✅ DONE (v1.1 runtime opt), D-2 ✅ DONE, D-3 ✅ DONE. Phase E: E-1 ✅ DONE, E-2 ✅ DONE, E-3 ✅ DONE — ALL COMPLETE. Phase F: F-1 ✅ DONE, F-2 ✅ DONE, F-3 ✅ DONE (scaffolding), F-4 ✅ DONE, F-5 CI CONFIGURED (awaiting sync run). Phase G: G-1 ✅ DONE (arena allocator), G-2 ✅ DONE (auto-resolved by G-1), G-3 ✅ DONE (CALL/CREATE dual-execution validation), G-4 ✅ DONE (JIT-to-JIT direct dispatch), G-5 ✅ DONE (parallel compilation pool), G-6 ✅ DONE (LRU cache eviction — AtomicU64 timestamps), G-7 ✅ DONE (constant folding enhancement — 22 opcodes + unary patterns), G-8 ✅ DONE (precompile JIT acceleration — fast dispatch + metric tracking).
 
 ---
 
@@ -131,12 +131,17 @@
 
 > "From 2x to 3-5x target."
 
-### D-1. Recursive CALL Performance [P2] — DECISION: (c) Accept for v1.0 → G-4 RESOLVES
+### D-1. Recursive CALL Performance [P2] ✅ DONE (v1.1 Runtime Optimization)
 - Current: JIT suspend -> LEVM dispatch -> JIT resume is extremely slow
 - **Decision**: (c) Accept limitation for v1.0 — non-recursive scenarios already 2-2.5x speedup
 - **UPDATE**: G-4 (JIT-to-JIT Direct Dispatch) resolves this for JIT-compiled children — child bytecodes in JIT cache execute directly without full suspend/resume overhead. Deep recursive patterns (FibonacciRecursive) still use suspend/resume but shallow CALL patterns (ERC20) benefit from fast dispatch.
+- **v1.1 Runtime Optimizations** (3-tier, no revmc modifications):
+  - **Tier 1**: Bytecode zero-copy caching — `CompiledCode.cached_bytecode: Option<Arc<Bytes>>`, `new_with_bytecode()` constructor, `Arc::clone` in `execute_jit()` replaces `Bytes::copy_from_slice` (~1-5μs/CALL saved) ✅
+  - **Tier 2**: Resume state reuse — thread-local pool (`RESUME_STATE_POOL`) of `JitResumeStateInner` boxes, `acquire_resume_state()`/`release_resume_state()` with 16-entry cap, eliminates Box alloc/dealloc per suspend/resume cycle ✅
+  - **Tier 3**: TX-scoped bytecode cache — `VM.bytecode_cache: FxHashMap<H256, Code>`, avoids repeated DB lookups for same contract in multi-CALL tx, `bytecode_cache_hits` metric in JitMetrics ✅
+- **Verification**: 11 tests (5 Tier 1 zero-copy + 1 Tier 2 pool + 5 Tier 3 cache), 69 total tokamak-jit tests ✅
 - **Dependency**: B-1 ✅
-- **Resolved by**: G-4 ✅
+- **Resolved by**: G-4 ✅ + D-1 v1.1 runtime optimizations ✅
 
 ### D-2. Bytecode Size Limit — Graceful Interpreter Fallback [P2] ✅ DONE
 - revmc hard limit: 24576 bytes (EIP-170 MAX_CODE_SIZE)

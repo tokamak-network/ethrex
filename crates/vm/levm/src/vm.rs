@@ -484,6 +484,12 @@ pub struct VM<'a> {
     /// Per-opcode recorder for time-travel debugging.
     #[cfg(feature = "tokamak-debugger")]
     pub opcode_recorder: Option<Rc<RefCell<dyn crate::debugger_hook::OpcodeRecorder>>>,
+    /// Tx-scoped bytecode cache: avoids repeated `db.get_code()` + `Code::clone()`
+    /// for hot contracts called multiple times in a single transaction (e.g., DeFi
+    /// routers calling the same pool 2-10 times). Keyed by code hash; automatically
+    /// dropped when the VM is dropped at tx boundary.
+    #[cfg(feature = "tokamak-jit")]
+    pub bytecode_cache: FxHashMap<H256, Code>,
 }
 
 impl<'a> VM<'a> {
@@ -534,6 +540,8 @@ impl<'a> VM<'a> {
             opcode_table: VM::build_opcode_table(fork),
             #[cfg(feature = "tokamak-debugger")]
             opcode_recorder: None,
+            #[cfg(feature = "tokamak-jit")]
+            bytecode_cache: FxHashMap::default(),
         };
 
         let call_type = if is_create {
@@ -1209,9 +1217,21 @@ impl<'a> VM<'a> {
                 // per EIP-7928 (ref: generic_call)
                 let bal_checkpoint = self.db.bal_recorder.as_ref().map(|r| r.checkpoint());
 
-                // Load target bytecode
+                // Load target bytecode from tx-scoped cache or DB.
+                // DeFi routers often call the same pool 2-10 times per tx;
+                // caching avoids repeated DB lookups + Code clones (~3-5μs each).
                 let code_hash = self.db.get_account(code_address)?.info.code_hash;
-                let bytecode = self.db.get_code(code_hash)?.clone();
+                let bytecode = if let Some(cached) = self.bytecode_cache.get(&code_hash) {
+                    JIT_STATE
+                        .metrics
+                        .bytecode_cache_hits
+                        .fetch_add(1, Ordering::Relaxed);
+                    cached.clone()
+                } else {
+                    let code = self.db.get_code(code_hash)?.clone();
+                    self.bytecode_cache.insert(code_hash, code.clone());
+                    code
+                };
 
                 let mut stack = self.stack_pool.pop().unwrap_or_default();
                 stack.clear();

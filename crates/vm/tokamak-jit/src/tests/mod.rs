@@ -9,6 +9,7 @@ pub mod oversized;
 pub mod parallel_compilation;
 pub mod precompile_fast_dispatch;
 pub mod proptest_gas;
+pub mod recursive_call_opt;
 pub mod selfdestruct;
 pub mod storage;
 pub mod subcall;
