@@ -64,6 +64,10 @@ pub enum InputMode {
         /// Output format: json or markdown
         #[arg(long, default_value = "markdown")]
         format: String,
+
+        /// Output file path (default: autopsy-<tx_hash_prefix>.<ext> in current dir)
+        #[arg(long, short)]
+        output: Option<String>,
     },
 }
 
@@ -77,7 +81,8 @@ pub fn run(args: Args) -> Result<(), DebuggerError> {
             rpc_url,
             block_number,
             format,
-        } => run_autopsy(&tx_hash, &rpc_url, block_number, &format),
+            output,
+        } => run_autopsy(&tx_hash, &rpc_url, block_number, &format, output.as_deref()),
     }
 }
 
@@ -160,6 +165,7 @@ fn run_autopsy(
     rpc_url: &str,
     block_number_override: Option<u64>,
     output_format: &str,
+    output_path: Option<&str>,
 ) -> Result<(), DebuggerError> {
     use ethrex_common::H256;
 
@@ -311,19 +317,33 @@ fn run_autopsy(
         storage_diffs,
     );
 
-    // Output
-    match output_format {
+    // Render output
+    let (content, ext) = match output_format {
         "json" => {
             let json = report
                 .to_json()
                 .map_err(|e| DebuggerError::Report(format!("JSON serialization: {e}")))?;
-            println!("{json}");
+            (json, "json")
         }
-        _ => {
-            println!("{}", report.to_markdown());
-        }
-    }
+        _ => (report.to_markdown(), "md"),
+    };
 
-    eprintln!("[autopsy] Done.");
+    // Determine output file path
+    let file_path = match output_path {
+        Some(p) => p.to_string(),
+        None => {
+            let hash_prefix = tx_hash_hex
+                .strip_prefix("0x")
+                .unwrap_or(tx_hash_hex)
+                .get(..8)
+                .unwrap_or("unknown");
+            format!("autopsy-{hash_prefix}.{ext}")
+        }
+    };
+
+    std::fs::write(&file_path, &content)
+        .map_err(|e| DebuggerError::Report(format!("write {file_path}: {e}")))?;
+
+    eprintln!("[autopsy] Report saved to {file_path}");
     Ok(())
 }
