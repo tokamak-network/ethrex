@@ -5,6 +5,7 @@
 	test integration-test integration-test-gpu state-diff-test \
 	init-guest-program down-guest-program \
 	zk-dex-localnet zk-dex-localnet-no-prover zk-dex-localnet-stop zk-dex-localnet-status \
+	zk-dex-tokamak-localnet zk-dex-tokamak-localnet-no-prover zk-dex-tokamak-localnet-stop zk-dex-tokamak-localnet-status \
 	zk-dex-docker zk-dex-docker-no-prover zk-dex-docker-no-gpu zk-dex-docker-stop zk-dex-docker-status zk-dex-docker-logs zk-dex-docker-clean \
 	zk-dex-docker-tools zk-dex-docker-tools-stop zk-dex-docker-tools-status zk-dex-docker-tools-clean
 
@@ -282,6 +283,46 @@ zk-dex-localnet-stop: ## 🛑 Stop ZK-DEX localnet
 
 zk-dex-localnet-status: ## 📊 Show ZK-DEX localnet status
 	./scripts/zk-dex-localnet.sh status
+
+# ==============================================================================
+# ZK-DEX + Tokamak E2E
+# ==============================================================================
+
+deploy-l1-tokamak-zk-dex: ## 📜 Deploys L1 contracts with Tokamak verifier + ZK-DEX genesis
+	COMPILE_CONTRACTS=true \
+	GUEST_PROGRAMS=evm-l2,zk-dex \
+	cargo run --release --features l2,l2-sql,tokamak --manifest-path ../../Cargo.toml -- l2 deploy \
+	--eth-rpc-url ${L1_RPC_URL} \
+	--private-key ${L1_PRIVATE_KEY} \
+	--tokamak true \
+	--on-chain-proposer-owner ${L2_OWNER_ADDRESS} \
+	--bridge-owner ${L2_OWNER_ADDRESS} \
+	--bridge-owner-pk ${BRIDGE_OWNER_PRIVATE_KEY} \
+	--deposit-rich \
+	--private-keys-file-path ../../fixtures/keys/private_keys_l1.txt \
+	--genesis-l1-path ${L1_GENESIS_FILE_PATH} \
+	--genesis-l2-path ${L2_GENESIS_FILE_PATH} \
+	--register-guest-programs zk-dex
+
+init-prover-tokamak: ## 🔐 Starts Tokamak prover with evm-l2 program
+	GUEST_PROGRAMS=evm-l2 \
+	cargo run --release --features "l2,l2-sql,tokamak" --manifest-path ../../Cargo.toml -- \
+	l2 prover \
+	--proof-coordinators tcp://127.0.0.1:3900 \
+	--backend tokamak \
+	--programs-config programs-tokamak-evm.toml
+
+zk-dex-tokamak-localnet: ## 🚀 Start ZK-DEX localnet with Tokamak backend
+	./scripts/zk-dex-tokamak-localnet.sh start
+
+zk-dex-tokamak-localnet-no-prover: ## 🚀 Start ZK-DEX Tokamak localnet without prover
+	./scripts/zk-dex-tokamak-localnet.sh start --no-prover
+
+zk-dex-tokamak-localnet-stop: ## 🛑 Stop ZK-DEX Tokamak localnet
+	./scripts/zk-dex-tokamak-localnet.sh stop
+
+zk-dex-tokamak-localnet-status: ## 📊 Show ZK-DEX Tokamak localnet status
+	./scripts/zk-dex-tokamak-localnet.sh status
 
 # ==============================================================================
 # ZK-DEX Docker E2E (SP1 + GPU)

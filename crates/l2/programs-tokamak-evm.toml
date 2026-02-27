@@ -1,0 +1,12 @@
+# Guest Program Registry Configuration — Tokamak EVM Backend
+#
+# Used by the prover when running with the Tokamak backend.
+# Tokamak-zk-EVM proves EVM execution directly (not a zkVM),
+# so only the evm-l2 guest program is supported.
+# zk-dex transactions are verified as part of normal EVM execution.
+
+# The program used when no specific program_id is requested.
+default_program = "evm-l2"
+
+# Only EVM-L2 is supported with Tokamak backend.
+enabled_programs = ["evm-l2"]

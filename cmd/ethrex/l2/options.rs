@@ -1117,6 +1117,24 @@ pub struct ProverClientOptions {
         help_heading = "Prover client options"
     )]
     pub programs_config: Option<String>,
+    #[cfg(feature = "tokamak")]
+    #[arg(
+        long = "tokamak-cli-path",
+        value_name = "PATH",
+        env = "ETHREX_TOKAMAK_CLI_PATH",
+        help = "Path to the tokamak-cli binary",
+        help_heading = "Prover client options"
+    )]
+    pub tokamak_cli_path: Option<std::path::PathBuf>,
+    #[cfg(feature = "tokamak")]
+    #[arg(
+        long = "tokamak-resource-dir",
+        value_name = "PATH",
+        env = "ETHREX_TOKAMAK_RESOURCE_DIR",
+        help = "Path to Tokamak resource directory (QAP, setup, etc.)",
+        help_heading = "Prover client options"
+    )]
+    pub tokamak_resource_dir: Option<std::path::PathBuf>,
 }
 
 impl From<ProverClientOptions> for ProverConfig {
@@ -1129,6 +1147,10 @@ impl From<ProverClientOptions> for ProverConfig {
             #[cfg(all(feature = "sp1", feature = "gpu"))]
             sp1_server: config.sp1_server,
             programs_config_path: config.programs_config,
+            #[cfg(feature = "tokamak")]
+            tokamak_cli_path: config.tokamak_cli_path,
+            #[cfg(feature = "tokamak")]
+            tokamak_resource_dir: config.tokamak_resource_dir,
         }
     }
 }
@@ -1146,6 +1168,10 @@ impl Default for ProverClientOptions {
             #[cfg(all(feature = "sp1", feature = "gpu"))]
             sp1_server: None,
             programs_config: None,
+            #[cfg(feature = "tokamak")]
+            tokamak_cli_path: None,
+            #[cfg(feature = "tokamak")]
+            tokamak_resource_dir: None,
         }
     }
 }
