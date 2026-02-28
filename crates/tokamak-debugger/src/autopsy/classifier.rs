@@ -8,9 +8,10 @@ use rustc_hash::FxHashMap;
 
 use crate::types::StepRecord;
 
-use super::types::AttackPattern;
+use super::types::{AttackPattern, DetectedPattern};
 
 // Opcode constants
+const OP_SLOAD: u8 = 0x54;
 const OP_SSTORE: u8 = 0x55;
 const OP_CALL: u8 = 0xF1;
 const OP_CALLCODE: u8 = 0xF2;
@@ -25,12 +26,50 @@ pub struct AttackClassifier;
 impl AttackClassifier {
     /// Analyze a trace and return all detected attack patterns.
     pub fn classify(steps: &[StepRecord]) -> Vec<AttackPattern> {
-        let mut patterns = Vec::new();
-        patterns.extend(Self::detect_reentrancy(steps));
-        patterns.extend(Self::detect_flash_loan(steps));
-        patterns.extend(Self::detect_price_manipulation(steps));
-        patterns.extend(Self::detect_access_control_bypass(steps));
-        patterns
+        Self::classify_with_confidence(steps)
+            .into_iter()
+            .map(|d| d.pattern)
+            .collect()
+    }
+
+    /// Analyze with confidence scores and evidence chains.
+    pub fn classify_with_confidence(steps: &[StepRecord]) -> Vec<DetectedPattern> {
+        let mut detected = Vec::new();
+
+        for pattern in Self::detect_reentrancy(steps) {
+            let (confidence, evidence) = Self::score_reentrancy(&pattern, steps);
+            detected.push(DetectedPattern {
+                pattern,
+                confidence,
+                evidence,
+            });
+        }
+        for pattern in Self::detect_flash_loan(steps) {
+            let (confidence, evidence) = Self::score_flash_loan(&pattern, steps);
+            detected.push(DetectedPattern {
+                pattern,
+                confidence,
+                evidence,
+            });
+        }
+        for pattern in Self::detect_price_manipulation(steps) {
+            let (confidence, evidence) = Self::score_price_manipulation(&pattern);
+            detected.push(DetectedPattern {
+                pattern,
+                confidence,
+                evidence,
+            });
+        }
+        for pattern in Self::detect_access_control_bypass(steps) {
+            let (confidence, evidence) = Self::score_access_control(&pattern, steps);
+            detected.push(DetectedPattern {
+                pattern,
+                confidence,
+                evidence,
+            });
+        }
+
+        detected
     }
 
     /// Detect reentrancy: CALL at depth D to address A, then steps at depth > D
@@ -244,23 +283,18 @@ impl AttackClassifier {
         }
 
         // Find the CALL that initiates the depth transition (flash loan call)
-        let flash_loan_call = steps.iter().find(|s| {
-            is_call_opcode(s.opcode) && s.depth == entry_depth
-        });
+        let flash_loan_call = steps
+            .iter()
+            .find(|s| is_call_opcode(s.opcode) && s.depth == entry_depth);
 
         // Find the provider: the target of that CALL
         let provider = flash_loan_call.and_then(extract_call_target);
 
         // Find the callback entry: first step at depth > entry_depth + 1
-        let callback_entry = steps
-            .iter()
-            .find(|s| s.depth > entry_depth + 1);
+        let callback_entry = steps.iter().find(|s| s.depth > entry_depth + 1);
 
         // Find the last deep step (approximate end of callback)
-        let callback_exit = steps
-            .iter()
-            .rev()
-            .find(|s| s.depth > entry_depth + 1);
+        let callback_exit = steps.iter().rev().find(|s| s.depth > entry_depth + 1);
 
         if let (Some(entry), Some(exit)) = (callback_entry, callback_exit) {
             // Count state-modifying ops inside the callback to confirm it's non-trivial
@@ -326,16 +360,101 @@ impl AttackClassifier {
                 .find(|&&(idx, addr)| idx > swap_step && addr == oracle_addr);
 
             if let Some(&(read2_idx, _)) = read2 {
+                let delta = Self::estimate_price_delta(steps, oracle_addr, read1_idx, read2_idx);
                 patterns.push(AttackPattern::PriceManipulation {
                     oracle_read_before: read1_idx,
                     swap_step,
                     oracle_read_after: read2_idx,
-                    price_delta_percent: 0.0, // Would need storage reads to calculate
+                    price_delta_percent: delta,
                 });
             }
         }
 
         patterns
+    }
+
+    /// Estimate price delta between two oracle reads by examining SLOAD values.
+    ///
+    /// Looks for SLOAD operations in the oracle contract near each STATICCALL.
+    /// The return value of SLOAD appears at stack_top[0] of the *next* step.
+    /// If the same slot is read with different values → compute percentage delta.
+    /// Returns -1.0 if values cannot be compared (no SLOAD data found).
+    fn estimate_price_delta(
+        steps: &[StepRecord],
+        oracle_addr: Address,
+        read1_idx: usize,
+        read2_idx: usize,
+    ) -> f64 {
+        // Collect SLOAD results near the first read (within 20 steps after read1)
+        let sloads_before =
+            Self::collect_sload_results(steps, oracle_addr, read1_idx, read1_idx + 20);
+        // Collect SLOAD results near the second read (within 20 steps after read2)
+        let sloads_after =
+            Self::collect_sload_results(steps, oracle_addr, read2_idx, read2_idx + 20);
+
+        if sloads_before.is_empty() || sloads_after.is_empty() {
+            return -1.0; // Cannot determine — no SLOAD data
+        }
+
+        // Match SLOAD results by slot key — if same slot read twice with different values
+        for (slot_before, value_before) in &sloads_before {
+            for (slot_after, value_after) in &sloads_after {
+                if slot_before != slot_after {
+                    continue;
+                }
+                if *value_before == *value_after {
+                    return 0.0; // Same value — no price change
+                }
+                // Compute delta: |new - old| / old * 100
+                if value_before.is_zero() {
+                    return -1.0; // Division by zero — cannot compute
+                }
+                // Use f64 for percentage (sufficient precision for reporting)
+                let old_f = value_before.low_u128() as f64;
+                let new_f = value_after.low_u128() as f64;
+                if old_f == 0.0 {
+                    return -1.0;
+                }
+                return ((new_f - old_f).abs() / old_f) * 100.0;
+            }
+        }
+
+        -1.0 // No matching slots found
+    }
+
+    /// Collect SLOAD return values for a given contract within a step range.
+    ///
+    /// Returns (slot_key, return_value) pairs. The return value is read from
+    /// the stack_top[0] of the step immediately following the SLOAD.
+    fn collect_sload_results(
+        steps: &[StepRecord],
+        target_addr: Address,
+        from_idx: usize,
+        to_idx: usize,
+    ) -> Vec<(U256, U256)> {
+        let clamped_to = to_idx.min(steps.len());
+        let mut results = Vec::new();
+
+        for i in from_idx..clamped_to {
+            let step = &steps[i];
+            if step.opcode != OP_SLOAD || step.code_address != target_addr {
+                continue;
+            }
+            // SLOAD pre-state stack: stack_top[0] = slot key
+            let Some(slot_key) = step.stack_top.first().copied() else {
+                continue;
+            };
+            // Return value appears at stack_top[0] of the next step
+            let Some(next_step) = steps.get(i + 1) else {
+                continue;
+            };
+            let Some(return_value) = next_step.stack_top.first().copied() else {
+                continue;
+            };
+            results.push((slot_key, return_value));
+        }
+
+        results
     }
 
     /// Detect access control bypass: SSTORE without CALLER (0x33) check
@@ -375,6 +494,169 @@ impl AttackClassifier {
 
         patterns
     }
+
+    // ── Confidence Scoring ────────────────────────────────────────────
+
+    /// Score reentrancy pattern.
+    /// High: re-entry + SSTORE + value transfer
+    /// Medium: re-entry + SSTORE only
+    /// Low: re-entry only (no SSTORE)
+    fn score_reentrancy(pattern: &AttackPattern, steps: &[StepRecord]) -> (f64, Vec<String>) {
+        let AttackPattern::Reentrancy {
+            target_contract,
+            reentrant_call_step,
+            state_modified_step,
+            ..
+        } = pattern
+        else {
+            return (0.0, vec![]);
+        };
+
+        let mut evidence = vec![
+            format!("Re-entrant call at step {reentrant_call_step}"),
+            format!("State modified at step {state_modified_step}"),
+        ];
+
+        let has_sstore = *state_modified_step > 0;
+        let has_value_transfer = steps.iter().any(|s| {
+            s.step_index >= *reentrant_call_step
+                && s.code_address == *target_contract
+                && s.call_value.is_some_and(|v| v > U256::zero())
+        });
+
+        if has_value_transfer {
+            evidence.push("Value transfer during re-entry".to_string());
+        }
+
+        let confidence = if has_sstore && has_value_transfer {
+            0.9
+        } else if has_sstore {
+            0.7
+        } else {
+            0.4
+        };
+
+        (confidence, evidence)
+    }
+
+    /// Score flash loan pattern.
+    /// High: borrow + repay + inner state modification
+    /// Medium: callback depth pattern with state mods
+    /// Low: depth profile only
+    fn score_flash_loan(pattern: &AttackPattern, steps: &[StepRecord]) -> (f64, Vec<String>) {
+        let AttackPattern::FlashLoan {
+            borrow_step,
+            repay_step,
+            borrow_amount,
+            provider,
+            token,
+            ..
+        } = pattern
+        else {
+            return (0.0, vec![]);
+        };
+
+        let mut evidence = vec![format!(
+            "Borrow at step {borrow_step}, repay at step {repay_step}"
+        )];
+
+        let has_amount = *borrow_amount > U256::zero();
+        if has_amount {
+            evidence.push(format!("Borrow amount: {borrow_amount}"));
+        }
+
+        let has_provider = provider.is_some();
+        if has_provider {
+            evidence.push(format!("Provider: 0x{:x}", provider.unwrap()));
+        }
+
+        let has_token = token.is_some();
+        if has_token {
+            evidence.push("ERC-20 token transfer detected".to_string());
+        }
+
+        // Check for inner state modifications between borrow and repay
+        let inner_sstores = steps
+            .iter()
+            .filter(|s| {
+                s.step_index > *borrow_step && s.step_index < *repay_step && s.opcode == OP_SSTORE
+            })
+            .count();
+
+        if inner_sstores > 0 {
+            evidence.push(format!("{inner_sstores} SSTORE(s) inside callback"));
+        }
+
+        let confidence = if has_amount && inner_sstores > 0 {
+            0.9
+        } else if has_provider && inner_sstores > 0 {
+            0.8
+        } else if inner_sstores > 0 {
+            0.6
+        } else {
+            0.4
+        };
+
+        (confidence, evidence)
+    }
+
+    /// Score price manipulation pattern.
+    /// High: oracle read-swap-read + delta > 5%
+    /// Medium: pattern detected without significant delta
+    /// Low: partial pattern match
+    fn score_price_manipulation(pattern: &AttackPattern) -> (f64, Vec<String>) {
+        let AttackPattern::PriceManipulation {
+            oracle_read_before,
+            swap_step,
+            oracle_read_after,
+            price_delta_percent,
+        } = pattern
+        else {
+            return (0.0, vec![]);
+        };
+
+        let mut evidence = vec![
+            format!("Oracle read before swap at step {oracle_read_before}"),
+            format!("Swap at step {swap_step}"),
+            format!("Oracle read after swap at step {oracle_read_after}"),
+        ];
+
+        if *price_delta_percent >= 0.0 {
+            evidence.push(format!("Price delta: {price_delta_percent:.1}%"));
+        }
+
+        let confidence = if *price_delta_percent > 5.0 {
+            0.9
+        } else if *price_delta_percent >= 0.0 {
+            0.6
+        } else {
+            // -1.0 = unknown delta
+            0.4
+        };
+
+        (confidence, evidence)
+    }
+
+    /// Score access control bypass.
+    /// Medium: SSTORE without CALLER check
+    /// Low: heuristic only
+    fn score_access_control(pattern: &AttackPattern, _steps: &[StepRecord]) -> (f64, Vec<String>) {
+        let AttackPattern::AccessControlBypass {
+            sstore_step,
+            contract,
+        } = pattern
+        else {
+            return (0.0, vec![]);
+        };
+
+        let evidence = vec![
+            format!("SSTORE at step {sstore_step} without CALLER check"),
+            format!("Contract: 0x{contract:x}"),
+        ];
+
+        // Access control bypass is inherently heuristic
+        (0.5, evidence)
+    }
 }
 
 struct FrameInfo {
@@ -403,7 +685,7 @@ fn extract_call_target_static(step: &StepRecord) -> Option<Address> {
 /// Check if a LOG step has the ERC-20 Transfer event topic.
 fn has_transfer_topic(step: &StepRecord) -> bool {
     if let Some(topics) = &step.log_topics {
-        topics.first().is_some_and(|t| is_transfer_topic(t))
+        topics.first().is_some_and(is_transfer_topic)
     } else {
         false
     }

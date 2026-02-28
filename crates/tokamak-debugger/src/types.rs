@@ -62,6 +62,10 @@ pub struct StepRecord {
     /// Log topics for LOG0-LOG4 opcodes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_topics: Option<Vec<H256>>,
+
+    /// Log data bytes for LOG0-LOG4 opcodes (capped at 256 bytes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_data: Option<Vec<u8>>,
 }
 
 impl StepRecord {

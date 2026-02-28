@@ -888,7 +888,7 @@ impl<'a> VM<'a> {
                     self.current_call_frame.gas_remaining,
                     self.call_frames.len(),
                     &self.current_call_frame.stack,
-                    self.current_call_frame.memory.len,
+                    &self.current_call_frame.memory,
                     self.current_call_frame.code_address,
                 );
             }

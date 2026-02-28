@@ -4,6 +4,7 @@ use crate::types::{ReplayConfig, StepRecord, StorageWrite};
 use ethrex_common::{Address, H256, U256};
 use ethrex_levm::call_frame::Stack;
 use ethrex_levm::debugger_hook::OpcodeRecorder;
+use ethrex_levm::memory::Memory;
 
 // Opcode constants for enrichment
 const OP_SSTORE: u8 = 0x55;
@@ -13,6 +14,9 @@ const OP_CREATE: u8 = 0xF0;
 const OP_CREATE2: u8 = 0xF5;
 const OP_LOG0: u8 = 0xA0;
 const OP_LOG4: u8 = 0xA4;
+
+/// Maximum LOG data bytes to capture per step (prevents memory bloat).
+const MAX_LOG_DATA_CAPTURE: usize = 256;
 
 /// Records each opcode step into a `Vec<StepRecord>`.
 pub struct DebugRecorder {
@@ -72,6 +76,37 @@ impl DebugRecorder {
         Some(topics)
     }
 
+    /// Extract log data bytes from memory for LOG0-LOG4 opcodes.
+    /// Stack layout: [offset, size, topic0, ...]
+    /// Cap at MAX_LOG_DATA_CAPTURE bytes to prevent bloat.
+    fn extract_log_data(opcode: u8, stack: &Stack, memory: &Memory) -> Option<Vec<u8>> {
+        if !(OP_LOG0..=OP_LOG4).contains(&opcode) {
+            return None;
+        }
+        let offset = stack.peek(0)?.as_usize();
+        let size = stack.peek(1)?.as_usize();
+        if size == 0 {
+            return Some(Vec::new());
+        }
+        let capped_size = size.min(MAX_LOG_DATA_CAPTURE);
+        // Read from memory buffer directly (read-only, no expansion)
+        let buf = memory.buffer.borrow();
+        let base = memory.current_base_offset();
+        let start = base + offset;
+        let end = start + capped_size;
+        if end <= buf.len() {
+            Some(buf[start..end].to_vec())
+        } else if start < buf.len() {
+            // Partial read — memory not fully expanded yet
+            let mut data = buf[start..].to_vec();
+            data.resize(capped_size, 0);
+            Some(data)
+        } else {
+            // Offset beyond current memory — return zeros
+            Some(vec![0u8; capped_size])
+        }
+    }
+
     /// Extract storage write info for SSTORE from pre-execution stack.
     fn extract_sstore(
         opcode: u8,
@@ -103,15 +138,17 @@ impl OpcodeRecorder for DebugRecorder {
         gas_remaining: i64,
         depth: usize,
         stack: &Stack,
-        memory_size: usize,
+        memory: &Memory,
         code_address: Address,
     ) {
         let step_index = self.steps.len();
         let stack_top = self.capture_stack_top(stack);
         let stack_depth = stack.len();
+        let memory_size = memory.len();
 
         let call_value = Self::extract_call_value(opcode, stack);
         let log_topics = Self::extract_log_topics(opcode, stack);
+        let log_data = Self::extract_log_data(opcode, stack, memory);
         let storage_writes = Self::extract_sstore(opcode, stack, code_address);
 
         self.steps.push(StepRecord {
@@ -127,6 +164,7 @@ impl OpcodeRecorder for DebugRecorder {
             call_value,
             storage_writes,
             log_topics,
+            log_data,
         });
     }
 }

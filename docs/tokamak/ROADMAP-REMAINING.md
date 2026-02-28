@@ -211,6 +211,20 @@
 - **Verification**: 42 autopsy tests, 100 total tokamak-debugger tests (`--features "cli,autopsy"`) ✅
 - **Dependency**: E-1 ✅, E-2 ✅
 - **Completed**: Smart Contract Autopsy Lab with 3 devil review iterations (6.8→7.3→8.9/10)
+- **Production Readiness Hardening** (4 phases, all complete):
+  - I-1: RPC timeout (30s) + retry with exponential backoff (3 retries), `RpcConfig` struct, `--rpc-timeout`/`--rpc-retries` CLI flags ✅
+  - I-2: Structured `RpcError` enum (6 variants: ConnectionFailed, Timeout, HttpError, JsonRpcError, ParseError, RetryExhausted) ✅
+  - II-1: ERC-20 transfer amount decoding from LOG3 data bytes (captures memory region, decodes uint256) ✅
+  - II-2: Price delta estimation via SLOAD value comparison between oracle reads ✅
+  - II-3: 80+ known contract labels (stablecoins, DEX, lending, bridges, oracles, infra, flash loan, MEV) ✅
+  - II-4: ABI-based storage slot decoding (`abi_decoder.rs`, keccak256 mapping support) ✅
+  - III-1: Bounded caches with FIFO eviction in RemoteVmDatabase (10k/100k/1k entries) ✅
+  - III-2: `AutopsyMetrics` observability (RPC calls, cache hits, latency) ✅
+  - III-3: 100k-step stress tests (<5s classification, <1s report generation) ✅
+  - IV-1: Confidence scoring — `DetectedPattern` wrapper (0.0–1.0 + evidence chains), per-pattern scoring ✅
+  - IV-2: 10 mainnet exploit validation scaffolds (`#[ignore]`, requires ARCHIVE_RPC_URL) ✅
+  - IV-3: sha3 dependency now used by abi_decoder.rs keccak256 ✅
+  - **Post-hardening**: 145 passing tests + 10 ignored mainnet scaffolds, clippy clean both states ✅
 
 ---
 

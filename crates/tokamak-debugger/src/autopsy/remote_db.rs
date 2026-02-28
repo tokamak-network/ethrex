@@ -4,6 +4,8 @@
 //! Implements the LEVM `Database` trait so it plugs directly into
 //! `GeneralizedDatabase` and `ReplayEngine`.
 
+use std::collections::VecDeque;
+use std::hash::Hash;
 use std::sync::RwLock;
 
 use bytes::Bytes;
@@ -14,7 +16,54 @@ use ethrex_common::{
 use ethrex_levm::{db::Database, errors::DatabaseError};
 use rustc_hash::FxHashMap;
 
-use crate::autopsy::rpc_client::EthRpcClient;
+use crate::autopsy::rpc_client::{EthRpcClient, RpcConfig};
+
+/// Default cache capacity per category.
+const DEFAULT_CACHE_CAPACITY: usize = 10_000;
+
+/// Capacity-bounded cache with FIFO eviction.
+///
+/// When the cache reaches `max_entries`, the oldest entry (by insertion order)
+/// is evicted. This prevents unbounded memory growth on large traces.
+struct BoundedCache<K: Eq + Hash + Clone, V> {
+    map: FxHashMap<K, V>,
+    order: VecDeque<K>,
+    max_entries: usize,
+}
+
+impl<K: Eq + Hash + Clone, V> BoundedCache<K, V> {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            map: FxHashMap::default(),
+            order: VecDeque::new(),
+            max_entries,
+        }
+    }
+
+    fn get(&self, key: &K) -> Option<&V> {
+        self.map.get(key)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        if let std::collections::hash_map::Entry::Occupied(mut e) = self.map.entry(key.clone()) {
+            e.insert(value);
+            return;
+        }
+        // Evict oldest if at capacity
+        if self.map.len() >= self.max_entries
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.map.remove(&oldest);
+        }
+        self.order.push_back(key.clone());
+        self.map.insert(key, value);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
 
 /// Database implementation that fetches state from an Ethereum archive node.
 ///
@@ -23,11 +72,11 @@ use crate::autopsy::rpc_client::EthRpcClient;
 pub struct RemoteVmDatabase {
     client: EthRpcClient,
     chain_config: ChainConfig,
-    account_cache: RwLock<FxHashMap<Address, AccountState>>,
-    storage_cache: RwLock<FxHashMap<(Address, H256), U256>>,
-    code_cache: RwLock<FxHashMap<H256, Code>>,
-    code_metadata_cache: RwLock<FxHashMap<H256, CodeMetadata>>,
-    block_hash_cache: RwLock<FxHashMap<u64, H256>>,
+    account_cache: RwLock<BoundedCache<Address, AccountState>>,
+    storage_cache: RwLock<BoundedCache<(Address, H256), U256>>,
+    code_cache: RwLock<BoundedCache<H256, Code>>,
+    code_metadata_cache: RwLock<BoundedCache<H256, CodeMetadata>>,
+    block_hash_cache: RwLock<BoundedCache<u64, H256>>,
 }
 
 impl RemoteVmDatabase {
@@ -39,17 +88,30 @@ impl RemoteVmDatabase {
         Self {
             client,
             chain_config: mainnet_chain_config(chain_id),
-            account_cache: RwLock::new(FxHashMap::default()),
-            storage_cache: RwLock::new(FxHashMap::default()),
-            code_cache: RwLock::new(FxHashMap::default()),
-            code_metadata_cache: RwLock::new(FxHashMap::default()),
-            block_hash_cache: RwLock::new(FxHashMap::default()),
+            account_cache: RwLock::new(BoundedCache::new(DEFAULT_CACHE_CAPACITY)),
+            storage_cache: RwLock::new(BoundedCache::new(DEFAULT_CACHE_CAPACITY * 10)),
+            code_cache: RwLock::new(BoundedCache::new(DEFAULT_CACHE_CAPACITY)),
+            code_metadata_cache: RwLock::new(BoundedCache::new(DEFAULT_CACHE_CAPACITY)),
+            block_hash_cache: RwLock::new(BoundedCache::new(1_000)),
         }
     }
 
     /// Create from RPC URL, auto-detecting chain_id.
     pub fn from_rpc(url: &str, block_number: u64) -> Result<Self, DatabaseError> {
         let client = EthRpcClient::new(url, block_number);
+        let chain_id = client
+            .eth_chain_id()
+            .map_err(|e| DatabaseError::Custom(format!("{e}")))?;
+        Ok(Self::new(client, chain_id))
+    }
+
+    /// Create from RPC URL with custom config, auto-detecting chain_id.
+    pub fn from_rpc_with_config(
+        url: &str,
+        block_number: u64,
+        config: RpcConfig,
+    ) -> Result<Self, DatabaseError> {
+        let client = EthRpcClient::with_config(url, block_number, config);
         let chain_id = client
             .eth_chain_id()
             .map_err(|e| DatabaseError::Custom(format!("{e}")))?;
@@ -251,5 +313,59 @@ mod tests {
     fn test_mainnet_chain_config_custom_chain() {
         let config = mainnet_chain_config(42161);
         assert_eq!(config.chain_id, 42161);
+    }
+
+    #[test]
+    fn test_bounded_cache_eviction_at_capacity() {
+        let mut cache = BoundedCache::new(3);
+        cache.insert(1, "a");
+        cache.insert(2, "b");
+        cache.insert(3, "c");
+        assert_eq!(cache.len(), 3);
+
+        // Insert 4th → evicts key 1 (oldest)
+        cache.insert(4, "d");
+        assert_eq!(cache.len(), 3);
+        assert!(cache.get(&1).is_none(), "oldest entry should be evicted");
+        assert_eq!(cache.get(&4), Some(&"d"));
+    }
+
+    #[test]
+    fn test_bounded_cache_hit_miss_after_eviction() {
+        let mut cache = BoundedCache::new(2);
+        cache.insert("x", 10);
+        cache.insert("y", 20);
+        assert_eq!(cache.get(&"x"), Some(&10));
+
+        cache.insert("z", 30); // evicts "x"
+        assert!(cache.get(&"x").is_none());
+        assert_eq!(cache.get(&"y"), Some(&20));
+        assert_eq!(cache.get(&"z"), Some(&30));
+    }
+
+    #[test]
+    fn test_bounded_cache_update_existing_key() {
+        let mut cache = BoundedCache::new(2);
+        cache.insert(1, "old");
+        cache.insert(1, "new");
+        assert_eq!(
+            cache.len(),
+            1,
+            "updating existing key should not grow cache"
+        );
+        assert_eq!(cache.get(&1), Some(&"new"));
+    }
+
+    #[test]
+    fn test_bounded_cache_memory_stays_bounded() {
+        let mut cache = BoundedCache::new(100);
+        for i in 0..500 {
+            cache.insert(i, i * 2);
+        }
+        assert_eq!(cache.len(), 100, "cache should never exceed max_entries");
+        // Only the last 100 entries should remain
+        assert!(cache.get(&399).is_none());
+        assert_eq!(cache.get(&400), Some(&800));
+        assert_eq!(cache.get(&499), Some(&998));
     }
 }

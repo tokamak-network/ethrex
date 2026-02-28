@@ -6,12 +6,14 @@
 //! execution traces for time-travel replay.
 
 use crate::call_frame::Stack;
+use crate::memory::Memory;
 use ethrex_common::Address;
 
 /// Callback trait invoked by the interpreter loop before each opcode.
 ///
 /// Implementors capture whatever state they need from the provided arguments.
 /// The `stack` reference allows peeking at top-N values without cloning.
+/// The `memory` reference allows reading LOG data regions.
 pub trait OpcodeRecorder {
     #[allow(clippy::too_many_arguments)]
     fn record_step(
@@ -21,7 +23,7 @@ pub trait OpcodeRecorder {
         gas_remaining: i64,
         depth: usize,
         stack: &Stack,
-        memory_size: usize,
+        memory: &Memory,
         code_address: Address,
     );
 }

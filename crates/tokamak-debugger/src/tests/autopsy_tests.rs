@@ -33,6 +33,7 @@ fn make_step(index: usize, opcode: u8, depth: usize, code_address: Address) -> S
         call_value: None,
         storage_writes: None,
         log_topics: None,
+        log_data: None,
     }
 }
 
@@ -58,6 +59,7 @@ fn make_call_step(
         call_value: Some(value),
         storage_writes: None,
         log_topics: None,
+        log_data: None,
     }
 }
 
@@ -86,6 +88,7 @@ fn make_sstore_step(
             new_value,
         }]),
         log_topics: None,
+        log_data: None,
     }
 }
 
@@ -104,6 +107,7 @@ fn make_staticcall_step(index: usize, depth: usize, from: Address, to: Address) 
         call_value: None,
         storage_writes: None,
         log_topics: None,
+        log_data: None,
     }
 }
 
@@ -147,6 +151,44 @@ fn make_log3_transfer(
             H256::from(from_bytes),
             H256::from(to_bytes),
         ]),
+        log_data: None,
+    }
+}
+
+fn make_log3_transfer_with_amount(
+    index: usize,
+    depth: usize,
+    token: Address,
+    from: Address,
+    to: Address,
+    amount: U256,
+) -> StepRecord {
+    let mut from_bytes = [0u8; 32];
+    from_bytes[12..].copy_from_slice(from.as_bytes());
+    let mut to_bytes = [0u8; 32];
+    to_bytes[12..].copy_from_slice(to.as_bytes());
+
+    // ABI-encode amount as uint256 (big-endian 32 bytes)
+    let amount_data = amount.to_big_endian().to_vec();
+
+    StepRecord {
+        step_index: index,
+        pc: index * 2,
+        opcode: 0xA3, // LOG3
+        depth,
+        gas_remaining: 1_000_000,
+        stack_top: vec![],
+        stack_depth: 5,
+        memory_size: 64,
+        code_address: token,
+        call_value: None,
+        storage_writes: None,
+        log_topics: Some(vec![
+            transfer_topic(),
+            H256::from(from_bytes),
+            H256::from(to_bytes),
+        ]),
+        log_data: Some(amount_data),
     }
 }
 
@@ -156,6 +198,49 @@ fn make_caller_step(index: usize, depth: usize, address: Address) -> StepRecord 
 
 fn make_step_with_opcode(index: usize, opcode: u8, depth: usize, address: Address) -> StepRecord {
     make_step(index, opcode, depth, address)
+}
+
+/// Create an SLOAD step (pre-execution state has slot key on stack top).
+fn make_sload_step(index: usize, depth: usize, address: Address, slot_key: U256) -> StepRecord {
+    StepRecord {
+        step_index: index,
+        pc: index * 2,
+        opcode: 0x54, // SLOAD
+        depth,
+        gas_remaining: 1_000_000,
+        stack_top: vec![slot_key],
+        stack_depth: 1,
+        memory_size: 0,
+        code_address: address,
+        call_value: None,
+        storage_writes: None,
+        log_topics: None,
+        log_data: None,
+    }
+}
+
+/// Create a step following SLOAD with the return value at stack top.
+fn make_post_sload_step(
+    index: usize,
+    depth: usize,
+    address: Address,
+    return_value: U256,
+) -> StepRecord {
+    StepRecord {
+        step_index: index,
+        pc: index * 2,
+        opcode: 0x01, // ADD (arbitrary opcode after SLOAD)
+        depth,
+        gas_remaining: 1_000_000,
+        stack_top: vec![return_value],
+        stack_depth: 1,
+        memory_size: 0,
+        code_address: address,
+        call_value: None,
+        storage_writes: None,
+        log_topics: None,
+        log_data: None,
+    }
 }
 
 fn addr(n: u64) -> Address {
@@ -457,7 +542,10 @@ fn test_no_flash_loan_for_shallow_execution() {
         .iter()
         .filter(|p| matches!(p, AttackPattern::FlashLoan { .. }))
         .collect();
-    assert!(flash_loans.is_empty(), "shallow execution should not trigger flash loan");
+    assert!(
+        flash_loans.is_empty(),
+        "shallow execution should not trigger flash loan"
+    );
 }
 
 #[test]
@@ -481,6 +569,160 @@ fn test_detect_price_manipulation() {
         .filter(|p| matches!(p, AttackPattern::PriceManipulation { .. }))
         .collect();
     assert!(!price_manip.is_empty());
+    // No SLOAD data → delta should be -1.0 (unknown)
+    if let AttackPattern::PriceManipulation {
+        price_delta_percent,
+        ..
+    } = price_manip[0]
+    {
+        assert!(
+            *price_delta_percent < 0.0,
+            "without SLOAD data, delta should be -1.0 (unknown)"
+        );
+    }
+}
+
+// ============================================================
+// Phase II-2: Price Delta Calculation
+// ============================================================
+
+#[test]
+fn test_price_delta_with_known_oracle_values() {
+    let oracle = addr(0x50);
+    let dex = addr(0x60);
+    let victim = addr(0x42);
+    let slot_key = U256::from(1); // Oracle storage slot
+
+    let steps = vec![
+        // STATICCALL to oracle (read 1)
+        make_staticcall_step(0, 0, victim, oracle),
+        // SLOAD in oracle contract — slot 1, value 100
+        make_sload_step(1, 1, oracle, slot_key),
+        make_post_sload_step(2, 1, oracle, U256::from(100)),
+        // Swap on DEX
+        make_log3_transfer(3, 0, dex, addr(0xA), addr(0xB)),
+        // STATICCALL to oracle (read 2)
+        make_staticcall_step(4, 0, victim, oracle),
+        // SLOAD in oracle contract — same slot, value 150
+        make_sload_step(5, 1, oracle, slot_key),
+        make_post_sload_step(6, 1, oracle, U256::from(150)),
+    ];
+
+    let patterns = AttackClassifier::classify(&steps);
+    let price_manip: Vec<_> = patterns
+        .iter()
+        .filter(|p| matches!(p, AttackPattern::PriceManipulation { .. }))
+        .collect();
+    assert!(!price_manip.is_empty(), "should detect price manipulation");
+    if let AttackPattern::PriceManipulation {
+        price_delta_percent,
+        ..
+    } = price_manip[0]
+    {
+        // |150 - 100| / 100 * 100 = 50%
+        assert!(
+            (*price_delta_percent - 50.0).abs() < 0.1,
+            "price delta should be ~50%, got {price_delta_percent}"
+        );
+    }
+}
+
+#[test]
+fn test_price_delta_same_value_reads_zero() {
+    let oracle = addr(0x50);
+    let dex = addr(0x60);
+    let victim = addr(0x42);
+    let slot_key = U256::from(1);
+
+    let steps = vec![
+        make_staticcall_step(0, 0, victim, oracle),
+        make_sload_step(1, 1, oracle, slot_key),
+        make_post_sload_step(2, 1, oracle, U256::from(200)),
+        make_log3_transfer(3, 0, dex, addr(0xA), addr(0xB)),
+        make_staticcall_step(4, 0, victim, oracle),
+        make_sload_step(5, 1, oracle, slot_key),
+        make_post_sload_step(6, 1, oracle, U256::from(200)), // Same value
+    ];
+
+    let patterns = AttackClassifier::classify(&steps);
+    let price_manip: Vec<_> = patterns
+        .iter()
+        .filter(|p| matches!(p, AttackPattern::PriceManipulation { .. }))
+        .collect();
+    assert!(!price_manip.is_empty());
+    if let AttackPattern::PriceManipulation {
+        price_delta_percent,
+        ..
+    } = price_manip[0]
+    {
+        assert!(
+            (*price_delta_percent).abs() < 0.01,
+            "same-value reads should yield 0% delta, got {price_delta_percent}"
+        );
+    }
+}
+
+#[test]
+fn test_price_delta_unknown_no_sload() {
+    let oracle = addr(0x50);
+    let dex = addr(0x60);
+    let victim = addr(0x42);
+
+    // No SLOAD steps — only STATICCALL + Transfer
+    let steps = vec![
+        make_staticcall_step(0, 0, victim, oracle),
+        make_log3_transfer(1, 0, dex, addr(0xA), addr(0xB)),
+        make_staticcall_step(2, 0, victim, oracle),
+    ];
+
+    let patterns = AttackClassifier::classify(&steps);
+    let price_manip: Vec<_> = patterns
+        .iter()
+        .filter(|p| matches!(p, AttackPattern::PriceManipulation { .. }))
+        .collect();
+    assert!(!price_manip.is_empty());
+    if let AttackPattern::PriceManipulation {
+        price_delta_percent,
+        ..
+    } = price_manip[0]
+    {
+        assert!(
+            *price_delta_percent < 0.0,
+            "no SLOAD data → delta should be -1.0, got {price_delta_percent}"
+        );
+    }
+}
+
+#[test]
+fn test_price_delta_report_displays_percentage() {
+    let oracle = addr(0x50);
+    let dex = addr(0x60);
+    let victim = addr(0x42);
+    let slot_key = U256::from(1);
+
+    let steps = vec![
+        make_staticcall_step(0, 0, victim, oracle),
+        make_sload_step(1, 1, oracle, slot_key),
+        make_post_sload_step(2, 1, oracle, U256::from(100)),
+        make_log3_transfer(3, 0, dex, addr(0xA), addr(0xB)),
+        make_staticcall_step(4, 0, victim, oracle),
+        make_sload_step(5, 1, oracle, slot_key),
+        make_post_sload_step(6, 1, oracle, U256::from(120)),
+    ];
+
+    let patterns = AttackClassifier::classify(&steps);
+    let report = AutopsyReport::build(H256::zero(), 12345, &steps, patterns, vec![], vec![]);
+    let md = report.to_markdown();
+
+    // 20% delta
+    assert!(
+        md.contains("20.0%"),
+        "report should display price delta percentage, got:\n{md}"
+    );
+    assert!(
+        !md.contains("unknown"),
+        "report should show actual percentage, not unknown"
+    );
 }
 
 #[test]
@@ -750,11 +992,13 @@ fn test_step_record_none_fields_skip_serializing() {
         call_value: None,
         storage_writes: None,
         log_topics: None,
+        log_data: None,
     };
     let json = serde_json::to_string(&step).unwrap();
     assert!(!json.contains("call_value"));
     assert!(!json.contains("storage_writes"));
     assert!(!json.contains("log_topics"));
+    assert!(!json.contains("log_data"));
 }
 
 #[test]
@@ -772,6 +1016,7 @@ fn test_step_record_some_fields_serialize() {
         call_value: Some(U256::from(1000)),
         storage_writes: None,
         log_topics: None,
+        log_data: None,
     };
     let json = serde_json::to_string(&step).unwrap();
     assert!(json.contains("call_value"));
@@ -789,9 +1034,11 @@ fn test_recorder_captures_call_value() {
     use crate::types::ReplayConfig;
     use ethrex_levm::call_frame::Stack;
     use ethrex_levm::debugger_hook::OpcodeRecorder;
+    use ethrex_levm::memory::Memory;
 
     let mut recorder = DebugRecorder::new(ReplayConfig::default());
     let mut stack = Stack::default();
+    let memory = Memory::new();
 
     // CALL stack: gas, to, value, ...
     stack.push(U256::from(0)).unwrap(); // retSize
@@ -802,7 +1049,7 @@ fn test_recorder_captures_call_value() {
     stack.push(U256::from(0x99)).unwrap(); // to
     stack.push(U256::from(100_000)).unwrap(); // gas
 
-    recorder.record_step(0xF1, 0, 1_000_000, 0, &stack, 0, addr(0x42));
+    recorder.record_step(0xF1, 0, 1_000_000, 0, &stack, &memory, addr(0x42));
 
     assert_eq!(recorder.steps.len(), 1);
     assert_eq!(recorder.steps[0].call_value, Some(U256::from(5000)));
@@ -814,9 +1061,11 @@ fn test_recorder_captures_log_topics() {
     use crate::types::ReplayConfig;
     use ethrex_levm::call_frame::Stack;
     use ethrex_levm::debugger_hook::OpcodeRecorder;
+    use ethrex_levm::memory::Memory;
 
     let mut recorder = DebugRecorder::new(ReplayConfig::default());
     let mut stack = Stack::default();
+    let memory = Memory::new();
 
     let topic = U256::from(0xDEADBEEF_u64);
     // LOG1 stack: offset, size, topic0
@@ -824,7 +1073,7 @@ fn test_recorder_captures_log_topics() {
     stack.push(U256::from(32)).unwrap(); // size
     stack.push(U256::from(0)).unwrap(); // offset
 
-    recorder.record_step(0xA1, 0, 1_000_000, 0, &stack, 64, addr(0x42));
+    recorder.record_step(0xA1, 0, 1_000_000, 0, &stack, &memory, addr(0x42));
 
     assert_eq!(recorder.steps.len(), 1);
     let topics = recorder.steps[0].log_topics.as_ref().unwrap();
@@ -837,15 +1086,17 @@ fn test_recorder_captures_sstore() {
     use crate::types::ReplayConfig;
     use ethrex_levm::call_frame::Stack;
     use ethrex_levm::debugger_hook::OpcodeRecorder;
+    use ethrex_levm::memory::Memory;
 
     let mut recorder = DebugRecorder::new(ReplayConfig::default());
     let mut stack = Stack::default();
+    let memory = Memory::new();
 
     // SSTORE stack: key, value
     stack.push(U256::from(42)).unwrap(); // value
     stack.push(U256::from(1)).unwrap(); // key
 
-    recorder.record_step(0x55, 0, 1_000_000, 0, &stack, 0, addr(0x42));
+    recorder.record_step(0x55, 0, 1_000_000, 0, &stack, &memory, addr(0x42));
 
     assert_eq!(recorder.steps.len(), 1);
     let writes = recorder.steps[0].storage_writes.as_ref().unwrap();
@@ -861,13 +1112,469 @@ fn test_recorder_non_special_opcode_has_no_extras() {
     use crate::types::ReplayConfig;
     use ethrex_levm::call_frame::Stack;
     use ethrex_levm::debugger_hook::OpcodeRecorder;
+    use ethrex_levm::memory::Memory;
 
     let mut recorder = DebugRecorder::new(ReplayConfig::default());
     let stack = Stack::default();
+    let memory = Memory::new();
 
-    recorder.record_step(0x01, 0, 1_000_000, 0, &stack, 0, addr(0x42)); // ADD
+    recorder.record_step(0x01, 0, 1_000_000, 0, &stack, &memory, addr(0x42)); // ADD
 
     assert!(recorder.steps[0].call_value.is_none());
     assert!(recorder.steps[0].storage_writes.is_none());
     assert!(recorder.steps[0].log_topics.is_none());
+    assert!(recorder.steps[0].log_data.is_none());
+}
+
+// ============================================================
+// Phase II-1: ERC-20 Transfer Amount Capture
+// ============================================================
+
+#[test]
+fn test_recorder_captures_log3_data_from_memory() {
+    use crate::recorder::DebugRecorder;
+    use crate::types::ReplayConfig;
+    use ethrex_levm::call_frame::Stack;
+    use ethrex_levm::debugger_hook::OpcodeRecorder;
+    use ethrex_levm::memory::Memory;
+
+    let mut recorder = DebugRecorder::new(ReplayConfig::default());
+    let mut stack = Stack::default();
+    let mut memory = Memory::new();
+
+    // Write 32 bytes of amount data at offset 0
+    let amount = U256::from(1_000_000u64);
+    let amount_bytes = amount.to_big_endian();
+    memory.store_data(0, &amount_bytes).unwrap();
+
+    // LOG3 stack: offset, size, topic0, topic1, topic2
+    let topic = U256::from(0xDEADBEEF_u64);
+    stack.push(topic).unwrap(); // topic2
+    stack.push(topic).unwrap(); // topic1
+    stack.push(topic).unwrap(); // topic0
+    stack.push(U256::from(32)).unwrap(); // size
+    stack.push(U256::from(0)).unwrap(); // offset
+
+    recorder.record_step(0xA3, 0, 1_000_000, 0, &stack, &memory, addr(0x42));
+
+    assert_eq!(recorder.steps.len(), 1);
+    let log_data = recorder.steps[0].log_data.as_ref().unwrap();
+    assert_eq!(log_data.len(), 32);
+    // Verify we can decode the amount back
+    let decoded = U256::from_big_endian(log_data);
+    assert_eq!(decoded, amount);
+}
+
+#[test]
+fn test_erc20_amount_decoding_in_fund_flow() {
+    let token = addr(0xDEAD);
+    let from = addr(0xA);
+    let to = addr(0xB);
+    let amount = U256::from(5_000_000u64);
+
+    let steps = vec![make_log3_transfer_with_amount(
+        0, 0, token, from, to, amount,
+    )];
+
+    let flows = FundFlowTracer::trace(&steps);
+    assert_eq!(flows.len(), 1);
+    assert_eq!(flows[0].from, from);
+    assert_eq!(flows[0].to, to);
+    assert_eq!(flows[0].token, Some(token));
+    assert_eq!(
+        flows[0].value, amount,
+        "ERC-20 amount should be decoded from log_data"
+    );
+}
+
+#[test]
+fn test_log_data_cap_enforcement() {
+    use crate::recorder::DebugRecorder;
+    use crate::types::ReplayConfig;
+    use ethrex_levm::call_frame::Stack;
+    use ethrex_levm::debugger_hook::OpcodeRecorder;
+    use ethrex_levm::memory::Memory;
+
+    let mut recorder = DebugRecorder::new(ReplayConfig::default());
+    let mut stack = Stack::default();
+    let mut memory = Memory::new();
+
+    // Write 512 bytes of data at offset 0
+    let big_data = vec![0xAB; 512];
+    memory.store_data(0, &big_data).unwrap();
+
+    // LOG0 stack: offset, size
+    stack.push(U256::from(512)).unwrap(); // size (over 256 cap)
+    stack.push(U256::from(0)).unwrap(); // offset
+
+    recorder.record_step(0xA0, 0, 1_000_000, 0, &stack, &memory, addr(0x42));
+
+    let log_data = recorder.steps[0].log_data.as_ref().unwrap();
+    assert_eq!(
+        log_data.len(),
+        256,
+        "LOG data should be capped at 256 bytes"
+    );
+    assert!(log_data.iter().all(|&b| b == 0xAB));
+}
+
+#[test]
+fn test_fund_flow_without_log_data_shows_zero() {
+    // Backward compat: old StepRecords without log_data should have value=0
+    let token = addr(0xDEAD);
+    let from = addr(0xA);
+    let to = addr(0xB);
+
+    // Use old-style helper (no log_data)
+    let steps = vec![make_log3_transfer(0, 0, token, from, to)];
+
+    let flows = FundFlowTracer::trace(&steps);
+    assert_eq!(flows.len(), 1);
+    assert_eq!(
+        flows[0].value,
+        U256::zero(),
+        "missing log_data should yield zero value"
+    );
+}
+
+#[test]
+fn test_report_displays_decoded_erc20_amount() {
+    let token = addr(0xDEAD);
+    let from = addr(0xA);
+    let to = addr(0xB);
+    let amount = U256::from(42_000u64);
+
+    let steps = vec![make_log3_transfer_with_amount(
+        0, 0, token, from, to, amount,
+    )];
+    let flows = FundFlowTracer::trace(&steps);
+
+    let report = AutopsyReport::build(H256::zero(), 12345, &steps, vec![], flows, vec![]);
+    let md = report.to_markdown();
+
+    assert!(
+        md.contains("42000"),
+        "Markdown report should contain decoded amount"
+    );
+    assert!(
+        !md.contains("(undecoded)"),
+        "Should not show (undecoded) when amount is decoded"
+    );
+}
+
+#[test]
+fn test_recorder_log0_captures_data_no_topics() {
+    use crate::recorder::DebugRecorder;
+    use crate::types::ReplayConfig;
+    use ethrex_levm::call_frame::Stack;
+    use ethrex_levm::debugger_hook::OpcodeRecorder;
+    use ethrex_levm::memory::Memory;
+
+    let mut recorder = DebugRecorder::new(ReplayConfig::default());
+    let mut stack = Stack::default();
+    let mut memory = Memory::new();
+
+    // Write some data at offset 0
+    memory.store_data(0, &[1, 2, 3, 4]).unwrap();
+
+    // LOG0 stack: offset, size (no topics)
+    stack.push(U256::from(4)).unwrap(); // size
+    stack.push(U256::from(0)).unwrap(); // offset
+
+    recorder.record_step(0xA0, 0, 1_000_000, 0, &stack, &memory, addr(0x42));
+
+    let step = &recorder.steps[0];
+    // LOG0 has no topics
+    let topics = step.log_topics.as_ref().unwrap();
+    assert!(topics.is_empty());
+    // But data should be captured
+    let data = step.log_data.as_ref().unwrap();
+    assert_eq!(data, &[1, 2, 3, 4]);
+}
+
+// ============================================================
+// Phase II-4: ABI-Based Storage Slot Decoding
+// ============================================================
+
+#[test]
+fn test_abi_simple_variable_slot() {
+    use crate::autopsy::abi_decoder::AbiDecoder;
+
+    let layout = r#"[
+        { "name": "owner", "slot": 0, "type": "address" },
+        { "name": "totalSupply", "slot": 1, "type": "uint256" }
+    ]"#;
+    let decoder = AbiDecoder::from_storage_layout_json(layout).unwrap();
+
+    // Slot 0 → "owner"
+    let slot0 = H256::from_low_u64_be(0);
+    let label = decoder.label_slot(&slot0).unwrap();
+    assert_eq!(label.name, "owner");
+    assert!(label.key.is_none());
+
+    // Slot 1 → "totalSupply"
+    let slot1 = H256::from_low_u64_be(1);
+    let label = decoder.label_slot(&slot1).unwrap();
+    assert_eq!(label.name, "totalSupply");
+}
+
+#[test]
+fn test_abi_mapping_slot_address_key() {
+    use crate::autopsy::abi_decoder::AbiDecoder;
+
+    // balances mapping at slot 1, key = address 0x42
+    let key_addr = Address::from_low_u64_be(0x42);
+    let mut key_bytes = [0u8; 20];
+    key_bytes.copy_from_slice(key_addr.as_bytes());
+
+    let computed = AbiDecoder::mapping_slot(&key_bytes, 1);
+    // Verify it's a 32-byte hash (non-zero)
+    assert_ne!(computed, H256::zero());
+
+    // Verify deterministic
+    let computed2 = AbiDecoder::mapping_slot(&key_bytes, 1);
+    assert_eq!(computed, computed2);
+
+    // Different key → different slot
+    let key2 = Address::from_low_u64_be(0x43);
+    let mut key2_bytes = [0u8; 20];
+    key2_bytes.copy_from_slice(key2.as_bytes());
+    let computed3 = AbiDecoder::mapping_slot(&key2_bytes, 1);
+    assert_ne!(computed, computed3);
+}
+
+#[test]
+fn test_abi_mapping_slot_u256_key() {
+    use crate::autopsy::abi_decoder::AbiDecoder;
+
+    let key = U256::from(42);
+    let slot = AbiDecoder::mapping_slot_u256(key, 3);
+    assert_ne!(slot, H256::zero());
+
+    // Same key, different position → different slot
+    let slot2 = AbiDecoder::mapping_slot_u256(key, 4);
+    assert_ne!(slot, slot2);
+}
+
+#[test]
+fn test_abi_json_parsing() {
+    use crate::autopsy::abi_decoder::AbiDecoder;
+
+    // Valid layout
+    let layout = r#"[{ "name": "x", "slot": 0, "type": "uint256" }]"#;
+    assert!(AbiDecoder::from_storage_layout_json(layout).is_ok());
+
+    // Invalid JSON
+    assert!(AbiDecoder::from_storage_layout_json("not json").is_err());
+
+    // Missing name field
+    let bad = r#"[{ "slot": 0, "type": "uint256" }]"#;
+    assert!(AbiDecoder::from_storage_layout_json(bad).is_err());
+
+    // Missing slot field
+    let bad2 = r#"[{ "name": "x", "type": "uint256" }]"#;
+    assert!(AbiDecoder::from_storage_layout_json(bad2).is_err());
+}
+
+#[test]
+fn test_abi_mapping_slot_lookup() {
+    use crate::autopsy::abi_decoder::AbiDecoder;
+
+    let layout = r#"[
+        { "name": "owner", "slot": 0, "type": "address" },
+        { "name": "balances", "slot": 1, "type": "mapping(address => uint256)" }
+    ]"#;
+    let decoder = AbiDecoder::from_storage_layout_json(layout).unwrap();
+
+    let key_addr = Address::from_low_u64_be(0x42);
+    let mut key_bytes = [0u8; 20];
+    key_bytes.copy_from_slice(key_addr.as_bytes());
+
+    // Compute expected slot
+    let expected_slot = AbiDecoder::mapping_slot(&key_bytes, 1);
+
+    // Lookup with known keys
+    let label = decoder
+        .label_mapping_slot(&expected_slot, &[key_bytes])
+        .unwrap();
+    assert_eq!(label.name, "balances");
+    assert!(label.key.is_some());
+}
+
+#[test]
+fn test_abi_unknown_slot_returns_none() {
+    use crate::autopsy::abi_decoder::AbiDecoder;
+
+    let layout = r#"[{ "name": "x", "slot": 0, "type": "uint256" }]"#;
+    let decoder = AbiDecoder::from_storage_layout_json(layout).unwrap();
+
+    // Random slot not matching any variable
+    let random = H256::from_low_u64_be(999);
+    assert!(decoder.label_slot(&random).is_none());
+}
+
+// ============================================================
+// Phase IV-1: Classifier Confidence Scoring
+// ============================================================
+
+#[test]
+fn test_confidence_reentrancy_high() {
+    // Re-entry + SSTORE + value transfer → high confidence
+    let victim = addr(0x42);
+    let attacker = addr(0x99);
+
+    let steps = vec![
+        // Victim calls attacker at depth 0
+        make_call_step(0, 0, victim, attacker, U256::from(0)),
+        // Attacker re-enters victim (CALL target = victim) at depth 1
+        make_call_step(1, 1, attacker, victim, U256::from(1000)),
+        // Victim state modified during re-entry
+        make_sstore_step(2, 2, victim, slot(1), U256::from(42)),
+    ];
+
+    let detected = AttackClassifier::classify_with_confidence(&steps);
+    let reentrancy: Vec<_> = detected
+        .iter()
+        .filter(|d| matches!(d.pattern, AttackPattern::Reentrancy { .. }))
+        .collect();
+
+    assert!(!reentrancy.is_empty(), "should detect reentrancy");
+    assert!(
+        reentrancy[0].confidence >= 0.7,
+        "reentrancy with SSTORE should have high confidence, got {}",
+        reentrancy[0].confidence
+    );
+    assert!(
+        !reentrancy[0].evidence.is_empty(),
+        "should have evidence strings"
+    );
+}
+
+#[test]
+fn test_confidence_access_control_medium() {
+    let contract = addr(0x42);
+
+    let steps = vec![make_sstore_step(0, 0, contract, slot(1), U256::from(1))];
+
+    let detected = AttackClassifier::classify_with_confidence(&steps);
+    let bypasses: Vec<_> = detected
+        .iter()
+        .filter(|d| matches!(d.pattern, AttackPattern::AccessControlBypass { .. }))
+        .collect();
+
+    assert!(!bypasses.is_empty());
+    assert!(
+        bypasses[0].confidence <= 0.6,
+        "access control bypass is heuristic, should be medium confidence, got {}",
+        bypasses[0].confidence
+    );
+}
+
+#[test]
+fn test_confidence_price_manip_with_delta() {
+    let oracle = addr(0x50);
+    let dex = addr(0x60);
+    let victim = addr(0x42);
+    let slot_key = U256::from(1);
+
+    let steps = vec![
+        make_staticcall_step(0, 0, victim, oracle),
+        make_sload_step(1, 1, oracle, slot_key),
+        make_post_sload_step(2, 1, oracle, U256::from(100)),
+        make_log3_transfer(3, 0, dex, addr(0xA), addr(0xB)),
+        make_staticcall_step(4, 0, victim, oracle),
+        make_sload_step(5, 1, oracle, slot_key),
+        make_post_sload_step(6, 1, oracle, U256::from(200)), // 100% delta
+    ];
+
+    let detected = AttackClassifier::classify_with_confidence(&steps);
+    let price_manip: Vec<_> = detected
+        .iter()
+        .filter(|d| matches!(d.pattern, AttackPattern::PriceManipulation { .. }))
+        .collect();
+
+    assert!(!price_manip.is_empty());
+    assert!(
+        price_manip[0].confidence >= 0.8,
+        "price manip with >5% delta should be high confidence, got {}",
+        price_manip[0].confidence
+    );
+    assert!(
+        price_manip[0].evidence.iter().any(|e| e.contains("delta")),
+        "evidence should include price delta info"
+    );
+}
+
+#[test]
+fn test_confidence_flash_loan_partial_low() {
+    let contract = addr(0x42);
+
+    // Very shallow execution — no callback pattern, just depth 0 ops
+    let mut steps: Vec<StepRecord> = Vec::new();
+    for i in 0..100 {
+        steps.push(make_step(i, 0x01, 0, contract));
+    }
+
+    let detected = AttackClassifier::classify_with_confidence(&steps);
+    let flash_loans: Vec<_> = detected
+        .iter()
+        .filter(|d| matches!(d.pattern, AttackPattern::FlashLoan { .. }))
+        .collect();
+
+    // Should NOT detect flash loan in shallow execution
+    assert!(
+        flash_loans.is_empty(),
+        "shallow execution should not trigger flash loan"
+    );
+}
+
+#[test]
+fn test_confidence_in_json_output() {
+    let contract = addr(0x42);
+    let steps = vec![make_sstore_step(0, 0, contract, slot(1), U256::from(1))];
+
+    let detected = AttackClassifier::classify_with_confidence(&steps);
+    assert!(!detected.is_empty());
+
+    let json = serde_json::to_string(&detected[0]).unwrap();
+    assert!(
+        json.contains("confidence"),
+        "JSON should include confidence field"
+    );
+    assert!(
+        json.contains("evidence"),
+        "JSON should include evidence field"
+    );
+}
+
+#[test]
+fn test_multiple_patterns_different_confidences() {
+    let victim = addr(0x42);
+    let attacker = addr(0x99);
+
+    let mut steps = vec![
+        // SSTORE without CALLER → access control bypass (medium)
+        make_sstore_step(0, 0, victim, slot(1), U256::from(1)),
+        // Victim calls attacker
+        make_call_step(1, 0, victim, attacker, U256::from(0)),
+        // Attacker re-enters victim
+        make_call_step(2, 1, attacker, victim, U256::from(0)),
+        // SSTORE during re-entry
+        make_sstore_step(3, 2, victim, slot(2), U256::from(2)),
+    ];
+    // Pad with filler to avoid edge cases
+    for i in 4..10 {
+        steps.push(make_step(i, 0x01, 0, victim));
+    }
+
+    let detected = AttackClassifier::classify_with_confidence(&steps);
+    assert!(detected.len() >= 2, "should detect multiple patterns");
+
+    // Different patterns should have different confidences
+    let confidences: Vec<f64> = detected.iter().map(|d| d.confidence).collect();
+    let has_variety = confidences.windows(2).any(|w| (w[0] - w[1]).abs() > 0.01);
+    assert!(
+        has_variety || detected.len() == 1,
+        "different patterns should have different confidence levels"
+    );
 }

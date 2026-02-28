@@ -13,3 +13,9 @@ mod cli_tests;
 
 #[cfg(feature = "autopsy")]
 mod autopsy_tests;
+
+#[cfg(feature = "autopsy")]
+mod stress_tests;
+
+#[cfg(feature = "autopsy")]
+mod mainnet_validation;

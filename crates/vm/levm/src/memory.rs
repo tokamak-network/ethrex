@@ -54,6 +54,12 @@ impl Memory {
         }
     }
 
+    /// Returns the base offset of the current callframe's memory region.
+    #[inline]
+    pub fn current_base_offset(&self) -> usize {
+        self.current_base
+    }
+
     /// Returns the len of the current memory, from the current base.
     #[inline]
     pub fn len(&self) -> usize {

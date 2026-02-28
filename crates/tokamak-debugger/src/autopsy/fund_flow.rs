@@ -81,12 +81,18 @@ impl FundFlowTracer {
                 // Token contract = the contract emitting the log
                 let token = s.code_address;
 
-                // Amount is in log data (memory), not topics.
-                // We don't capture memory, so amount is unknown.
+                // Decode amount from log data (ABI-encoded uint256 in first 32 bytes)
+                let value = s
+                    .log_data
+                    .as_ref()
+                    .filter(|d| d.len() >= 32)
+                    .map(|d| U256::from_big_endian(&d[..32]))
+                    .unwrap_or(U256::zero());
+
                 Some(FundFlow {
                     from,
                     to,
-                    value: U256::zero(), // Amount unknown without memory capture
+                    value,
                     token: Some(token),
                     step_index: s.step_index,
                 })
