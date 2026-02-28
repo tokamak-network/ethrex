@@ -49,7 +49,6 @@ impl AlertDispatcher {
     }
 }
 
-
 impl AlertHandler for AlertDispatcher {
     fn on_alert(&self, alert: SentinelAlert) {
         for handler in &self.handlers {
@@ -190,9 +189,9 @@ impl AlertDeduplicator {
                                 let addr = provider.unwrap_or_default();
                                 format!("FlashLoan:{:#x}", addr)
                             }
-                            crate::autopsy::types::AttackPattern::PriceManipulation {
-                                ..
-                            } => "PriceManipulation:global".to_string(),
+                            crate::autopsy::types::AttackPattern::PriceManipulation { .. } => {
+                                "PriceManipulation:global".to_string()
+                            }
                             crate::autopsy::types::AttackPattern::AccessControlBypass {
                                 contract,
                                 ..
@@ -316,7 +315,10 @@ impl AlertHandler for AlertRateLimiter {
 mod tests {
     use super::*;
     use ethrex_common::{H256, U256};
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     /// Test handler that counts how many alerts it received.
     struct CountingHandler {
@@ -326,7 +328,12 @@ mod tests {
     impl CountingHandler {
         fn new() -> (Self, Arc<AtomicUsize>) {
             let count = Arc::new(AtomicUsize::new(0));
-            (Self { count: count.clone() }, count)
+            (
+                Self {
+                    count: count.clone(),
+                },
+                count,
+            )
         }
     }
 

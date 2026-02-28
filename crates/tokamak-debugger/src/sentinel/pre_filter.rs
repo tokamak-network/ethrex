@@ -312,11 +312,7 @@ impl PreFilter {
     }
 
     /// H4: Check if TX interacts with known high-value DeFi contracts.
-    fn check_known_contract(
-        &self,
-        tx: &Transaction,
-        logs: &[Log],
-    ) -> Option<(Address, String)> {
+    fn check_known_contract(&self, tx: &Transaction, logs: &[Log]) -> Option<(Address, String)> {
         // Check tx.to
         if let TxKind::Call(to_addr) = tx.to()
             && let Some(label) = self.label_address(&to_addr)

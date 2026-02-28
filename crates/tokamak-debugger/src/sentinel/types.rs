@@ -54,10 +54,7 @@ pub enum SuspicionReason {
     /// Unusually many ERC-20 Transfer events in a single TX.
     MultipleErc20Transfers { count: usize },
     /// TX interacts with a known high-value DeFi contract.
-    KnownContractInteraction {
-        address: Address,
-        label: String,
-    },
+    KnownContractInteraction { address: Address, label: String },
     /// Gas usage suspiciously close to gas limit (automated exploit script).
     UnusualGasPattern { gas_used: u64, gas_limit: u64 },
     /// Self-destruct indicators detected.
@@ -117,6 +114,10 @@ pub struct AnalysisConfig {
     pub max_steps: usize,
     /// Minimum confidence to emit a SentinelAlert (default: 0.4).
     pub min_alert_confidence: f64,
+    /// When true, emit lightweight alerts from pre-filter results if deep
+    /// analysis fails or returns nothing. Useful for monitoring mode without
+    /// full Merkle Patricia Trie state (default: false).
+    pub prefilter_alert_mode: bool,
 }
 
 impl Default for AnalysisConfig {
@@ -124,6 +125,7 @@ impl Default for AnalysisConfig {
         Self {
             max_steps: 1_000_000,
             min_alert_confidence: 0.4,
+            prefilter_alert_mode: false,
         }
     }
 }

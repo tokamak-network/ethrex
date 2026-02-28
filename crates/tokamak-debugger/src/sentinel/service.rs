@@ -7,8 +7,8 @@
 //! The service implements `ethrex_blockchain::BlockObserver` so it can be plugged
 //! directly into the `Blockchain` struct without creating a circular dependency.
 
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
@@ -19,7 +19,7 @@ use ethrex_storage::Store;
 use super::analyzer::DeepAnalyzer;
 use super::metrics::SentinelMetrics;
 use super::pre_filter::PreFilter;
-use super::types::{AnalysisConfig, SentinelAlert, SentinelConfig};
+use super::types::{AlertPriority, AnalysisConfig, SentinelAlert, SentinelConfig, SuspiciousTx};
 
 /// Message sent from the block processing pipeline to the sentinel worker.
 enum SentinelMessage {
@@ -185,18 +185,66 @@ impl SentinelService {
                     metrics.increment_alerts_emitted();
                     alert_handler.on_alert(alert);
                 }
+                Ok(None) if analysis_config.prefilter_alert_mode => {
+                    let analysis_ms = analysis_start.elapsed().as_millis() as u64;
+                    metrics.add_deep_analysis_ms(analysis_ms);
+                    metrics.increment_alerts_emitted();
+                    alert_handler.on_alert(Self::build_prefilter_alert(block, suspicion));
+                }
                 Ok(None) => {
                     let analysis_ms = analysis_start.elapsed().as_millis() as u64;
                     metrics.add_deep_analysis_ms(analysis_ms);
-                    // Deep analysis dismissed the suspicion — benign
+                }
+                Err(_e) if analysis_config.prefilter_alert_mode => {
+                    let analysis_ms = analysis_start.elapsed().as_millis() as u64;
+                    metrics.add_deep_analysis_ms(analysis_ms);
+                    metrics.increment_alerts_emitted();
+                    alert_handler.on_alert(Self::build_prefilter_alert(block, suspicion));
                 }
                 Err(_e) => {
                     let analysis_ms = analysis_start.elapsed().as_millis() as u64;
                     metrics.add_deep_analysis_ms(analysis_ms);
-                    // In production this would use tracing::warn!
-                    // For now, silently skip to avoid crashing the worker
                 }
             }
+        }
+    }
+
+    /// Build a lightweight alert from pre-filter results when deep analysis
+    /// is unavailable (no Merkle trie state) or dismissed the suspicion.
+    fn build_prefilter_alert(block: &Block, suspicion: &SuspiciousTx) -> SentinelAlert {
+        let reason_names: Vec<&str> = suspicion
+            .reasons
+            .iter()
+            .map(|r| match r {
+                super::types::SuspicionReason::FlashLoanSignature { .. } => "flash-loan",
+                super::types::SuspicionReason::HighValueWithRevert { .. } => "high-value-revert",
+                super::types::SuspicionReason::MultipleErc20Transfers { .. } => "erc20-transfers",
+                super::types::SuspicionReason::KnownContractInteraction { .. } => "known-contract",
+                super::types::SuspicionReason::UnusualGasPattern { .. } => "unusual-gas",
+                super::types::SuspicionReason::SelfDestructDetected => "self-destruct",
+                super::types::SuspicionReason::PriceOracleWithSwap { .. } => "oracle-swap",
+            })
+            .collect();
+
+        SentinelAlert {
+            block_number: block.header.number,
+            block_hash: block.header.compute_block_hash(),
+            tx_hash: suspicion.tx_hash,
+            tx_index: suspicion.tx_index,
+            alert_priority: AlertPriority::from_score(suspicion.score),
+            suspicion_reasons: suspicion.reasons.clone(),
+            suspicion_score: suspicion.score,
+            #[cfg(feature = "autopsy")]
+            detected_patterns: vec![],
+            #[cfg(feature = "autopsy")]
+            fund_flows: vec![],
+            total_value_at_risk: ethrex_common::U256::zero(),
+            summary: format!(
+                "Pre-filter alert: {} (score={:.2})",
+                reason_names.join(", "),
+                suspicion.score
+            ),
+            total_steps: 0,
         }
     }
 }

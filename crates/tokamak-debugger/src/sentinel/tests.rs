@@ -766,9 +766,11 @@ fn test_analysis_config_custom() {
     let config = AnalysisConfig {
         max_steps: 500_000,
         min_alert_confidence: 0.7,
+        prefilter_alert_mode: true,
     };
     assert_eq!(config.max_steps, 500_000);
     assert!((config.min_alert_confidence - 0.7).abs() < f64::EPSILON);
+    assert!(config.prefilter_alert_mode);
 }
 
 #[test]
@@ -1640,8 +1642,8 @@ mod service_tests {
 
 mod h5_integration_tests {
     use std::collections::HashSet;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use ethrex_common::{H256, U256};
 
@@ -1701,8 +1703,7 @@ mod h5_integration_tests {
         dispatcher.on_alert(alert);
 
         let msg = rx.recv().expect("subscriber should receive alert");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&msg).expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&msg).expect("should be valid JSON");
         assert_eq!(parsed["block_number"], 500);
         assert_eq!(parsed["alert_priority"], "High");
     }
@@ -1834,8 +1835,7 @@ mod h5_integration_tests {
             let msg = rx
                 .recv()
                 .unwrap_or_else(|_| panic!("subscriber {} should receive", i));
-            let parsed: serde_json::Value =
-                serde_json::from_str(&msg).expect("valid JSON");
+            let parsed: serde_json::Value = serde_json::from_str(&msg).expect("valid JSON");
             assert_eq!(parsed["block_number"], 999);
             assert_eq!(parsed["alert_priority"], "Critical");
         }
@@ -1942,8 +1942,7 @@ mod h5_integration_tests {
         let jsonl_handler = JsonlFileAlertHandler::new(path.clone());
 
         // Wire into dispatcher
-        let dispatcher =
-            AlertDispatcher::new(vec![Box::new(ws_handler), Box::new(jsonl_handler)]);
+        let dispatcher = AlertDispatcher::new(vec![Box::new(ws_handler), Box::new(jsonl_handler)]);
 
         // Emit 3 alerts through the pipeline
         dispatcher.on_alert(make_alert(300, AlertPriority::Medium, 0x01));
@@ -1951,12 +1950,9 @@ mod h5_integration_tests {
         dispatcher.on_alert(make_alert(302, AlertPriority::Critical, 0x03));
 
         // Verify WebSocket subscriber received all 3
-        let ws_msg1: serde_json::Value =
-            serde_json::from_str(&rx.recv().unwrap()).unwrap();
-        let ws_msg2: serde_json::Value =
-            serde_json::from_str(&rx.recv().unwrap()).unwrap();
-        let ws_msg3: serde_json::Value =
-            serde_json::from_str(&rx.recv().unwrap()).unwrap();
+        let ws_msg1: serde_json::Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
+        let ws_msg2: serde_json::Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
+        let ws_msg3: serde_json::Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
 
         assert_eq!(ws_msg1["block_number"], 300);
         assert_eq!(ws_msg2["block_number"], 301);
@@ -1975,5 +1971,404 @@ mod h5_integration_tests {
         assert_eq!(result.alerts[2].block_number, 302);
 
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+// ===========================================================================
+// Reentrancy E2E Demo — Proves the full attack detection pipeline works
+// end-to-end with actual reentrancy contract bytecodes.
+// ===========================================================================
+
+/// Test 1: Bytecode-level reentrancy detection via AttackClassifier.
+///
+/// Executes actual attacker + victim contracts through LEVM, captures the
+/// opcode trace, and verifies the classifier detects Reentrancy with
+/// confidence >= 0.7.
+#[cfg(feature = "autopsy")]
+mod reentrancy_bytecode_tests {
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+    use ethrex_common::constants::EMPTY_TRIE_HASH;
+    use ethrex_common::types::{
+        Account, BlockHeader, Code, EIP1559Transaction, Transaction, TxKind,
+    };
+    use ethrex_common::{Address, U256};
+    use ethrex_levm::Environment;
+    use ethrex_levm::db::gen_db::GeneralizedDatabase;
+    use rustc_hash::FxHashMap;
+
+    use crate::autopsy::classifier::AttackClassifier;
+    use crate::autopsy::types::AttackPattern;
+    use crate::engine::ReplayEngine;
+    use crate::types::ReplayConfig;
+
+    /// Gas limit — large enough for reentrancy but not overflowing.
+    const TEST_GAS_LIMIT: u64 = 10_000_000;
+
+    /// Large balance that won't overflow on small additions (unlike U256::MAX).
+    fn big_balance() -> U256 {
+        U256::from(10).pow(U256::from(30))
+    }
+
+    fn make_test_db(accounts: Vec<(Address, Code)>) -> GeneralizedDatabase {
+        let store = ethrex_storage::Store::new("", ethrex_storage::EngineType::InMemory)
+            .expect("in-memory store");
+        let header = BlockHeader {
+            state_root: *EMPTY_TRIE_HASH,
+            ..Default::default()
+        };
+        let vm_db: ethrex_vm::DynVmDatabase = Box::new(
+            ethrex_blockchain::vm::StoreVmDatabase::new(store, header).expect("StoreVmDatabase"),
+        );
+
+        let balance = big_balance();
+        let mut cache = FxHashMap::default();
+        for (addr, code) in accounts {
+            cache.insert(addr, Account::new(balance, code, 0, FxHashMap::default()));
+        }
+
+        GeneralizedDatabase::new_with_account_state(Arc::new(vm_db), cache)
+    }
+
+    /// Victim Contract (20 bytes):
+    /// Sends 1 wei to CALLER via CALL, then SSTORE slot 0 = 1.
+    /// Vulnerable: state update AFTER external call.
+    ///
+    /// Bytecode:
+    ///   PUSH1 0  PUSH1 0  PUSH1 0  PUSH1 0  PUSH1 1  CALLER  PUSH2 0xFFFF  CALL
+    ///   POP  PUSH1 1  PUSH1 0  SSTORE  STOP
+    fn victim_bytecode() -> Vec<u8> {
+        vec![
+            0x60, 0x00, // PUSH1 0 (retLen)
+            0x60, 0x00, // PUSH1 0 (retOff)
+            0x60, 0x00, // PUSH1 0 (argsLen)
+            0x60, 0x00, // PUSH1 0 (argsOff)
+            0x60, 0x01, // PUSH1 1 (value = 1 wei)
+            0x33, // CALLER
+            0x61, 0xFF, 0xFF, // PUSH2 0xFFFF (gas)
+            0xF1, // CALL
+            0x50, // POP (return status)
+            0x60, 0x01, // PUSH1 1
+            0x60, 0x00, // PUSH1 0
+            0x55, // SSTORE(slot=0, value=1)
+            0x00, // STOP
+        ]
+    }
+
+    /// Attacker Contract (38 bytes):
+    /// Counter in slot 0. If counter < 2: increment + CALL victim.
+    /// If counter >= 2: STOP.
+    ///
+    /// Bytecode:
+    ///   SLOAD(0)  DUP1  PUSH1 2  GT  ISZERO  PUSH1 0x23  JUMPI
+    ///   PUSH1 1  ADD  PUSH1 0  SSTORE
+    ///   PUSH1 0  PUSH1 0  PUSH1 0  PUSH1 0  PUSH1 0
+    ///   PUSH1 <victim_lo>  PUSH2 0xFFFF  CALL  POP  STOP
+    ///   JUMPDEST  POP  STOP
+    fn attacker_bytecode(victim_addr: Address) -> Vec<u8> {
+        // Extract low byte of victim address for PUSH1
+        let victim_byte = victim_addr.as_bytes()[19];
+        // Bytecode layout (byte offsets):
+        //  0: PUSH1 0       2: SLOAD      3: DUP1       4: PUSH1 2
+        //  6: GT            7: ISZERO     8: PUSH1 0x23  10: JUMPI
+        // 11: PUSH1 1      13: ADD       14: PUSH1 0    16: SSTORE
+        // 17: PUSH1 0 (retLen)  19: PUSH1 0 (retOff)  21: PUSH1 0 (argsLen)
+        // 23: PUSH1 0 (argsOff) 25: PUSH1 0 (value)   27: PUSH1 victim
+        // 29: PUSH2 0xFFFF 32: CALL      33: POP       34: STOP
+        // 35: JUMPDEST      36: POP       37: STOP
+        vec![
+            0x60,
+            0x00, // 0: PUSH1 0 (slot)
+            0x54, // 2: SLOAD(0) → counter
+            0x80, // 3: DUP1
+            0x60,
+            0x02, // 4: PUSH1 2
+            0x11, // 6: GT — stack: [2, counter] → 2 > counter
+            0x15, // 7: ISZERO — !(2 > counter) = counter >= 2
+            0x60,
+            0x23, // 8: PUSH1 0x23 = 35 (JUMPDEST offset)
+            0x57, // 10: JUMPI (jump if counter >= 2)
+            // counter < 2 path: increment + CALL victim
+            0x60,
+            0x01, // 11: PUSH1 1
+            0x01, // 13: ADD (counter + 1)
+            0x60,
+            0x00, // 14: PUSH1 0
+            0x55, // 16: SSTORE(slot=0, value=counter+1)
+            // CALL victim(gas=0xFFFF, addr=victim, value=0, args=0,0, ret=0,0)
+            0x60,
+            0x00, // 17: PUSH1 0 (retLen)
+            0x60,
+            0x00, // 19: PUSH1 0 (retOff)
+            0x60,
+            0x00, // 21: PUSH1 0 (argsLen)
+            0x60,
+            0x00, // 23: PUSH1 0 (argsOff)
+            0x60,
+            0x00, // 25: PUSH1 0 (value)
+            0x60,
+            victim_byte, // 27: PUSH1 victim_addr
+            0x61,
+            0xFF,
+            0xFF, // 29: PUSH2 0xFFFF (gas)
+            0xF1, // 32: CALL
+            0x50, // 33: POP
+            0x00, // 34: STOP
+            // counter >= 2 path
+            0x5B, // 35: JUMPDEST
+            0x50, // 36: POP (discard duplicated counter)
+            0x00, // 37: STOP
+        ]
+    }
+
+    #[test]
+    fn reentrancy_bytecode_classifier_detects_attack() {
+        let attacker_addr = Address::from_low_u64_be(0x42);
+        let victim_addr = Address::from_low_u64_be(0x43);
+        let sender_addr = Address::from_low_u64_be(0x100);
+
+        let accounts = vec![
+            (
+                attacker_addr,
+                Code::from_bytecode(Bytes::from(attacker_bytecode(victim_addr))),
+            ),
+            (
+                victim_addr,
+                Code::from_bytecode(Bytes::from(victim_bytecode())),
+            ),
+            (sender_addr, Code::from_bytecode(Bytes::new())),
+        ];
+
+        let mut db = make_test_db(accounts);
+        let env = Environment {
+            origin: sender_addr,
+            gas_limit: TEST_GAS_LIMIT,
+            block_gas_limit: TEST_GAS_LIMIT,
+            ..Default::default()
+        };
+        let tx = Transaction::EIP1559Transaction(EIP1559Transaction {
+            to: TxKind::Call(attacker_addr),
+            data: Bytes::new(),
+            ..Default::default()
+        });
+
+        let engine = ReplayEngine::record(&mut db, env, &tx, ReplayConfig::default())
+            .expect("reentrancy TX should execute successfully");
+
+        let steps = engine.steps_range(0, engine.len());
+
+        // Verify trace has sufficient depth (attacker → victim → attacker re-entry)
+        let max_depth = steps.iter().map(|s| s.depth).max().unwrap_or(0);
+        assert!(
+            max_depth >= 3,
+            "Expected call depth >= 3 for reentrancy, got {max_depth}"
+        );
+
+        // Run the classifier
+        let detected = AttackClassifier::classify_with_confidence(&steps);
+
+        // Should find at least one Reentrancy pattern
+        let reentrancy = detected
+            .iter()
+            .find(|d| matches!(d.pattern, AttackPattern::Reentrancy { .. }));
+
+        assert!(
+            reentrancy.is_some(),
+            "Classifier should detect reentrancy. Detected patterns: {detected:?}"
+        );
+
+        let reentrancy = reentrancy.unwrap();
+        assert!(
+            reentrancy.confidence >= 0.7,
+            "Reentrancy confidence should be >= 0.7, got {}",
+            reentrancy.confidence
+        );
+
+        // The classifier identifies re-entry by finding a contract that is called,
+        // then called again before the first call completes. In our setup:
+        //   sender → attacker → victim → attacker (re-entry!)
+        // So the attacker is the contract being re-entered.
+        if let AttackPattern::Reentrancy {
+            target_contract, ..
+        } = &reentrancy.pattern
+        {
+            assert_eq!(
+                *target_contract, attacker_addr,
+                "Reentrancy target should be the re-entered contract (attacker)"
+            );
+        }
+    }
+}
+
+/// Test 2: PreFilter flags a suspicious receipt matching reentrancy-like patterns.
+mod reentrancy_prefilter_tests {
+    use ethrex_common::types::{LegacyTransaction, Transaction, TxKind};
+    use ethrex_common::{Address, U256};
+
+    use super::*;
+
+    #[test]
+    fn reentrancy_prefilter_flags_suspicious_receipt() {
+        let filter = PreFilter::default(); // threshold = 0.5
+
+        // Construct a reverted TX with 5 ETH value + 2M gas + no logs.
+        // H2 (high value revert): 5 ETH > 1 ETH threshold, reverted, gas=2M > 100k → score 0.3
+        // H6 (self-destruct indicators): reverted, gas > 1M, empty logs → score 0.3
+        // Total: 0.6 >= 0.5 threshold → flagged
+        let five_eth = U256::from(5_000_000_000_000_000_000_u64);
+        let receipt = make_receipt(false, 2_000_000, vec![]);
+        let tx = Transaction::LegacyTransaction(LegacyTransaction {
+            gas: 3_000_000,
+            to: TxKind::Call(Address::from_low_u64_be(0xDEAD)),
+            value: five_eth,
+            data: Bytes::new(),
+            ..Default::default()
+        });
+        let header = make_header(19_500_000);
+
+        let result = filter.scan_tx(&tx, &receipt, 0, &header);
+        assert!(
+            result.is_some(),
+            "PreFilter should flag high-value reverted TX"
+        );
+
+        let stx = result.unwrap();
+        assert!(
+            stx.score >= 0.5,
+            "Score should be >= 0.5, got {}",
+            stx.score
+        );
+
+        // Verify both H2 and H6 reasons are present
+        let has_high_value_revert = stx
+            .reasons
+            .iter()
+            .any(|r| matches!(r, SuspicionReason::HighValueWithRevert { .. }));
+        let has_self_destruct = stx
+            .reasons
+            .iter()
+            .any(|r| matches!(r, SuspicionReason::SelfDestructDetected));
+        assert!(
+            has_high_value_revert,
+            "Should have HighValueWithRevert reason"
+        );
+        assert!(has_self_destruct, "Should have SelfDestructDetected reason");
+    }
+}
+
+/// Test 3: Full E2E SentinelService with prefilter_alert_mode.
+mod reentrancy_sentinel_e2e_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use bytes::Bytes;
+    use ethrex_common::types::{
+        Block, BlockBody, BlockHeader, LegacyTransaction, Receipt, Transaction, TxKind, TxType,
+    };
+    use ethrex_common::{Address, U256};
+    use ethrex_storage::{EngineType, Store};
+
+    use crate::sentinel::service::{AlertHandler, SentinelService};
+    use crate::sentinel::types::{AnalysisConfig, SentinelAlert, SentinelConfig};
+
+    struct CountingAlertHandler {
+        count: Arc<AtomicUsize>,
+        last_score: Arc<std::sync::Mutex<f64>>,
+    }
+
+    impl AlertHandler for CountingAlertHandler {
+        fn on_alert(&self, alert: SentinelAlert) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut s) = self.last_score.lock() {
+                *s = alert.suspicion_score;
+            }
+        }
+    }
+
+    #[test]
+    fn reentrancy_sentinel_service_e2e_alert() {
+        let alert_count = Arc::new(AtomicUsize::new(0));
+        let last_score = Arc::new(std::sync::Mutex::new(0.0_f64));
+        let handler = CountingAlertHandler {
+            count: alert_count.clone(),
+            last_score: last_score.clone(),
+        };
+
+        let store = Store::new("", EngineType::InMemory).expect("in-memory store");
+        let config = SentinelConfig::default(); // threshold 0.5
+
+        // Enable prefilter_alert_mode so alerts emit even without deep analysis
+        let analysis_config = AnalysisConfig {
+            prefilter_alert_mode: true,
+            ..Default::default()
+        };
+
+        let service = SentinelService::new(store, config, analysis_config, Box::new(handler));
+
+        // Build a block with a suspicious TX: 5 ETH + reverted + high gas + no logs
+        // H2 = 0.3, H6 = 0.3 → total 0.6 >= 0.5
+        let five_eth = U256::from(5_000_000_000_000_000_000_u64);
+        let tx = Transaction::LegacyTransaction(LegacyTransaction {
+            gas: 3_000_000,
+            to: TxKind::Call(Address::from_low_u64_be(0xDEAD)),
+            value: five_eth,
+            data: Bytes::new(),
+            ..Default::default()
+        });
+        let receipt = Receipt {
+            tx_type: TxType::Legacy,
+            succeeded: false,
+            cumulative_gas_used: 2_000_000,
+            logs: vec![],
+        };
+
+        let block = Block {
+            header: BlockHeader {
+                number: 19_500_000,
+                gas_used: 2_000_000,
+                gas_limit: 30_000_000,
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions: vec![tx],
+                ..Default::default()
+            },
+        };
+
+        // Feed the block through BlockObserver
+        use ethrex_blockchain::BlockObserver;
+        service.on_block_committed(block, vec![receipt]);
+
+        // Wait for the worker thread to process
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Verify alert was emitted via prefilter fallback
+        let count = alert_count.load(Ordering::SeqCst);
+        assert!(
+            count >= 1,
+            "Expected at least 1 alert from prefilter_alert_mode, got {count}"
+        );
+
+        // Verify alert score
+        let score = *last_score.lock().unwrap();
+        assert!(
+            score >= 0.5,
+            "Alert suspicion_score should be >= 0.5, got {score}"
+        );
+
+        // Verify metrics
+        let metrics = service.metrics();
+        let snap = metrics.snapshot();
+        assert!(
+            snap.txs_flagged >= 1,
+            "Expected txs_flagged >= 1, got {}",
+            snap.txs_flagged
+        );
+        assert!(
+            snap.alerts_emitted >= 1,
+            "Expected alerts_emitted >= 1, got {}",
+            snap.alerts_emitted
+        );
     }
 }

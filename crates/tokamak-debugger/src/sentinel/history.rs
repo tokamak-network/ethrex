@@ -118,7 +118,8 @@ impl AlertHistory {
         }
 
         let skip = (page - 1) * page_size;
-        let page_alerts: Vec<SentinelAlert> = sorted.into_iter().skip(skip).take(page_size).collect();
+        let page_alerts: Vec<SentinelAlert> =
+            sorted.into_iter().skip(skip).take(page_size).collect();
 
         AlertQueryResult {
             alerts: page_alerts,
@@ -163,7 +164,11 @@ impl AlertHistory {
     }
 
     /// Check if an alert meets the minimum priority filter.
-    fn matches_priority(&self, alert: &SentinelAlert, min_priority: &Option<AlertPriority>) -> bool {
+    fn matches_priority(
+        &self,
+        alert: &SentinelAlert,
+        min_priority: &Option<AlertPriority>,
+    ) -> bool {
         let min = match min_priority {
             Some(p) => p,
             None => return true,

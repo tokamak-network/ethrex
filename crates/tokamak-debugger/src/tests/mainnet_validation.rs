@@ -13,9 +13,7 @@
 
 use ethrex_common::H256;
 
-use crate::autopsy::{
-    remote_db::RemoteVmDatabase, rpc_client::EthRpcClient, types::AttackPattern,
-};
+use crate::autopsy::{remote_db::RemoteVmDatabase, rpc_client::EthRpcClient, types::AttackPattern};
 
 /// Parse a hex tx hash string into H256.
 fn parse_tx_hash(hex: &str) -> H256 {

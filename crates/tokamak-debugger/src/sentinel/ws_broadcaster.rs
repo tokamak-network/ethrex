@@ -13,9 +13,9 @@
 //!         -> ...
 //! ```
 
-use std::sync::mpsc;
-use std::sync::Mutex;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::mpsc;
 
 use super::service::AlertHandler;
 use super::types::SentinelAlert;
@@ -58,10 +58,7 @@ impl WsAlertBroadcaster {
         let json = match serde_json::to_string(alert) {
             Ok(j) => j,
             Err(e) => {
-                eprintln!(
-                    "[SENTINEL WS] Failed to serialize alert: {}",
-                    e
-                );
+                eprintln!("[SENTINEL WS] Failed to serialize alert: {}", e);
                 return;
             }
         };
@@ -155,8 +152,7 @@ mod tests {
         broadcaster.broadcast(&alert);
 
         let msg = rx.recv().expect("should receive message");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&msg).expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&msg).expect("should be valid JSON");
         assert_eq!(parsed["block_number"], 42);
     }
 
@@ -178,8 +174,7 @@ mod tests {
         assert_eq!(msg1, msg2);
         assert_eq!(msg2, msg3);
 
-        let parsed: serde_json::Value =
-            serde_json::from_str(&msg1).expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&msg1).expect("should be valid JSON");
         assert_eq!(parsed["block_number"], 100);
     }
 
@@ -201,8 +196,7 @@ mod tests {
         assert_eq!(broadcaster.subscriber_count(), 1);
 
         let msg = rx2.recv().expect("subscriber 2 should still receive");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&msg).expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&msg).expect("should be valid JSON");
         assert_eq!(parsed["block_number"], 50);
     }
 
@@ -217,8 +211,7 @@ mod tests {
         handler_ref.on_alert(make_alert(77, 0xDD));
 
         let msg = rx.recv().expect("should receive via AlertHandler");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&msg).expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&msg).expect("should be valid JSON");
         assert_eq!(parsed["block_number"], 77);
         assert_eq!(parsed["summary"], "test ws alert");
     }
@@ -244,12 +237,9 @@ mod tests {
         broadcaster.broadcast(&make_alert(2, 0x02));
         broadcaster.broadcast(&make_alert(3, 0x03));
 
-        let msg1: serde_json::Value =
-            serde_json::from_str(&rx.recv().unwrap()).unwrap();
-        let msg2: serde_json::Value =
-            serde_json::from_str(&rx.recv().unwrap()).unwrap();
-        let msg3: serde_json::Value =
-            serde_json::from_str(&rx.recv().unwrap()).unwrap();
+        let msg1: serde_json::Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
+        let msg2: serde_json::Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
+        let msg3: serde_json::Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
 
         assert_eq!(msg1["block_number"], 1);
         assert_eq!(msg2["block_number"], 2);
@@ -265,7 +255,9 @@ mod tests {
         let rx = handler.broadcaster().subscribe();
         handler.on_alert(make_alert(99, 0xFF));
 
-        let msg = rx.recv().expect("should receive via accessor-registered sub");
+        let msg = rx
+            .recv()
+            .expect("should receive via accessor-registered sub");
         assert!(msg.contains("99"));
     }
 }
