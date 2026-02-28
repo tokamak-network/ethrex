@@ -1,7 +1,7 @@
 //! Sentinel-specific types for the pre-filter, deep analysis, and alert system.
 
 use ethrex_common::{Address, H256, U256};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "autopsy")]
 use crate::autopsy::types::{AttackPattern, DetectedPattern, FundFlow};
@@ -35,7 +35,7 @@ impl Default for SentinelConfig {
 }
 
 /// A transaction flagged as suspicious by the pre-filter.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuspiciousTx {
     pub tx_hash: H256,
     pub tx_index: usize,
@@ -45,7 +45,7 @@ pub struct SuspiciousTx {
 }
 
 /// Reason why a transaction was flagged.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SuspicionReason {
     /// Flash loan event signature detected in logs.
     FlashLoanSignature { provider_address: Address },
@@ -56,7 +56,7 @@ pub enum SuspicionReason {
     /// TX interacts with a known high-value DeFi contract.
     KnownContractInteraction {
         address: Address,
-        label: &'static str,
+        label: String,
     },
     /// Gas usage suspiciously close to gas limit (automated exploit script).
     UnusualGasPattern { gas_used: u64, gas_limit: u64 },
@@ -88,7 +88,7 @@ impl SuspicionReason {
 }
 
 /// Alert priority derived from combined suspicion score.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlertPriority {
     /// Score >= 0.3 but < 0.5
     Medium,
@@ -129,7 +129,7 @@ impl Default for AnalysisConfig {
 }
 
 /// Alert emitted after deep analysis confirms suspicious activity.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SentinelAlert {
     pub block_number: u64,
     pub block_hash: H256,

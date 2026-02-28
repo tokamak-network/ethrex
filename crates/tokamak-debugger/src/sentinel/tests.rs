@@ -163,7 +163,7 @@ fn test_suspicion_reason_scores() {
     assert!(
         (SuspicionReason::KnownContractInteraction {
             address: Address::zero(),
-            label: ""
+            label: String::new()
         }
         .score()
             - 0.1)
@@ -432,13 +432,10 @@ fn test_known_contract_interaction_via_to() {
     let result = filter.scan_tx(&tx, &receipt, 0, &header);
     assert!(result.is_some());
     let stx = result.unwrap();
-    assert!(stx.reasons.iter().any(|r| matches!(
-        r,
-        SuspicionReason::KnownContractInteraction {
-            label: "Uniswap V3 Router",
-            ..
-        }
-    )));
+    assert!(stx.reasons.iter().any(|r| match r {
+        SuspicionReason::KnownContractInteraction { label, .. } => label == "Uniswap V3 Router",
+        _ => false,
+    }));
 }
 
 #[test]
@@ -455,13 +452,10 @@ fn test_known_contract_in_logs() {
     let result = filter.scan_tx(&tx, &receipt, 0, &header);
     assert!(result.is_some());
     let stx = result.unwrap();
-    assert!(stx.reasons.iter().any(|r| matches!(
-        r,
-        SuspicionReason::KnownContractInteraction {
-            label: "Chainlink ETH/USD",
-            ..
-        }
-    )));
+    assert!(stx.reasons.iter().any(|r| match r {
+        SuspicionReason::KnownContractInteraction { label, .. } => label == "Chainlink ETH/USD",
+        _ => false,
+    }));
 }
 
 #[test]
@@ -915,7 +909,7 @@ fn test_sentinel_alert_multiple_suspicion_reasons() {
         SuspicionReason::MultipleErc20Transfers { count: 15 },
         SuspicionReason::KnownContractInteraction {
             address: Address::zero(),
-            label: "Aave V2 Pool",
+            label: "Aave V2 Pool".to_string(),
         },
     ];
 
@@ -1637,5 +1631,349 @@ mod service_tests {
         handler.on_alert(alert);
 
         assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+}
+
+// ===========================================================================
+// H-5: Integration tests — cross-module wiring
+// ===========================================================================
+
+mod h5_integration_tests {
+    use std::collections::HashSet;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    use ethrex_common::{H256, U256};
+
+    use crate::sentinel::alert::{AlertDispatcher, JsonlFileAlertHandler};
+    use crate::sentinel::history::{AlertHistory, AlertQueryParams, SortOrder};
+    use crate::sentinel::metrics::SentinelMetrics;
+    use crate::sentinel::service::AlertHandler;
+    use crate::sentinel::types::{AlertPriority, SentinelAlert};
+    use crate::sentinel::ws_broadcaster::{WsAlertBroadcaster, WsAlertHandler};
+
+    /// Atomic counter for unique temp file paths across tests.
+    static H5_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_jsonl_path() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("sentinel_h5_integration");
+        let _ = std::fs::create_dir_all(&dir);
+        let id = H5_FILE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        dir.join(format!("h5_{}_{}.jsonl", std::process::id(), id))
+    }
+
+    fn make_alert(block_number: u64, priority: AlertPriority, tx_hash_byte: u8) -> SentinelAlert {
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[0] = tx_hash_byte;
+        SentinelAlert {
+            block_number,
+            block_hash: H256::zero(),
+            tx_hash: H256::from(hash_bytes),
+            tx_index: 0,
+            alert_priority: priority,
+            suspicion_reasons: vec![],
+            suspicion_score: match priority {
+                AlertPriority::Critical => 0.9,
+                AlertPriority::High => 0.6,
+                AlertPriority::Medium => 0.4,
+            },
+            #[cfg(feature = "autopsy")]
+            detected_patterns: vec![],
+            #[cfg(feature = "autopsy")]
+            fund_flows: vec![],
+            total_value_at_risk: U256::zero(),
+            summary: format!("H5 test alert block={}", block_number),
+            total_steps: 100,
+        }
+    }
+
+    /// H-5 Test 1: AlertDispatcher with WsAlertHandler — write via pipeline,
+    /// verify WebSocket subscriber receives the alert.
+    #[test]
+    fn test_h5_ws_broadcaster_with_alert_dispatcher() {
+        let broadcaster = Arc::new(WsAlertBroadcaster::new());
+        let rx = broadcaster.subscribe();
+
+        let ws_handler = WsAlertHandler::new(broadcaster.clone());
+        let dispatcher = AlertDispatcher::new(vec![Box::new(ws_handler)]);
+
+        let alert = make_alert(500, AlertPriority::High, 0xAA);
+        dispatcher.on_alert(alert);
+
+        let msg = rx.recv().expect("subscriber should receive alert");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&msg).expect("should be valid JSON");
+        assert_eq!(parsed["block_number"], 500);
+        assert_eq!(parsed["alert_priority"], "High");
+    }
+
+    /// H-5 Test 2: Write alerts via JsonlFileAlertHandler, then read back
+    /// via AlertHistory.query() — full roundtrip.
+    #[test]
+    fn test_h5_history_roundtrip_with_jsonl() {
+        let path = unique_jsonl_path();
+
+        // Write phase: push 3 alerts through the JSONL handler
+        let handler = JsonlFileAlertHandler::new(path.clone());
+        handler.on_alert(make_alert(100, AlertPriority::Medium, 0x01));
+        handler.on_alert(make_alert(101, AlertPriority::High, 0x02));
+        handler.on_alert(make_alert(102, AlertPriority::Critical, 0x03));
+
+        // Read phase: query back via AlertHistory
+        let history = AlertHistory::new(path.clone());
+        let result = history.query(&AlertQueryParams::default());
+
+        assert_eq!(result.total_count, 3);
+        assert_eq!(result.alerts.len(), 3);
+
+        // Newest first (default sort)
+        assert_eq!(result.alerts[0].block_number, 102);
+        assert_eq!(result.alerts[1].block_number, 101);
+        assert_eq!(result.alerts[2].block_number, 100);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// H-5 Test 3: Pagination consistency — 25 alerts, pages of 10, no duplicates.
+    #[test]
+    fn test_h5_history_pagination_consistency() {
+        let path = unique_jsonl_path();
+
+        let handler = JsonlFileAlertHandler::new(path.clone());
+        for i in 0..25 {
+            handler.on_alert(make_alert(200 + i, AlertPriority::High, i as u8));
+        }
+
+        let history = AlertHistory::new(path.clone());
+
+        let p1 = history.query(&AlertQueryParams {
+            page: 1,
+            page_size: 10,
+            ..Default::default()
+        });
+        let p2 = history.query(&AlertQueryParams {
+            page: 2,
+            page_size: 10,
+            ..Default::default()
+        });
+        let p3 = history.query(&AlertQueryParams {
+            page: 3,
+            page_size: 10,
+            ..Default::default()
+        });
+
+        // All pages report the same total
+        assert_eq!(p1.total_count, 25);
+        assert_eq!(p2.total_count, 25);
+        assert_eq!(p3.total_count, 25);
+
+        // Page sizes
+        assert_eq!(p1.alerts.len(), 10);
+        assert_eq!(p2.alerts.len(), 10);
+        assert_eq!(p3.alerts.len(), 5);
+
+        // Total pages
+        assert_eq!(p1.total_pages, 3);
+
+        // No duplicates across pages
+        let mut all_blocks: Vec<u64> = Vec::new();
+        all_blocks.extend(p1.alerts.iter().map(|a| a.block_number));
+        all_blocks.extend(p2.alerts.iter().map(|a| a.block_number));
+        all_blocks.extend(p3.alerts.iter().map(|a| a.block_number));
+
+        let unique: HashSet<u64> = all_blocks.iter().copied().collect();
+        assert_eq!(unique.len(), 25, "all 25 alerts should appear exactly once");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// H-5 Test 4: Metrics counters increment correctly under direct usage.
+    #[test]
+    fn test_h5_metrics_increment_during_processing() {
+        let metrics = SentinelMetrics::new();
+
+        // Simulate a processing cycle
+        metrics.increment_blocks_scanned();
+        metrics.increment_txs_scanned(50);
+        metrics.increment_txs_flagged(3);
+        metrics.increment_alerts_emitted();
+        metrics.increment_alerts_emitted();
+        metrics.add_prefilter_us(1200);
+        metrics.add_deep_analysis_ms(45);
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.blocks_scanned, 1);
+        assert_eq!(snap.txs_scanned, 50);
+        assert_eq!(snap.txs_flagged, 3);
+        assert_eq!(snap.alerts_emitted, 2);
+        assert_eq!(snap.prefilter_total_us, 1200);
+        assert_eq!(snap.deep_analysis_total_ms, 45);
+
+        // Simulate second block
+        metrics.increment_blocks_scanned();
+        metrics.increment_txs_scanned(30);
+
+        let snap2 = metrics.snapshot();
+        assert_eq!(snap2.blocks_scanned, 2);
+        assert_eq!(snap2.txs_scanned, 80);
+        // Previous snapshot is frozen
+        assert_eq!(snap.blocks_scanned, 1);
+    }
+
+    /// H-5 Test 5: 10 concurrent subscribers all receive the same broadcast.
+    #[test]
+    fn test_h5_ws_concurrent_subscribers() {
+        let broadcaster = Arc::new(WsAlertBroadcaster::new());
+
+        let receivers: Vec<_> = (0..10).map(|_| broadcaster.subscribe()).collect();
+
+        let alert = make_alert(999, AlertPriority::Critical, 0xFF);
+        broadcaster.broadcast(&alert);
+
+        for (i, rx) in receivers.iter().enumerate() {
+            let msg = rx
+                .recv()
+                .unwrap_or_else(|_| panic!("subscriber {} should receive", i));
+            let parsed: serde_json::Value =
+                serde_json::from_str(&msg).expect("valid JSON");
+            assert_eq!(parsed["block_number"], 999);
+            assert_eq!(parsed["alert_priority"], "Critical");
+        }
+    }
+
+    /// H-5 Test 6: 500 alerts with varying blocks, query with block_range filter.
+    #[test]
+    fn test_h5_history_large_file() {
+        let path = unique_jsonl_path();
+
+        let handler = JsonlFileAlertHandler::new(path.clone());
+        for i in 0u64..500 {
+            let priority = match i % 3 {
+                0 => AlertPriority::Medium,
+                1 => AlertPriority::High,
+                _ => AlertPriority::Critical,
+            };
+            handler.on_alert(make_alert(1000 + i, priority, (i % 256) as u8));
+        }
+
+        let history = AlertHistory::new(path.clone());
+
+        // Query a narrow range: blocks 1200..1250 (inclusive) = 51 alerts
+        let result = history.query(&AlertQueryParams {
+            block_range: Some((1200, 1250)),
+            page_size: 100,
+            ..Default::default()
+        });
+
+        assert_eq!(result.total_count, 51);
+        for alert in &result.alerts {
+            assert!(
+                alert.block_number >= 1200 && alert.block_number <= 1250,
+                "block {} out of range",
+                alert.block_number
+            );
+        }
+
+        // Verify sort order (newest first by default)
+        for window in result.alerts.windows(2) {
+            assert!(
+                window[0].block_number >= window[1].block_number,
+                "should be sorted descending"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// H-5 Test 7: Prometheus text output contains expected metric lines.
+    #[test]
+    fn test_h5_metrics_prometheus_format_valid() {
+        let metrics = SentinelMetrics::new();
+
+        metrics.increment_blocks_scanned();
+        metrics.increment_blocks_scanned();
+        metrics.increment_blocks_scanned();
+        metrics.increment_txs_scanned(100);
+        metrics.increment_txs_flagged(7);
+        metrics.increment_alerts_emitted();
+        metrics.increment_alerts_deduplicated();
+        metrics.increment_alerts_rate_limited();
+        metrics.add_prefilter_us(5000);
+        metrics.add_deep_analysis_ms(250);
+
+        let text = metrics.to_prometheus_text();
+
+        // Verify expected values appear
+        assert!(text.contains("sentinel_blocks_scanned 3"));
+        assert!(text.contains("sentinel_txs_scanned 100"));
+        assert!(text.contains("sentinel_txs_flagged 7"));
+        assert!(text.contains("sentinel_alerts_emitted 1"));
+        assert!(text.contains("sentinel_alerts_deduplicated 1"));
+        assert!(text.contains("sentinel_alerts_rate_limited 1"));
+        assert!(text.contains("sentinel_prefilter_total_us 5000"));
+        assert!(text.contains("sentinel_deep_analysis_total_ms 250"));
+
+        // Verify Prometheus format structure (HELP + TYPE per metric)
+        let help_count = text.matches("# HELP").count();
+        let type_count = text.matches("# TYPE").count();
+        assert_eq!(help_count, 8, "should have 8 HELP lines");
+        assert_eq!(type_count, 8, "should have 8 TYPE lines");
+
+        // All types should be counters
+        assert_eq!(
+            text.matches("# TYPE").count(),
+            text.matches("counter").count(),
+            "all metrics should be counters"
+        );
+    }
+
+    /// H-5 Test 8: Full pipeline wiring — AlertDispatcher with WsAlertHandler
+    /// + JsonlFileAlertHandler, then verify both outputs work.
+    #[test]
+    fn test_h5_full_pipeline_with_all_handlers() {
+        let path = unique_jsonl_path();
+
+        // Set up WebSocket broadcaster
+        let broadcaster = Arc::new(WsAlertBroadcaster::new());
+        let rx = broadcaster.subscribe();
+        let ws_handler = WsAlertHandler::new(broadcaster);
+
+        // Set up JSONL file handler
+        let jsonl_handler = JsonlFileAlertHandler::new(path.clone());
+
+        // Wire into dispatcher
+        let dispatcher =
+            AlertDispatcher::new(vec![Box::new(ws_handler), Box::new(jsonl_handler)]);
+
+        // Emit 3 alerts through the pipeline
+        dispatcher.on_alert(make_alert(300, AlertPriority::Medium, 0x01));
+        dispatcher.on_alert(make_alert(301, AlertPriority::High, 0x02));
+        dispatcher.on_alert(make_alert(302, AlertPriority::Critical, 0x03));
+
+        // Verify WebSocket subscriber received all 3
+        let ws_msg1: serde_json::Value =
+            serde_json::from_str(&rx.recv().unwrap()).unwrap();
+        let ws_msg2: serde_json::Value =
+            serde_json::from_str(&rx.recv().unwrap()).unwrap();
+        let ws_msg3: serde_json::Value =
+            serde_json::from_str(&rx.recv().unwrap()).unwrap();
+
+        assert_eq!(ws_msg1["block_number"], 300);
+        assert_eq!(ws_msg2["block_number"], 301);
+        assert_eq!(ws_msg3["block_number"], 302);
+
+        // Verify JSONL file contains all 3, readable via AlertHistory
+        let history = AlertHistory::new(path.clone());
+        let result = history.query(&AlertQueryParams {
+            sort_order: SortOrder::Oldest,
+            ..Default::default()
+        });
+
+        assert_eq!(result.total_count, 3);
+        assert_eq!(result.alerts[0].block_number, 300);
+        assert_eq!(result.alerts[1].block_number, 301);
+        assert_eq!(result.alerts[2].block_number, 302);
+
+        let _ = std::fs::remove_file(&path);
     }
 }

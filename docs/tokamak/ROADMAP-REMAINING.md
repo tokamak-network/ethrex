@@ -1,7 +1,7 @@
 # Tokamak Remaining Work Roadmap
 
 **Created**: 2026-02-24 | **Updated**: 2026-02-28
-**Context**: Overall ~96% complete. JIT core done (Phases 2-8). Phase A: ALL P0 COMPLETE (A-1 ✅ A-2 ✅ A-3 ✅ A-4 ✅). Phase B: B-1 ✅ B-2 ✅ B-3 ✅ — ALL COMPLETE. Phase C: C-1 ✅ C-2 ✅ C-3 ✅ — ALL COMPLETE. Phase D: D-1 ✅ DONE (v1.1 runtime opt), D-2 ✅ DONE, D-3 ✅ DONE. Phase E: E-1 ✅ DONE, E-2 ✅ DONE, E-3 ✅ DONE, E-4 ✅ DONE (Smart Contract Autopsy Lab) — ALL COMPLETE. Phase F: F-1 ✅ DONE, F-2 ✅ DONE, F-3 ✅ DONE (scaffolding), F-4 ✅ DONE, F-5 CI CONFIGURED (awaiting sync run). Phase G: ALL COMPLETE (8/8). Phase H: H-1 ✅ DONE (Pre-Filter Engine), H-2 ✅ DONE (Deep Analysis Engine), H-3 ✅ DONE (Block Processing Integration), H-4~H-5 NOT STARTED (2 tasks).
+**Context**: Overall ~98% complete. JIT core done (Phases 2-8). Phase A: ALL P0 COMPLETE (A-1 ✅ A-2 ✅ A-3 ✅ A-4 ✅). Phase B: B-1 ✅ B-2 ✅ B-3 ✅ — ALL COMPLETE. Phase C: C-1 ✅ C-2 ✅ C-3 ✅ — ALL COMPLETE. Phase D: D-1 ✅ DONE (v1.1 runtime opt), D-2 ✅ DONE, D-3 ✅ DONE. Phase E: E-1 ✅ DONE, E-2 ✅ DONE, E-3 ✅ DONE, E-4 ✅ DONE (Smart Contract Autopsy Lab) — ALL COMPLETE. Phase F: F-1 ✅ DONE, F-2 ✅ DONE, F-3 ✅ DONE (scaffolding), F-4 ✅ DONE, F-5 CI CONFIGURED (awaiting sync run). Phase G: ALL COMPLETE (8/8). Phase H: ALL COMPLETE (5/5) — H-1 ✅ H-2 ✅ H-3 ✅ H-4 ✅ H-5 ✅.
 
 ---
 
@@ -416,26 +416,25 @@ The Autopsy Lab (E-4) provides post-hoc analysis of historical transactions. Pha
 - **Estimate**: 12-20h
 - **Completed**: 2026-02-28 --- BlockObserver trait in ethrex-blockchain, SentinelService (background worker thread with mpsc channel, two-stage PreFilter→DeepAnalyzer pipeline), non-blocking hooks in add_block/add_block_pipeline after store_block, AlertHandler trait + LogAlertHandler, 11 tests
 
-### H-4. Alert & Notification System [P2]
-- Dispatch alerts when `AttackClassifier` detects patterns
-- Configurable alert channels:
-  - Webhook URL (generic POST with JSON report body)
-  - Slack incoming webhook (formatted message with verdict + TX hash + provider)
-  - Log file (append-only, JSON-lines format)
-  - Stdout (for containerized deployments)
-- Alert severity mapping: Flash Loan / Reentrancy → Critical, Price Manipulation → High, Access Control → Medium
-- De-duplication: same pattern + same target contract within N blocks → suppress duplicate alert
-- Rate limiting: max N alerts per minute (prevent alert storm during mass-attack events)
-- **Dependency**: H-3
-- **Estimate**: 8-12h
+### H-4. Alert & Notification System [P2] ✅ DONE
+- AlertDispatcher (composite fan-out pattern) — dispatches to multiple AlertHandler impls in registration order ✅
+- JsonlFileAlertHandler — append-only JSONL file writer with log-rotation safe open-per-write ✅
+- StdoutAlertHandler — JSON output to stdout for containerized deployments ✅
+- WebhookAlertHandler — HTTP POST with exponential backoff retry (reqwest::blocking, autopsy-gated) ✅
+- AlertDeduplicator — block-window suppression (pattern+contract with autopsy, tx_hash without), configurable window (default 10 blocks) ✅
+- AlertRateLimiter — sliding-window rate limiting (max N alerts/minute, default 30), evicts stale timestamps ✅
+- All wrappers implement AlertHandler trait — freely composable pipeline ✅
+- **Verification**: 14 new alert tests (3 dispatcher + 1 stdout + 2 JSONL + 4 dedup + 3 rate limiter + 1 composition pipeline), 222 passing + 10 ignored total (`--features "cli,autopsy,sentinel"`), clippy clean ✅
+- **Dependency**: H-3 ✅
+- **Completed**: 2026-02-28 — AlertDispatcher, JsonlFileAlertHandler, StdoutAlertHandler, WebhookAlertHandler, AlertDeduplicator, AlertRateLimiter, 14 tests
 
-### H-5. Sentinel Dashboard [P3]
-- Live WebSocket feed of detected events (subscribe to `sentinel_events` channel)
-- Historical alert browsing (paginated, filterable by pattern type / severity / block range)
-- Integration with existing F-2 dashboard infrastructure (Astro + React islands)
-- Optional: Grafana/Prometheus metrics export for `sentinel_*` metrics
-- **Dependency**: H-3, H-4, F-2 ✅
-- **Estimate**: 24-40h
+### H-5. Sentinel Dashboard [P3] ✅ DONE
+- `WsAlertBroadcaster`: real-time WebSocket alert feed via `tokio-tungstenite`, subscribers receive JSON-serialized `SentinelAlert` on broadcast, automatic cleanup of disconnected subscribers ✅
+- `AlertHistory` (JSONL reader + query engine): paginated historical alert browsing with filtering by block range, priority, and pattern type, `AlertQuery` + `AlertPage` types, `Deserialize` support on all sentinel types ✅
+- `SentinelMetrics` (Prometheus-compatible exporter): 8 atomic counters (`blocks_scanned`, `txs_scanned`, `txs_flagged`, `alerts_emitted`, `alerts_deduplicated`, `alerts_rate_limited`, `prefilter_total_us`, `deep_analysis_total_ms`), `MetricsSnapshot` for point-in-time reads, `to_prometheus_text()` exposition format, integrated into `SentinelService` worker loop with timing instrumentation ✅
+- Dashboard UI: Astro + React sentinel page with live WebSocket feed, historical alert table with pagination/filtering, metrics panel with Prometheus counter display ✅
+- **Dependency**: H-3 ✅, H-4 ✅, F-2 ✅
+- **Completed**: 2026-02-28 — WsAlertBroadcaster, AlertHistory, SentinelMetrics, Dashboard UI
 
 ---
 
@@ -458,8 +457,8 @@ Later:   [P3] F-5
 Week 13: [P2] H-1 ✅ (Sentinel Pre-Filter Engine — 7 heuristics, 32 tests)
 Week 13: [P2] H-2 ✅ (Deep Analysis Engine — replay + classifier + fund flow, 20 tests)
 Week 13: [P2] H-3 ✅ (Block Processing Integration — BlockObserver, SentinelService, 11 tests)
-Future:  [P2] H-4 (alert & notification system)
-Future:  [P3] H-5 (sentinel dashboard)
+Week 13: [P2] H-4 ✅ (Alert & Notification System — dispatcher, JSONL, webhook, dedup, rate limiter, 14 tests)
+Week 13: [P3] H-5 ✅ (Sentinel Dashboard — WsAlertBroadcaster, AlertHistory, SentinelMetrics, Dashboard UI)
 ```
 
 ---

@@ -7,15 +7,17 @@
 //! The service implements `ethrex_blockchain::BlockObserver` so it can be plugged
 //! directly into the `Blockchain` struct without creating a circular dependency.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use ethrex_blockchain::BlockObserver;
 use ethrex_common::types::{Block, Receipt};
 use ethrex_storage::Store;
 
 use super::analyzer::DeepAnalyzer;
+use super::metrics::SentinelMetrics;
 use super::pre_filter::PreFilter;
 use super::types::{AnalysisConfig, SentinelAlert, SentinelConfig};
 
@@ -61,6 +63,7 @@ impl AlertHandler for LogAlertHandler {
 pub struct SentinelService {
     sender: Mutex<mpsc::Sender<SentinelMessage>>,
     worker_handle: Mutex<Option<JoinHandle<()>>>,
+    metrics: Arc<SentinelMetrics>,
 }
 
 impl SentinelService {
@@ -75,18 +78,33 @@ impl SentinelService {
         alert_handler: Box<dyn AlertHandler>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel();
+        let metrics = Arc::new(SentinelMetrics::new());
+        let worker_metrics = metrics.clone();
 
         let worker_handle = thread::Builder::new()
             .name("sentinel-worker".to_string())
             .spawn(move || {
-                Self::worker_loop(receiver, store, config, analysis_config, alert_handler);
+                Self::worker_loop(
+                    receiver,
+                    store,
+                    config,
+                    analysis_config,
+                    alert_handler,
+                    worker_metrics,
+                );
             })
             .expect("Failed to spawn sentinel worker thread");
 
         Self {
             sender: Mutex::new(sender),
             worker_handle: Mutex::new(Some(worker_handle)),
+            metrics,
         }
+    }
+
+    /// Returns a shared reference to the pipeline metrics.
+    pub fn metrics(&self) -> Arc<SentinelMetrics> {
+        self.metrics.clone()
     }
 
     /// Request graceful shutdown of the background worker.
@@ -110,6 +128,7 @@ impl SentinelService {
         config: SentinelConfig,
         analysis_config: AnalysisConfig,
         alert_handler: Box<dyn AlertHandler>,
+        metrics: Arc<SentinelMetrics>,
     ) {
         let pre_filter = PreFilter::new(config);
 
@@ -123,6 +142,7 @@ impl SentinelService {
                         &pre_filter,
                         &analysis_config,
                         &*alert_handler,
+                        &metrics,
                     );
                 }
                 SentinelMessage::Shutdown => break,
@@ -137,10 +157,19 @@ impl SentinelService {
         pre_filter: &PreFilter,
         analysis_config: &AnalysisConfig,
         alert_handler: &dyn AlertHandler,
+        metrics: &SentinelMetrics,
     ) {
+        metrics.increment_blocks_scanned();
+        metrics.increment_txs_scanned(block.body.transactions.len() as u64);
+
         // Stage 1: Pre-filter with lightweight receipt-based heuristics
+        let prefilter_start = Instant::now();
         let suspicious_txs =
             pre_filter.scan_block(&block.body.transactions, receipts, &block.header);
+        let prefilter_us = prefilter_start.elapsed().as_micros() as u64;
+        metrics.add_prefilter_us(prefilter_us);
+
+        metrics.increment_txs_flagged(suspicious_txs.len() as u64);
 
         if suspicious_txs.is_empty() {
             return;
@@ -148,14 +177,22 @@ impl SentinelService {
 
         // Stage 2: Deep analysis for each suspicious TX
         for suspicion in &suspicious_txs {
+            let analysis_start = Instant::now();
             match DeepAnalyzer::analyze(store, block, suspicion, analysis_config) {
                 Ok(Some(alert)) => {
+                    let analysis_ms = analysis_start.elapsed().as_millis() as u64;
+                    metrics.add_deep_analysis_ms(analysis_ms);
+                    metrics.increment_alerts_emitted();
                     alert_handler.on_alert(alert);
                 }
                 Ok(None) => {
+                    let analysis_ms = analysis_start.elapsed().as_millis() as u64;
+                    metrics.add_deep_analysis_ms(analysis_ms);
                     // Deep analysis dismissed the suspicion — benign
                 }
                 Err(_e) => {
+                    let analysis_ms = analysis_start.elapsed().as_millis() as u64;
+                    metrics.add_deep_analysis_ms(analysis_ms);
                     // In production this would use tracing::warn!
                     // For now, silently skip to avoid crashing the worker
                 }

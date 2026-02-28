@@ -316,7 +316,7 @@ impl PreFilter {
         &self,
         tx: &Transaction,
         logs: &[Log],
-    ) -> Option<(Address, &'static str)> {
+    ) -> Option<(Address, String)> {
         // Check tx.to
         if let TxKind::Call(to_addr) = tx.to()
             && let Some(label) = self.label_address(&to_addr)
@@ -380,11 +380,11 @@ impl PreFilter {
     // -----------------------------------------------------------------------
 
     /// Return a static label for known contract addresses.
-    fn label_address(&self, address: &Address) -> Option<&'static str> {
+    fn label_address(&self, address: &Address) -> Option<String> {
         self.address_labels
             .iter()
             .find(|(a, _)| a == address)
-            .map(|(_, label)| *label)
+            .map(|(_, label)| label.to_string())
     }
 }
 

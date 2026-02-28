@@ -2,7 +2,7 @@
 
 **Date**: 2026-02-28
 **Branch**: `feat/tokamak-autopsy`
-**Overall Completion**: ~98% (Phase H: 3/5 complete — H-1 ✅ H-2 ✅ H-3 ✅)
+**Overall Completion**: ~99% (Phase H: 5/5 complete — H-1 ✅ H-2 ✅ H-3 ✅ H-4 ✅ H-5 ✅)
 
 ---
 
@@ -96,7 +96,7 @@
 **Remaining:**
 - Web UI (optional)
 
-### Feature #22: Real-Time Attack Detection — Sentinel (~55%)
+### Feature #22: Real-Time Attack Detection — Sentinel (~100%)
 
 **Purpose:** Transform the post-hoc Autopsy Lab into a real-time monitoring system. When the ethrex full node processes new blocks, suspicious transactions are automatically analyzed and alerts are generated.
 
@@ -104,10 +104,8 @@
 - H-1: Sentinel Pre-Filter Engine — receipt-based heuristic scanner with 7 heuristics (flash loan/revert/ERC-20/known contract/gas/self-destruct/oracle+swap), `sentinel` feature flag, 14 known mainnet addresses, configurable thresholds, 32 tests
 - H-2: Deep Analysis Engine — replay_tx_from_store (Store→StoreVmDatabase→Evm, preceding TX execution, OpcodeRecorder attachment), DeepAnalyzer (reuses AttackClassifier/FundFlowTracer/DetectedPattern from autopsy), SentinelAlert + SentinelError + AnalysisConfig types, load_block_header helper, 20 tests (14 sentinel-only + 6 autopsy-gated) (2026-02-28)
 - H-3: Block Processing Integration — BlockObserver trait in ethrex-blockchain, SentinelService (background worker thread with mpsc channel, two-stage PreFilter→DeepAnalyzer pipeline), non-blocking hooks in add_block/add_block_pipeline after store_block, AlertHandler trait + LogAlertHandler, 11 tests (2026-02-28)
-
-**Planned:**
-- H-4: Alert & notification system (webhook / log / structured tracing, severity mapping, de-duplication, rate limiting)
-- H-5: Sentinel dashboard (live WebSocket feed, historical alert browsing, Grafana metrics export)
+- H-4: Alert & Notification System — AlertDispatcher (composite fan-out), JsonlFileAlertHandler (append-only JSONL), StdoutAlertHandler (containerized), WebhookAlertHandler (HTTP POST + exponential backoff retry, autopsy-gated), AlertDeduplicator (block-window pattern+contract suppression), AlertRateLimiter (sliding-window max N/min), composable AlertHandler pipeline, 14 tests (2026-02-28)
+- H-5: Sentinel Dashboard — WsAlertBroadcaster (real-time WebSocket alert feed via tokio-tungstenite, subscriber management with disconnected cleanup), AlertHistory (JSONL-based historical query engine with pagination and filtering by block range/priority/pattern type), SentinelMetrics (Prometheus-compatible exporter with 8 atomic counters, MetricsSnapshot, to_prometheus_text() exposition format, integrated into SentinelService worker loop with Instant-based timing), Dashboard UI (Astro + React sentinel page with live feed, history table, metrics panel) (2026-02-28)
 
 **Architecture:** All E-4 analysis components reused directly. Pre-filter runs on receipt data (no opcode recording needed for fast path). Only suspicious TXs trigger expensive deep analysis on a background thread.
 
@@ -230,8 +228,14 @@ R23(5.0) -> R24(8.0)
 - Phase III: Robustness — Bounded caches with FIFO eviction in RemoteVmDatabase (account=10k, storage=100k, code=10k, block=1k entries), `AutopsyMetrics` observability (RPC calls/cache hits/latency), 100k-step stress tests (<5s classification, <1s report), 11 new tests
 - Phase IV: Validation & confidence — `DetectedPattern` wrapper with 0.0–1.0 confidence + evidence chains, per-pattern scoring methods, 10 curated mainnet exploit validation scaffolds (DAO, Euler, Curve, Harvest, Cream, bZx, Ronin, Wormhole, Mango, Parity), 16 new tests (6 scoring + 10 ignored mainnet)
 
+### Recently Completed (Phase H — Sentinel)
+- Pre-Filter Engine (H-1) — 7 receipt-based heuristics, `sentinel` feature flag, 14 known mainnet addresses, configurable thresholds, 32 tests (2026-02-28)
+- Deep Analysis Engine (H-2) — replay_tx_from_store, DeepAnalyzer (reuses AttackClassifier/FundFlowTracer), SentinelAlert/SentinelError/AnalysisConfig types, 20 tests (2026-02-28)
+- Block Processing Integration (H-3) — BlockObserver trait, SentinelService background worker, two-stage PreFilter→DeepAnalyzer pipeline, AlertHandler trait, 11 tests (2026-02-28)
+- Alert & Notification System (H-4) — AlertDispatcher, JsonlFileAlertHandler, StdoutAlertHandler, WebhookAlertHandler (autopsy-gated), AlertDeduplicator, AlertRateLimiter, 14 tests (2026-02-28)
+- Sentinel Dashboard (H-5) — WsAlertBroadcaster (real-time WebSocket feed, subscriber cleanup), AlertHistory (JSONL query engine with pagination/filtering), SentinelMetrics (8 atomic counters, Prometheus text exposition, integrated into worker loop with timing), Dashboard UI (Astro + React sentinel page with live feed, history table, metrics panel) (2026-02-28)
+
 ### Not Started
-- Phase H: Real-Time Attack Detection (Sentinel) — H-1 ✅ H-2 ✅ H-3 ✅ done, 2 tasks remaining (H-4, H-5)
 - EF grant application
 - External node operator adoption
 

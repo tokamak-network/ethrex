@@ -1,0 +1,30 @@
+---
+import Base from "../layouts/Base.astro";
+import { Header } from "../components/Header";
+import { Footer } from "../components/Footer";
+import { SentinelMetricsPanel } from "../components/SentinelMetricsPanel";
+import { AlertFeed } from "../components/AlertFeed";
+import { AlertHistoryTable } from "../components/AlertHistoryTable";
+---
+
+<Base title="Tokamak Sentinel — Dashboard" currentPath="/sentinel">
+  <Header currentPath="/sentinel" slot="header" />
+
+  <h1 class="mb-2 text-3xl font-bold">Sentinel</h1>
+  <p class="mb-8 text-slate-400">
+    Real-time hack detection and alert monitoring.
+  </p>
+
+  <!-- Metrics Panel (top) -->
+  <div class="mb-8">
+    <SentinelMetricsPanel client:load />
+  </div>
+
+  <!-- Live Feed (left) + History (right) -->
+  <div class="grid gap-8 lg:grid-cols-2">
+    <AlertFeed client:load />
+    <AlertHistoryTable client:load />
+  </div>
+
+  <Footer slot="footer" />
+</Base>

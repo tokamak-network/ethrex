@@ -1,10 +1,10 @@
 //! Core types for the autopsy analysis module.
 
 use ethrex_common::{Address, U256};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Detected attack pattern with evidence from the execution trace.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AttackPattern {
     /// Re-entrant call detected: external call followed by state modification.
     Reentrancy {
@@ -44,7 +44,7 @@ pub enum AttackPattern {
 }
 
 /// A single fund transfer detected in the trace.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FundFlow {
     pub from: Address,
     pub to: Address,
@@ -58,7 +58,7 @@ pub struct FundFlow {
 ///
 /// Wraps an [`AttackPattern`] with a 0.0–1.0 confidence score and
 /// a list of human-readable evidence strings.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectedPattern {
     pub pattern: AttackPattern,
     /// Confidence score: 0.0 (low) to 1.0 (high).
