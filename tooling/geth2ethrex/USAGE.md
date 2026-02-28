@@ -74,8 +74,8 @@ geth2ethrex geth2rocksdb \
 - `--dry-run`: Validate without writing data
 - `--json`: Output progress in JSON format
 - `--continue-on-error`: Continue migration even if some blocks fail
-- `--max-retries <N>`: Maximum retry attempts for I/O operations (default: 3)
-- `--retry-delay-ms <MS>`: Delay between retries in milliseconds (default: 100)
+- `--retry-attempts <N>`: Maximum retry attempts for I/O operations (default: 3)
+- `--retry-base-delay-ms <MS>`: Initial retry backoff delay in milliseconds (default: 1000)
 
 ### Aliases
 
@@ -146,8 +146,8 @@ geth2ethrex g2r \
   --source ~/.ethereum/mainnet/geth/chaindata \
   --target ~/ethrex-data/mainnet \
   --genesis mainnet-genesis.json \
-  --max-retries 5 \
-  --retry-delay-ms 200
+  --retry-attempts 5 \
+  --retry-base-delay-ms 2000
 ```
 
 ### Continue on Errors (Advanced)
@@ -240,7 +240,7 @@ geth2ethrex g2r \
 - Use SSD for both source and target
 - Close other I/O-intensive applications
 - Monitor with `--json` output
-- Consider `--max-retries 1` to fail fast on errors
+- Consider `--retry-attempts 1` to fail fast on errors
 
 ## Performance Tips
 
