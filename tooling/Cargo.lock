@@ -4291,6 +4291,7 @@ dependencies = [
  "ethrex-blockchain",
  "ethrex-common 1.0.0",
  "ethrex-common 9.0.0",
+ "ethrex-rlp 9.0.0",
  "ethrex-storage 1.0.0",
  "ethrex-storage 9.0.0",
  "eyre",

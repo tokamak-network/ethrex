@@ -3,6 +3,7 @@
 //! This module provides abstraction over different key-value stores
 //! (LevelDB, Pebble) to enable reading Geth chaindata.
 
+pub mod geth_db;
 pub mod pebble;
 
 use std::path::Path;

@@ -991,17 +991,21 @@ async fn migrate_geth_to_rocksdb(
     genesis_path: &Path,
     dry_run: bool,
     json: bool,
-    _retry_attempts: u32,
-    _retry_base_delay: Duration,
-    _continue_on_error: bool,
-    _report_file: Option<&Path>,
+    retry_attempts: u32,
+    retry_base_delay: Duration,
+    continue_on_error: bool,
+    report_file: Option<&Path>,
 ) -> Result<()> {
-    use crate::detect::{detect_geth_db_type, GethDbType};
+    use crate::detect::{GethDbType, detect_geth_db_type};
+    use crate::readers::geth_db::GethBlockReader;
     use crate::readers::open_geth_reader;
 
-    let started_at = Instant::now();
+    const BATCH_SIZE: u64 = 1_000;
 
-    // Phase 1: Detect Geth database type
+    let started_at = Instant::now();
+    let mut retries_performed = 0u32;
+
+    // Phase 1: Detect and open Geth reader
     let db_type = detect_geth_db_type(geth_chaindata)
         .wrap_err("Failed to detect Geth database type")?;
 
@@ -1015,67 +1019,296 @@ async fn migrate_geth_to_rocksdb(
             },
             geth_chaindata.display()
         );
-    } else {
-        eprintln!("🔍 Detected Geth database type: {:?}", db_type);
-        eprintln!("   Chaindata: {}", geth_chaindata.display());
     }
 
-    // Phase 2: Open Geth reader
-    let _reader = open_geth_reader(geth_chaindata)
+    let kv_reader = open_geth_reader(geth_chaindata)
         .map_err(|e| eyre::eyre!("Failed to open Geth chaindata reader: {}", e))?;
+    let geth_reader = GethBlockReader::new(kv_reader);
 
-    if json {
-        eprintln!(r#"{{"phase":"open_reader","status":"success"}}"#);
-    } else {
-        eprintln!("✅ Opened Geth chaindata reader ({:?})", db_type);
-    }
+    // Phase 2: Read Geth head block number
+    let head_hash = retry_sync(
+        || {
+            geth_reader
+                .read_head_block_hash()
+                .map_err(|e| eyre::eyre!("Cannot read Geth head block hash: {}", e))
+        },
+        retry_attempts,
+        retry_base_delay,
+    )
+    .map(|(v, a)| {
+        retries_performed += a.saturating_sub(1);
+        v
+    })?;
 
-    // Phase 3: Dry-run mode
+    let last_source_block = retry_sync(
+        || {
+            geth_reader
+                .read_block_number(head_hash)
+                .map_err(|e| eyre::eyre!("Cannot read Geth head block number: {}", e))
+        },
+        retry_attempts,
+        retry_base_delay,
+    )
+    .map(|(v, a)| {
+        retries_performed += a.saturating_sub(1);
+        v
+    })?;
+
+    // Phase 3: Open (or create) target ethrex RocksDB store
+    let genesis = genesis_path
+        .to_str()
+        .wrap_err("Invalid UTF-8 in genesis path")?;
+
+    let (new_store, attempts) = retry_async(
+        || async {
+            ethrex_storage::Store::new_from_genesis(
+                target_storage,
+                ethrex_storage::EngineType::RocksDB,
+                genesis,
+            )
+            .await
+            .wrap_err_with(|| {
+                format!("Cannot create/open rocksdb store at {target_storage:?}")
+            })
+        },
+        retry_attempts,
+        retry_base_delay,
+    )
+    .await?;
+    retries_performed += attempts.saturating_sub(1);
+
+    let (last_known_block, attempts) = retry_async(
+        || async {
+            new_store
+                .get_latest_block_number()
+                .await
+                .wrap_err("Cannot get latest block from rocksdb store")
+        },
+        retry_attempts,
+        retry_base_delay,
+    )
+    .await?;
+    retries_performed += attempts.saturating_sub(1);
+
+    // Phase 4: Build migration plan
+    let Some(plan) = build_migration_plan(last_known_block, last_source_block, None)? else {
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "up_to_date",
+            phase: "planning",
+            source_head: last_source_block,
+            target_head: last_known_block,
+            plan: None,
+            dry_run,
+            imported_blocks: 0,
+            skipped_blocks: 0,
+            elapsed_ms: elapsed_ms(started_at),
+            retry_attempts,
+            retries_performed,
+        };
+        emit_report(&report, json, report_file)?;
+        return Ok(());
+    };
+
     if dry_run {
-        if json {
-            eprintln!(
-                r#"{{"phase":"dry_run","mode":"detect_only","elapsed_ms":{}}}"#,
-                started_at.elapsed().as_millis()
-            );
-        } else {
-            eprintln!();
-            eprintln!("🏁 Dry-run mode: detection complete");
-            eprintln!("   Database type: {:?}", db_type);
-            eprintln!("   Source: {}", geth_chaindata.display());
-            eprintln!("   Target: {}", target_storage.display());
-            eprintln!("   Genesis: {}", genesis_path.display());
-            eprintln!();
-            eprintln!("✅ Dry-run validation passed");
-            eprintln!("   Elapsed: {:.2}s", started_at.elapsed().as_secs_f64());
-            eprintln!();
-            eprintln!("💡 Remove --dry-run to start actual migration");
-        }
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "planned",
+            phase: "planning",
+            source_head: last_source_block,
+            target_head: last_known_block,
+            plan: Some(plan),
+            dry_run: true,
+            imported_blocks: 0,
+            skipped_blocks: 0,
+            elapsed_ms: elapsed_ms(started_at),
+            retry_attempts,
+            retries_performed,
+        };
+        emit_report(&report, json, report_file)?;
         return Ok(());
     }
 
-    // Phase 4: TODO - Actual migration logic
-    // This is a placeholder for the full migration implementation
-    if json {
-        eprintln!(
-            r#"{{"phase":"migration","status":"not_implemented","message":"TODO: Implement block-by-block migration"}}"#
-        );
-    } else {
-        eprintln!();
-        eprintln!("⚠️  Full migration not yet implemented");
-        eprintln!();
-        eprintln!("TODO: Implement the following steps:");
-        eprintln!("  1. Initialize target ethrex RocksDB storage");
-        eprintln!("  2. Read genesis block from Geth");
-        eprintln!("  3. Iterate through blocks (with retry policy):");
-        eprintln!("     - Read block header from Geth");
-        eprintln!("     - Read block body from Geth");
-        eprintln!("     - Parse and convert to ethrex format");
-        eprintln!("     - Write to target RocksDB");
-        eprintln!("  4. Update forkchoice");
-        eprintln!("  5. Write checkpoint file");
-        eprintln!();
-        eprintln!("For now, use --dry-run to verify Geth chaindata accessibility");
+    emit_report(
+        &MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "in_progress",
+            phase: "execution",
+            source_head: last_source_block,
+            target_head: last_known_block,
+            plan: Some(plan),
+            dry_run: false,
+            imported_blocks: 0,
+            skipped_blocks: 0,
+            elapsed_ms: elapsed_ms(started_at),
+            retry_attempts,
+            retries_performed,
+        },
+        json,
+        report_file,
+    )?;
+
+    // Phase 5: Block-by-block migration in batches
+    let mut added_blocks: Vec<(u64, ethrex_common::H256)> = Vec::new();
+    let mut skipped_blocks = 0u64;
+
+    let mut batch_start = plan.start_block;
+    while batch_start <= plan.end_block {
+        let batch_end = (batch_start + BATCH_SIZE - 1).min(plan.end_block);
+        let mut batch: Vec<ethrex_common::types::Block> = Vec::new();
+        let mut batch_canonical: Vec<(u64, ethrex_common::H256)> = Vec::new();
+
+        for block_number in batch_start..=batch_end {
+            // Read canonical hash for this block number
+            let canonical_hash_result = retry_sync(
+                || {
+                    geth_reader
+                        .read_canonical_hash(block_number)
+                        .map_err(|e| {
+                            eyre::eyre!(
+                                "Cannot read canonical hash for block #{block_number}: {e}"
+                            )
+                        })?
+                        .ok_or_else(|| {
+                            eyre::eyre!("No canonical block found at #{block_number}")
+                        })
+                },
+                retry_attempts,
+                retry_base_delay,
+            );
+
+            let (block_hash, attempts) = match canonical_hash_result {
+                Ok(value) => value,
+                Err(error) if continue_on_error => {
+                    skipped_blocks += 1;
+                    eprintln!(
+                        "Warning: skipping block #{block_number} (no canonical hash): {error:#}"
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            retries_performed += attempts.saturating_sub(1);
+
+            // Read full block (header + body)
+            let block_result = retry_sync(
+                || {
+                    geth_reader
+                        .read_block(block_number, block_hash)
+                        .map_err(|e| {
+                            eyre::eyre!(
+                                "Cannot read block #{block_number} ({block_hash:?}): {e}"
+                            )
+                        })?
+                        .ok_or_else(|| {
+                            eyre::eyre!(
+                                "Block #{block_number} ({block_hash:?}) missing header or body"
+                            )
+                        })
+                },
+                retry_attempts,
+                retry_base_delay,
+            );
+
+            let (block, attempts) = match block_result {
+                Ok(value) => value,
+                Err(error) if continue_on_error => {
+                    skipped_blocks += 1;
+                    eprintln!(
+                        "Warning: skipping block #{block_number} after read failure: {error:#}"
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            retries_performed += attempts.saturating_sub(1);
+
+            batch_canonical.push((block_number, block_hash));
+            batch.push(block);
+        }
+
+        if batch.is_empty() {
+            batch_start = batch_end + 1;
+            continue;
+        }
+
+        // Write batch to RocksDB
+        let (_, attempts) = retry_async(
+            || async {
+                new_store
+                    .add_blocks(batch.clone())
+                    .await
+                    .wrap_err_with(|| {
+                        format!("Cannot write block batch #{batch_start}..=#{batch_end} to rocksdb")
+                    })
+            },
+            retry_attempts,
+            retry_base_delay,
+        )
+        .await?;
+        retries_performed += attempts.saturating_sub(1);
+
+        // Update canonical chain for this batch
+        let (last_num, last_hash) = *batch_canonical
+            .last()
+            .ok_or_else(|| eyre::eyre!("Empty canonical batch"))?;
+
+        let (_, attempts) = retry_async(
+            || async {
+                new_store
+                    .forkchoice_update(
+                        batch_canonical.clone(),
+                        last_num,
+                        last_hash,
+                        None,
+                        None,
+                    )
+                    .await
+                    .wrap_err("Cannot apply forkchoice update for batch")
+            },
+            retry_attempts,
+            retry_base_delay,
+        )
+        .await?;
+        retries_performed += attempts.saturating_sub(1);
+
+        added_blocks.extend(batch_canonical);
+        batch_start = batch_end + 1;
     }
+
+    if added_blocks.is_empty() {
+        return Err(eyre::eyre!(
+            "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
+            plan.start_block,
+            plan.end_block
+        ));
+    }
+
+    let (head_block_number, _head_block_hash) = *added_blocks
+        .last()
+        .ok_or_else(|| eyre::eyre!("Cannot determine migrated chain head"))?;
+
+    if skipped_blocks > 0 {
+        eprintln!(
+            "Warning: migration completed with {skipped_blocks} skipped block(s) due to --continue-on-error"
+        );
+    }
+
+    let report = MigrationReport {
+        schema_version: REPORT_SCHEMA_VERSION,
+        status: "completed",
+        phase: "execution",
+        source_head: last_source_block,
+        target_head: head_block_number,
+        plan: Some(plan),
+        dry_run: false,
+        imported_blocks: added_blocks.len() as u64,
+        skipped_blocks,
+        elapsed_ms: elapsed_ms(started_at),
+        retry_attempts,
+        retries_performed,
+    };
+    emit_report(&report, json, report_file)?;
 
     Ok(())
 }
@@ -1494,9 +1727,14 @@ mod tests {
     fn read_resume_block_from_checkpoint_rejects_source_store_path_mismatch() {
         let checkpoint_path =
             unique_test_path("checkpoint-read-source-mismatch").join("state/checkpoint.json");
+
+        // Create genesis and source store directories first so we can canonicalize them
+        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
+
+        // Checkpoint has the correct canonical genesis_path but wrong source_store_path
         let checkpoint = json!({
             "schema_version": 1,
-            "genesis_path": "genesis.json",
+            "genesis_path": genesis_path.canonicalize().unwrap().to_string_lossy(),
             "source_store_path": "other-old-store",
             "source_head": 100,
             "target_head": 98,
@@ -1512,7 +1750,6 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
-        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
         let error = read_resume_block_from_checkpoint(
             &checkpoint_path,
             &genesis_path,
@@ -1954,6 +2191,7 @@ genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
                 assert!(checkpoint_file.is_none());
                 assert!(resume_from_checkpoint.is_none());
             }
+            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
         }
     }
 
@@ -1975,6 +2213,7 @@ genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
                 assert!(!dry_run);
                 assert!(!json);
             }
+            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
         }
     }
 
@@ -2035,6 +2274,7 @@ genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
                 assert_eq!(retry_attempts, 5);
                 assert_eq!(retry_base_delay_ms, 250);
             }
+            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
         }
     }
 
@@ -2060,6 +2300,7 @@ genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
             } => {
                 assert_eq!(retry_base_delay_ms, 0);
             }
+            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
         }
     }
 
@@ -2083,6 +2324,7 @@ genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
             } => {
                 assert!(continue_on_error);
             }
+            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
         }
     }
 
@@ -2107,6 +2349,7 @@ genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
             } => {
                 assert_eq!(resume_from_block, Some(15));
             }
+            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
         }
     }
 
@@ -2134,6 +2377,7 @@ genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
                     Some(std::path::PathBuf::from("state/checkpoint.json"))
                 );
             }
+            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
         }
     }
 
@@ -2162,6 +2406,7 @@ genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
                     Some(std::path::PathBuf::from("state/checkpoint.json"))
                 );
             }
+            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
         }
     }
 
