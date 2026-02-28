@@ -1,6 +1,6 @@
 # Tokamak Client Status Report
 
-**Date**: 2026-02-28
+**Date**: 2026-03-01
 **Branch**: `feat/tokamak-autopsy`
 **Overall Completion**: ~99% (Phase H: 5/5 complete — H-1 ✅ H-2 ✅ H-3 ✅ H-4 ✅ H-5 ✅)
 
@@ -92,6 +92,7 @@
   - Phase III: Bounded caches with FIFO eviction (account 10k, storage 100k), observability metrics (RPC calls/hits/latency), 100k-step stress tests (<5s classification)
   - Phase IV: Confidence scoring on all detected patterns (0.0–1.0 with evidence chains), 10-TX mainnet exploit validation scaffold
 - 145 passing tests + 10 ignored mainnet validation scaffolds
+- Live reentrancy E2E pipeline test — real bytecode execution through all 6 phases (LEVM → classifier → fund flow → sentinel → alert), executable demo example
 
 **Remaining:**
 - Web UI (optional)
@@ -137,9 +138,9 @@ Measured after Volkov R21-R23 fixes (corrected measurement order).
 | LEVM JIT infra | `crates/vm/levm/src/jit/` (9 files) | ~2,700 |
 | tokamak-jit crate | `crates/vm/tokamak-jit/src/` (14 files) | ~5,650 |
 | tokamak-bench crate | `crates/tokamak-bench/src/` (11 files) | ~1,700 |
-| tokamak-debugger | `crates/tokamak-debugger/src/` (33 files) | ~6,950 |
+| tokamak-debugger | `crates/tokamak-debugger/src/` (45 files) | ~13,900 |
 | LEVM debugger hook | `crates/vm/levm/src/debugger_hook.rs` | ~27 |
-| **Total** | | **~16,630** |
+| **Total** | | **~23,980** |
 
 Base ethrex codebase: ~103K lines Rust.
 
@@ -234,6 +235,7 @@ R23(5.0) -> R24(8.0)
 - Block Processing Integration (H-3) — BlockObserver trait, SentinelService background worker, two-stage PreFilter→DeepAnalyzer pipeline, AlertHandler trait, 11 tests (2026-02-28)
 - Alert & Notification System (H-4) — AlertDispatcher, JsonlFileAlertHandler, StdoutAlertHandler, WebhookAlertHandler (autopsy-gated), AlertDeduplicator, AlertRateLimiter, 14 tests (2026-02-28)
 - Sentinel Dashboard (H-5) — WsAlertBroadcaster (real-time WebSocket feed, subscriber cleanup), AlertHistory (JSONL query engine with pagination/filtering), SentinelMetrics (8 atomic counters, Prometheus text exposition, integrated into worker loop with timing), Dashboard UI (Astro + React sentinel page with live feed, history table, metrics panel) (2026-02-28)
+- Live Reentrancy E2E Pipeline — full 6-phase test with real bytecode execution: LEVM deploy+execute → trace verification (depth>=3, SSTORE>=2) → AttackClassifier (reentrancy 70%+) → FundFlowTracer (ETH drain victim→attacker) → SentinelService (real receipt, prefilter_alert_mode) → alert+metrics validation. Executable demo at `examples/reentrancy_demo.rs`. 263 passing + 10 ignored tests (2026-03-01)
 
 ### Not Started
 - EF grant application
