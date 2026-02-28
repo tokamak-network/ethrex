@@ -54,6 +54,19 @@ pub struct FundFlow {
     pub step_index: usize,
 }
 
+/// Detected pattern with confidence score and evidence chain.
+///
+/// Wraps an [`AttackPattern`] with a 0.0–1.0 confidence score and
+/// a list of human-readable evidence strings.
+#[derive(Debug, Clone, Serialize)]
+pub struct DetectedPattern {
+    pub pattern: AttackPattern,
+    /// Confidence score: 0.0 (low) to 1.0 (high).
+    pub confidence: f64,
+    /// Human-readable evidence supporting the detection.
+    pub evidence: Vec<String>,
+}
+
 /// An annotated step with human-readable explanation.
 #[derive(Debug, Clone, Serialize)]
 pub struct AnnotatedStep {

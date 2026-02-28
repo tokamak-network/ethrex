@@ -1,15 +1,45 @@
 //! Thin JSON-RPC HTTP client for Ethereum archive nodes.
+//!
+//! Supports configurable timeouts, exponential backoff retry, and
+//! rate-limit awareness (HTTP 429 + Retry-After).
+
+use std::time::Duration;
 
 use ethrex_common::{Address, H256, U256};
 use serde_json::{Value, json};
 
-use crate::error::DebuggerError;
+use crate::error::{DebuggerError, RpcError};
+
+/// Configuration for RPC client behavior.
+#[derive(Debug, Clone)]
+pub struct RpcConfig {
+    /// Per-request timeout (default: 30s).
+    pub timeout: Duration,
+    /// TCP connect timeout (default: 10s).
+    pub connect_timeout: Duration,
+    /// Maximum retry attempts for transient errors (default: 3).
+    pub max_retries: u32,
+    /// Base backoff duration — doubles each retry (default: 1s).
+    pub base_backoff: Duration,
+}
+
+impl Default for RpcConfig {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(30),
+            connect_timeout: Duration::from_secs(10),
+            max_retries: 3,
+            base_backoff: Duration::from_secs(1),
+        }
+    }
+}
 
 /// Minimal Ethereum JSON-RPC client using blocking HTTP.
 pub struct EthRpcClient {
     http: reqwest::blocking::Client,
     url: String,
     block_tag: String,
+    config: RpcConfig,
 }
 
 /// Subset of block header fields returned by `eth_getBlockByNumber`.
@@ -40,10 +70,21 @@ pub struct RpcTransaction {
 
 impl EthRpcClient {
     pub fn new(url: &str, block_number: u64) -> Self {
+        Self::with_config(url, block_number, RpcConfig::default())
+    }
+
+    pub fn with_config(url: &str, block_number: u64, config: RpcConfig) -> Self {
+        let http = reqwest::blocking::Client::builder()
+            .timeout(config.timeout)
+            .connect_timeout(config.connect_timeout)
+            .build()
+            .unwrap_or_else(|_| reqwest::blocking::Client::new());
+
         Self {
-            http: reqwest::blocking::Client::new(),
+            http,
             url: url.to_string(),
             block_tag: format!("0x{block_number:x}"),
+            config,
         }
     }
 
@@ -51,14 +92,20 @@ impl EthRpcClient {
         u64::from_str_radix(self.block_tag.trim_start_matches("0x"), 16).unwrap_or(0)
     }
 
+    pub fn config(&self) -> &RpcConfig {
+        &self.config
+    }
+
     pub fn eth_get_code(&self, addr: Address) -> Result<Vec<u8>, DebuggerError> {
         let result = self.rpc_call(
             "eth_getCode",
             json!([format!("0x{addr:x}"), &self.block_tag]),
         )?;
-        let hex_str = result
-            .as_str()
-            .ok_or_else(|| DebuggerError::Rpc("eth_getCode: expected string".into()))?;
+        let hex_str = result.as_str().ok_or_else(|| RpcError::ParseError {
+            method: "eth_getCode".into(),
+            field: "result".into(),
+            cause: "expected string".into(),
+        })?;
         hex_decode(hex_str)
     }
 
@@ -114,6 +161,7 @@ impl EthRpcClient {
         self.eth_get_block_by_number(self.block_number())
     }
 
+    /// Execute a JSON-RPC call with retry and backoff.
     fn rpc_call(&self, method: &str, params: Value) -> Result<Value, DebuggerError> {
         let body = json!({
             "jsonrpc": "2.0",
@@ -122,23 +170,123 @@ impl EthRpcClient {
             "id": 1
         });
 
-        let response: Value = self
-            .http
-            .post(&self.url)
-            .json(&body)
-            .send()
-            .map_err(|e| DebuggerError::Rpc(format!("{method} request failed: {e}")))?
-            .json()
-            .map_err(|e| DebuggerError::Rpc(format!("{method} response parse failed: {e}")))?;
+        let max_attempts = self.config.max_retries + 1; // 1 initial + N retries
+        let mut last_error: Option<RpcError> = None;
 
-        if let Some(error) = response.get("error") {
-            return Err(DebuggerError::Rpc(format!("{method} RPC error: {}", error)));
+        for attempt in 0..max_attempts {
+            if attempt > 0 {
+                // Exponential backoff: base * 2^(attempt-1)
+                let backoff = if let Some(ref err) = last_error {
+                    // Respect Retry-After header for 429s
+                    err.retry_after_secs()
+                        .map(Duration::from_secs)
+                        .unwrap_or_else(|| {
+                            self.config.base_backoff * 2u32.saturating_pow(attempt - 1)
+                        })
+                } else {
+                    self.config.base_backoff * 2u32.saturating_pow(attempt - 1)
+                };
+                std::thread::sleep(backoff);
+            }
+
+            match self.rpc_call_once(method, &body) {
+                Ok(val) => return Ok(val),
+                Err(err) => {
+                    if !err.is_retryable() || attempt + 1 >= max_attempts {
+                        if attempt > 0 {
+                            return Err(RpcError::RetryExhausted {
+                                method: method.into(),
+                                attempts: attempt + 1,
+                                last_error: Box::new(err),
+                            }
+                            .into());
+                        }
+                        return Err(err.into());
+                    }
+                    last_error = Some(err);
+                }
+            }
         }
 
-        response
+        // Should never reach here, but handle gracefully
+        Err(last_error
+            .map(|e| RpcError::RetryExhausted {
+                method: method.into(),
+                attempts: max_attempts,
+                last_error: Box::new(e),
+            })
+            .unwrap_or_else(|| RpcError::simple(format!("{method}: unknown error")))
+            .into())
+    }
+
+    /// Single attempt at an RPC call (no retry).
+    fn rpc_call_once(&self, method: &str, body: &Value) -> Result<Value, RpcError> {
+        let response = self.http.post(&self.url).json(body).send().map_err(|e| {
+            if e.is_timeout() {
+                RpcError::Timeout {
+                    method: method.into(),
+                    elapsed_ms: self.config.timeout.as_millis() as u64,
+                }
+            } else {
+                RpcError::ConnectionFailed {
+                    url: self.url.clone(),
+                    cause: e.to_string(),
+                }
+            }
+        })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            // Extract Retry-After header for 429 responses
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| format!("retry-after:{v}"))
+                .unwrap_or_default();
+
+            let body_text = response.text().unwrap_or_default();
+            let display_body = if retry_after.is_empty() {
+                body_text
+            } else {
+                retry_after
+            };
+
+            return Err(RpcError::HttpError {
+                method: method.into(),
+                status: status.as_u16(),
+                body: display_body,
+            });
+        }
+
+        let json_response: Value = response.json().map_err(|e| RpcError::ParseError {
+            method: method.into(),
+            field: "response_body".into(),
+            cause: e.to_string(),
+        })?;
+
+        if let Some(error) = json_response.get("error") {
+            let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+            let message = error
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            return Err(RpcError::JsonRpcError {
+                method: method.into(),
+                code,
+                message,
+            });
+        }
+
+        json_response
             .get("result")
             .cloned()
-            .ok_or_else(|| DebuggerError::Rpc(format!("{method}: missing result field")))
+            .ok_or_else(|| RpcError::ParseError {
+                method: method.into(),
+                field: "result".into(),
+                cause: "missing result field".into(),
+            })
     }
 }
 
@@ -152,121 +300,202 @@ fn hex_decode(hex_str: &str) -> Result<Vec<u8>, DebuggerError> {
     (0..s.len())
         .step_by(2)
         .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|e| DebuggerError::Rpc(format!("hex decode error: {e}")))
+            u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| {
+                RpcError::ParseError {
+                    method: String::new(),
+                    field: "hex".into(),
+                    cause: e.to_string(),
+                }
+                .into()
+            })
         })
         .collect()
 }
 
 fn parse_u64(val: &Value) -> Result<u64, DebuggerError> {
-    let s = val
-        .as_str()
-        .ok_or_else(|| DebuggerError::Rpc("expected hex string for u64".into()))?;
+    let s = val.as_str().ok_or_else(|| {
+        DebuggerError::from(RpcError::ParseError {
+            method: String::new(),
+            field: "u64".into(),
+            cause: "expected hex string".into(),
+        })
+    })?;
     let s = s.strip_prefix("0x").unwrap_or(s);
-    u64::from_str_radix(s, 16).map_err(|e| DebuggerError::Rpc(format!("u64 parse: {e}")))
+    u64::from_str_radix(s, 16).map_err(|e| {
+        RpcError::ParseError {
+            method: String::new(),
+            field: "u64".into(),
+            cause: e.to_string(),
+        }
+        .into()
+    })
 }
 
 fn parse_u256(val: &Value) -> Result<U256, DebuggerError> {
-    let s = val
-        .as_str()
-        .ok_or_else(|| DebuggerError::Rpc("expected hex string for U256".into()))?;
+    let s = val.as_str().ok_or_else(|| {
+        DebuggerError::from(RpcError::ParseError {
+            method: String::new(),
+            field: "U256".into(),
+            cause: "expected hex string".into(),
+        })
+    })?;
     let s = s.strip_prefix("0x").unwrap_or(s);
-    U256::from_str_radix(s, 16).map_err(|e| DebuggerError::Rpc(format!("U256 parse: {e}")))
+    U256::from_str_radix(s, 16).map_err(|e| {
+        RpcError::ParseError {
+            method: String::new(),
+            field: "U256".into(),
+            cause: e.to_string(),
+        }
+        .into()
+    })
 }
 
 fn parse_h256(val: &Value) -> Result<H256, DebuggerError> {
-    let s = val
-        .as_str()
-        .ok_or_else(|| DebuggerError::Rpc("expected hex string for H256".into()))?;
+    let s = val.as_str().ok_or_else(|| {
+        DebuggerError::from(RpcError::ParseError {
+            method: String::new(),
+            field: "H256".into(),
+            cause: "expected hex string".into(),
+        })
+    })?;
     let bytes = hex_decode(s)?;
     if bytes.len() != 32 {
-        return Err(DebuggerError::Rpc(format!(
-            "H256 expected 32 bytes, got {}",
-            bytes.len()
-        )));
+        return Err(RpcError::ParseError {
+            method: String::new(),
+            field: "H256".into(),
+            cause: format!("expected 32 bytes, got {}", bytes.len()),
+        }
+        .into());
     }
     Ok(H256::from_slice(&bytes))
 }
 
 fn parse_address(val: &Value) -> Result<Address, DebuggerError> {
-    let s = val
-        .as_str()
-        .ok_or_else(|| DebuggerError::Rpc("expected hex string for Address".into()))?;
+    let s = val.as_str().ok_or_else(|| {
+        DebuggerError::from(RpcError::ParseError {
+            method: String::new(),
+            field: "Address".into(),
+            cause: "expected hex string".into(),
+        })
+    })?;
     let bytes = hex_decode(s)?;
     if bytes.len() != 20 {
-        return Err(DebuggerError::Rpc(format!(
-            "Address expected 20 bytes, got {}",
-            bytes.len()
-        )));
+        return Err(RpcError::ParseError {
+            method: String::new(),
+            field: "Address".into(),
+            cause: format!("expected 20 bytes, got {}", bytes.len()),
+        }
+        .into());
     }
     Ok(Address::from_slice(&bytes))
 }
 
 fn parse_block_header(val: &Value) -> Result<RpcBlockHeader, DebuggerError> {
     if val.is_null() {
-        return Err(DebuggerError::Rpc("block not found".into()));
+        return Err(RpcError::ParseError {
+            method: "eth_getBlockByNumber".into(),
+            field: "result".into(),
+            cause: "block not found".into(),
+        }
+        .into());
     }
     Ok(RpcBlockHeader {
-        hash: parse_h256(
-            val.get("hash")
-                .ok_or_else(|| DebuggerError::Rpc("block missing hash".into()))?,
-        )?,
-        number: parse_u64(
-            val.get("number")
-                .ok_or_else(|| DebuggerError::Rpc("block missing number".into()))?,
-        )?,
-        timestamp: parse_u64(
-            val.get("timestamp")
-                .ok_or_else(|| DebuggerError::Rpc("block missing timestamp".into()))?,
-        )?,
-        gas_limit: parse_u64(
-            val.get("gasLimit")
-                .ok_or_else(|| DebuggerError::Rpc("block missing gasLimit".into()))?,
-        )?,
+        hash: parse_h256(val.get("hash").ok_or_else(|| {
+            DebuggerError::from(RpcError::ParseError {
+                method: "eth_getBlockByNumber".into(),
+                field: "hash".into(),
+                cause: "missing".into(),
+            })
+        })?)?,
+        number: parse_u64(val.get("number").ok_or_else(|| {
+            DebuggerError::from(RpcError::ParseError {
+                method: "eth_getBlockByNumber".into(),
+                field: "number".into(),
+                cause: "missing".into(),
+            })
+        })?)?,
+        timestamp: parse_u64(val.get("timestamp").ok_or_else(|| {
+            DebuggerError::from(RpcError::ParseError {
+                method: "eth_getBlockByNumber".into(),
+                field: "timestamp".into(),
+                cause: "missing".into(),
+            })
+        })?)?,
+        gas_limit: parse_u64(val.get("gasLimit").ok_or_else(|| {
+            DebuggerError::from(RpcError::ParseError {
+                method: "eth_getBlockByNumber".into(),
+                field: "gasLimit".into(),
+                cause: "missing".into(),
+            })
+        })?)?,
         base_fee_per_gas: val.get("baseFeePerGas").and_then(|v| parse_u64(v).ok()),
-        coinbase: parse_address(
-            val.get("miner")
-                .ok_or_else(|| DebuggerError::Rpc("block missing miner".into()))?,
-        )?,
+        coinbase: parse_address(val.get("miner").ok_or_else(|| {
+            DebuggerError::from(RpcError::ParseError {
+                method: "eth_getBlockByNumber".into(),
+                field: "miner".into(),
+                cause: "missing".into(),
+            })
+        })?)?,
     })
 }
 
 fn parse_transaction(val: &Value) -> Result<RpcTransaction, DebuggerError> {
     if val.is_null() {
-        return Err(DebuggerError::Rpc("transaction not found".into()));
+        return Err(RpcError::ParseError {
+            method: "eth_getTransactionByHash".into(),
+            field: "result".into(),
+            cause: "transaction not found".into(),
+        }
+        .into());
     }
     Ok(RpcTransaction {
-        from: parse_address(
-            val.get("from")
-                .ok_or_else(|| DebuggerError::Rpc("tx missing from".into()))?,
-        )?,
+        from: parse_address(val.get("from").ok_or_else(|| {
+            DebuggerError::from(RpcError::ParseError {
+                method: "eth_getTransactionByHash".into(),
+                field: "from".into(),
+                cause: "missing".into(),
+            })
+        })?)?,
         to: val
             .get("to")
             .and_then(|v| if v.is_null() { None } else { Some(v) })
             .and_then(|v| parse_address(v).ok()),
-        value: parse_u256(
-            val.get("value")
-                .ok_or_else(|| DebuggerError::Rpc("tx missing value".into()))?,
-        )?,
+        value: parse_u256(val.get("value").ok_or_else(|| {
+            DebuggerError::from(RpcError::ParseError {
+                method: "eth_getTransactionByHash".into(),
+                field: "value".into(),
+                cause: "missing".into(),
+            })
+        })?)?,
         input: {
-            let input_val = val
-                .get("input")
-                .ok_or_else(|| DebuggerError::Rpc("tx missing input".into()))?;
+            let input_val = val.get("input").ok_or_else(|| {
+                DebuggerError::from(RpcError::ParseError {
+                    method: "eth_getTransactionByHash".into(),
+                    field: "input".into(),
+                    cause: "missing".into(),
+                })
+            })?;
             hex_decode(input_val.as_str().unwrap_or("0x"))?
         },
-        gas: parse_u64(
-            val.get("gas")
-                .ok_or_else(|| DebuggerError::Rpc("tx missing gas".into()))?,
-        )?,
+        gas: parse_u64(val.get("gas").ok_or_else(|| {
+            DebuggerError::from(RpcError::ParseError {
+                method: "eth_getTransactionByHash".into(),
+                field: "gas".into(),
+                cause: "missing".into(),
+            })
+        })?)?,
         gas_price: val.get("gasPrice").and_then(|v| parse_u64(v).ok()),
         max_fee_per_gas: val.get("maxFeePerGas").and_then(|v| parse_u64(v).ok()),
         max_priority_fee_per_gas: val
             .get("maxPriorityFeePerGas")
             .and_then(|v| parse_u64(v).ok()),
-        nonce: parse_u64(
-            val.get("nonce")
-                .ok_or_else(|| DebuggerError::Rpc("tx missing nonce".into()))?,
-        )?,
+        nonce: parse_u64(val.get("nonce").ok_or_else(|| {
+            DebuggerError::from(RpcError::ParseError {
+                method: "eth_getTransactionByHash".into(),
+                field: "nonce".into(),
+                cause: "missing".into(),
+            })
+        })?)?,
         block_number: val.get("blockNumber").and_then(|v| parse_u64(v).ok()),
     })
 }
@@ -376,5 +605,143 @@ mod tests {
     fn test_tx_not_found() {
         let result = parse_transaction(&json!(null));
         assert!(result.is_err());
+    }
+
+    // --- Phase I tests ---
+
+    #[test]
+    fn test_rpc_config_defaults() {
+        let config = RpcConfig::default();
+        assert_eq!(config.timeout, Duration::from_secs(30));
+        assert_eq!(config.connect_timeout, Duration::from_secs(10));
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.base_backoff, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_rpc_error_retryable_connection() {
+        let err = RpcError::ConnectionFailed {
+            url: "http://localhost".into(),
+            cause: "refused".into(),
+        };
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_rpc_error_retryable_timeout() {
+        let err = RpcError::Timeout {
+            method: "eth_call".into(),
+            elapsed_ms: 30000,
+        };
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_rpc_error_retryable_rate_limit() {
+        let err = RpcError::HttpError {
+            method: "eth_call".into(),
+            status: 429,
+            body: "retry-after:2".into(),
+        };
+        assert!(err.is_retryable());
+        assert_eq!(err.retry_after_secs(), Some(2));
+    }
+
+    #[test]
+    fn test_rpc_error_retryable_server_errors() {
+        for status in [502, 503, 504] {
+            let err = RpcError::HttpError {
+                method: "eth_call".into(),
+                status,
+                body: String::new(),
+            };
+            assert!(err.is_retryable(), "HTTP {status} should be retryable");
+        }
+    }
+
+    #[test]
+    fn test_rpc_error_not_retryable_client_errors() {
+        for status in [400, 401, 404] {
+            let err = RpcError::HttpError {
+                method: "eth_call".into(),
+                status,
+                body: String::new(),
+            };
+            assert!(!err.is_retryable(), "HTTP {status} should NOT be retryable");
+        }
+    }
+
+    #[test]
+    fn test_rpc_error_not_retryable_json_rpc() {
+        let err = RpcError::JsonRpcError {
+            method: "eth_call".into(),
+            code: -32601,
+            message: "method not found".into(),
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_rpc_error_not_retryable_parse() {
+        let err = RpcError::ParseError {
+            method: "eth_call".into(),
+            field: "result".into(),
+            cause: "invalid hex".into(),
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_rpc_error_display_formatting() {
+        let err = RpcError::Timeout {
+            method: "eth_getBalance".into(),
+            elapsed_ms: 30000,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("eth_getBalance"));
+        assert!(msg.contains("30000"));
+    }
+
+    #[test]
+    fn test_rpc_error_retry_exhausted_display() {
+        let inner = RpcError::Timeout {
+            method: "eth_call".into(),
+            elapsed_ms: 30000,
+        };
+        let err = RpcError::RetryExhausted {
+            method: "eth_call".into(),
+            attempts: 4,
+            last_error: Box::new(inner),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("4 attempt(s)"));
+        assert!(msg.contains("eth_call"));
+    }
+
+    #[test]
+    fn test_rpc_error_json_rpc_code_extraction() {
+        let err = RpcError::JsonRpcError {
+            method: "eth_call".into(),
+            code: -32000,
+            message: "execution reverted".into(),
+        };
+        if let RpcError::JsonRpcError { code, message, .. } = &err {
+            assert_eq!(*code, -32000);
+            assert_eq!(message, "execution reverted");
+        }
+    }
+
+    #[test]
+    fn test_client_with_custom_config() {
+        let config = RpcConfig {
+            timeout: Duration::from_secs(5),
+            connect_timeout: Duration::from_secs(2),
+            max_retries: 1,
+            base_backoff: Duration::from_millis(100),
+        };
+        let client = EthRpcClient::with_config("http://localhost:8545", 100, config);
+        assert_eq!(client.config().timeout, Duration::from_secs(5));
+        assert_eq!(client.config().max_retries, 1);
+        assert_eq!(client.block_number(), 100);
     }
 }

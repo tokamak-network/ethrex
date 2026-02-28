@@ -9,6 +9,7 @@
 use ethrex_common::{Address, U256};
 use ethrex_levm::call_frame::Stack;
 use ethrex_levm::debugger_hook::OpcodeRecorder;
+use ethrex_levm::memory::Memory;
 
 use crate::recorder::DebugRecorder;
 use crate::types::ReplayConfig;
@@ -21,13 +22,14 @@ fn test_capture_empty_stack() {
     let mut recorder = DebugRecorder::new(config);
     let stack = Stack::default(); // empty stack, len() == 0
 
+    let memory = Memory::new();
     recorder.record_step(
         0x00, // STOP
         0,    // pc
         1_000_000,
         0,               // depth
         &stack,          // empty stack
-        0,               // memory_size
+        &memory,         // memory
         Address::zero(), // code_address
     );
 
@@ -54,13 +56,14 @@ fn test_capture_stack_fewer_than_requested() {
     stack.push(U256::from(20u64)).expect("push");
     stack.push(U256::from(30u64)).expect("push");
 
+    let memory = Memory::new();
     recorder.record_step(
         0x01, // ADD
         5,
         500_000,
         0,
         &stack,
-        0,
+        &memory,
         Address::zero(),
     );
 
@@ -90,7 +93,8 @@ fn test_capture_stack_exact_match() {
     stack.push(U256::from(100u64)).expect("push");
     stack.push(U256::from(200u64)).expect("push");
 
-    recorder.record_step(0x01, 0, 1_000_000, 0, &stack, 0, Address::zero());
+    let memory = Memory::new();
+    recorder.record_step(0x01, 0, 1_000_000, 0, &stack, &memory, Address::zero());
 
     let step = &recorder.steps[0];
     assert_eq!(step.stack_top.len(), 2);
@@ -110,7 +114,8 @@ fn test_capture_stack_zero_config() {
     stack.push(U256::from(42u64)).expect("push");
     stack.push(U256::from(99u64)).expect("push");
 
-    recorder.record_step(0x01, 0, 1_000_000, 0, &stack, 0, Address::zero());
+    let memory = Memory::new();
+    recorder.record_step(0x01, 0, 1_000_000, 0, &stack, &memory, Address::zero());
 
     let step = &recorder.steps[0];
     assert!(
@@ -136,7 +141,8 @@ fn test_capture_stack_more_items_than_requested() {
         stack.push(U256::from(i)).expect("push");
     }
 
-    recorder.record_step(0x01, 0, 1_000_000, 0, &stack, 0, Address::zero());
+    let memory = Memory::new();
+    recorder.record_step(0x01, 0, 1_000_000, 0, &stack, &memory, Address::zero());
 
     let step = &recorder.steps[0];
     assert_eq!(step.stack_top.len(), 2, "should only capture top 2");

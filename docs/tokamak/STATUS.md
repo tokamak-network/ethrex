@@ -68,7 +68,7 @@
 - State root differential testing
 - Precompile timing export
 
-### Feature #21: Time-Travel Debugger & Autopsy Lab (~95%)
+### Feature #21: Time-Travel Debugger & Autopsy Lab (~98%)
 
 **Completed:**
 - `tokamak-debugger` crate with replay engine (E-1)
@@ -86,7 +86,12 @@
   - `FundFlowTracer`: ETH transfers + ERC-20 Transfer events
   - `AutopsyReport`: verdict-first Markdown/JSON, known contract labels (~20 mainnet addresses), storage interpretation, key step timeline, conclusion with storage impact
   - CLI `autopsy` subcommand with `--tx-hash`, `--rpc-url`, `--format`, `--output`
-- 100 tests: replay (14), CLI (27), RPC (10), enrichment (4), classifier (9), fund flow (5), report (8), recorder (4), StepRecord serde (2), autopsy integration (17)
+- Autopsy Production Readiness (4-phase hardening):
+  - Phase I: RPC timeout (30s) + retry with exponential backoff (3 retries), structured `RpcError` types (6 variants)
+  - Phase II: ERC-20 transfer amount decoding from LOG data, price delta estimation via SLOAD comparison, 80+ known contract labels, ABI-based storage slot decoding (keccak256 mappings)
+  - Phase III: Bounded caches with FIFO eviction (account 10k, storage 100k), observability metrics (RPC calls/hits/latency), 100k-step stress tests (<5s classification)
+  - Phase IV: Confidence scoring on all detected patterns (0.0–1.0 with evidence chains), 10-TX mainnet exploit validation scaffold
+- 145 passing tests + 10 ignored mainnet validation scaffolds
 
 **Remaining:**
 - Web UI (optional)
@@ -132,9 +137,9 @@ Measured after Volkov R21-R23 fixes (corrected measurement order).
 | LEVM JIT infra | `crates/vm/levm/src/jit/` (9 files) | ~2,700 |
 | tokamak-jit crate | `crates/vm/tokamak-jit/src/` (14 files) | ~5,650 |
 | tokamak-bench crate | `crates/tokamak-bench/src/` (11 files) | ~1,700 |
-| tokamak-debugger | `crates/tokamak-debugger/src/` (22 files) | ~3,100 |
+| tokamak-debugger | `crates/tokamak-debugger/src/` (26 files) | ~4,200 |
 | LEVM debugger hook | `crates/vm/levm/src/debugger_hook.rs` | ~27 |
-| **Total** | | **~12,780** |
+| **Total** | | **~13,880** |
 
 Base ethrex codebase: ~103K lines Rust.
 
@@ -216,6 +221,12 @@ R23(5.0) -> R24(8.0)
 
 ### Recently Completed (Phase E continued)
 - Smart Contract Autopsy Lab (E-4) — RemoteVmDatabase (archive RPC + LEVM Database impl), StepRecord enrichment (CALL value/LOG topics/SSTORE capture), AttackClassifier (4 patterns, 3-strategy flash loan detection), FundFlowTracer (ETH + ERC-20), AutopsyReport (verdict-first MD/JSON, known labels, storage interpretation, key step timeline), CLI subcommand with file output, 42 autopsy tests (100 total debugger tests)
+
+### Recently Completed (Autopsy Production Readiness)
+- Phase I: Network resilience — RPC client timeout (30s default) + retry with exponential backoff (3 retries, 1s→2s→4s), rate limit awareness (HTTP 429), `RpcConfig` struct with CLI flags (`--rpc-timeout`, `--rpc-retries`), structured `RpcError` enum (6 variants: ConnectionFailed, Timeout, HttpError, JsonRpcError, ParseError, RetryExhausted), 12 new tests
+- Phase II: Data quality — ERC-20 transfer amount decoding from LOG3 data bytes, price delta estimation via SLOAD value comparison, 80+ known contract labels (stablecoins, DEX, lending, bridges, oracles, infrastructure, flash loan, MEV), ABI-based storage slot decoding (`abi_decoder.rs` with keccak256 mapping support), 21 new tests
+- Phase III: Robustness — Bounded caches with FIFO eviction in RemoteVmDatabase (account=10k, storage=100k, code=10k, block=1k entries), `AutopsyMetrics` observability (RPC calls/cache hits/latency), 100k-step stress tests (<5s classification, <1s report), 11 new tests
+- Phase IV: Validation & confidence — `DetectedPattern` wrapper with 0.0–1.0 confidence + evidence chains, per-pattern scoring methods, 10 curated mainnet exploit validation scaffolds (DAO, Euler, Curve, Harvest, Cream, bZx, Ronin, Wormhole, Mango, Parity), 16 new tests (6 scoring + 10 ignored mainnet)
 
 ### Not Started
 - Phase H: Real-Time Attack Detection (Sentinel) — 5 tasks planned (H-1 through H-5)

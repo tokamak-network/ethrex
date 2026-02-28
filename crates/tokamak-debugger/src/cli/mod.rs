@@ -68,6 +68,18 @@ pub enum InputMode {
         /// Output file path (default: autopsy-<tx_hash_prefix>.<ext> in current dir)
         #[arg(long, short)]
         output: Option<String>,
+
+        /// RPC request timeout in seconds (default: 30)
+        #[arg(long, default_value = "30")]
+        rpc_timeout: u64,
+
+        /// Maximum RPC retry attempts for transient errors (default: 3)
+        #[arg(long, default_value = "3")]
+        rpc_retries: u32,
+
+        /// Suppress metrics output (default: false)
+        #[arg(long, default_value = "false")]
+        quiet: bool,
     },
 }
 
@@ -82,7 +94,19 @@ pub fn run(args: Args) -> Result<(), DebuggerError> {
             block_number,
             format,
             output,
-        } => run_autopsy(&tx_hash, &rpc_url, block_number, &format, output.as_deref()),
+            rpc_timeout,
+            rpc_retries,
+            quiet,
+        } => run_autopsy(
+            &tx_hash,
+            &rpc_url,
+            block_number,
+            &format,
+            output.as_deref(),
+            rpc_timeout,
+            rpc_retries,
+            quiet,
+        ),
     }
 }
 
@@ -160,13 +184,19 @@ fn make_cli_db(
 }
 
 #[cfg(feature = "autopsy")]
+#[allow(clippy::too_many_arguments)]
 fn run_autopsy(
     tx_hash_hex: &str,
     rpc_url: &str,
     block_number_override: Option<u64>,
     output_format: &str,
     output_path: Option<&str>,
+    rpc_timeout: u64,
+    rpc_retries: u32,
+    _quiet: bool,
 ) -> Result<(), DebuggerError> {
+    use std::time::Duration;
+
     use ethrex_common::H256;
 
     use crate::autopsy::{
@@ -175,49 +205,67 @@ fn run_autopsy(
         fund_flow::FundFlowTracer,
         remote_db::RemoteVmDatabase,
         report::AutopsyReport,
-        rpc_client::EthRpcClient,
+        rpc_client::{EthRpcClient, RpcConfig},
+    };
+
+    let rpc_config = RpcConfig {
+        timeout: Duration::from_secs(rpc_timeout),
+        max_retries: rpc_retries,
+        ..RpcConfig::default()
     };
 
     eprintln!("[autopsy] Fetching transaction...");
 
     // Parse tx hash
     let hash_hex = tx_hash_hex.strip_prefix("0x").unwrap_or(tx_hash_hex);
+    if !hash_hex.len().is_multiple_of(2) {
+        return Err(crate::error::RpcError::simple("tx hash hex must have even length").into());
+    }
     let hash_bytes: Vec<u8> = (0..hash_hex.len())
         .step_by(2)
         .map(|i| {
-            u8::from_str_radix(&hash_hex[i..i + 2], 16)
-                .map_err(|e| DebuggerError::Rpc(format!("invalid tx hash: {e}")))
+            u8::from_str_radix(&hash_hex[i..i + 2], 16).map_err(|e| {
+                DebuggerError::Rpc(crate::error::RpcError::simple(format!(
+                    "invalid tx hash: {e}"
+                )))
+            })
         })
         .collect::<Result<_, _>>()?;
     if hash_bytes.len() != 32 {
-        return Err(DebuggerError::Rpc("tx hash must be 32 bytes".into()));
+        return Err(crate::error::RpcError::simple("tx hash must be 32 bytes").into());
     }
     let tx_hash = H256::from_slice(&hash_bytes);
 
     // Use a temporary client to fetch the transaction and determine block
-    let temp_client = EthRpcClient::new(rpc_url, 0);
+    let temp_client = EthRpcClient::with_config(rpc_url, 0, rpc_config.clone());
     let rpc_tx = temp_client
         .eth_get_transaction_by_hash(tx_hash)
-        .map_err(|e| DebuggerError::Rpc(format!("fetch tx: {e}")))?;
+        .map_err(|e| {
+            DebuggerError::Rpc(crate::error::RpcError::simple(format!("fetch tx: {e}")))
+        })?;
 
     let block_num = block_number_override
         .or(rpc_tx.block_number)
         .ok_or_else(|| {
-            DebuggerError::Rpc("could not determine block number — provide --block-number".into())
+            DebuggerError::Rpc(crate::error::RpcError::simple(
+                "could not determine block number — provide --block-number",
+            ))
         })?;
 
     eprintln!("[autopsy] Block #{block_num}, setting up remote database...");
 
     // Create remote database at the block BEFORE the tx
     let pre_block = block_num.saturating_sub(1);
-    let remote_db = RemoteVmDatabase::from_rpc(rpc_url, pre_block)
-        .map_err(|e| DebuggerError::Rpc(format!("remote db: {e}")))?;
+    let remote_db = RemoteVmDatabase::from_rpc_with_config(rpc_url, pre_block, rpc_config.clone())
+        .map_err(|e| {
+            DebuggerError::Rpc(crate::error::RpcError::simple(format!("remote db: {e}")))
+        })?;
 
     // Fetch block header for environment
     let client = remote_db.client();
-    let block_header = client
-        .eth_get_block_by_number(block_num)
-        .map_err(|e| DebuggerError::Rpc(format!("fetch block: {e}")))?;
+    let block_header = client.eth_get_block_by_number(block_num).map_err(|e| {
+        DebuggerError::Rpc(crate::error::RpcError::simple(format!("fetch block: {e}")))
+    })?;
 
     // Build environment with proper gas fields
     let base_fee = block_header.base_fee_per_gas.unwrap_or(0);
@@ -284,7 +332,7 @@ fn run_autopsy(
     let mut initial_values = rustc_hash::FxHashMap::default();
 
     // Fetch initial storage values for SSTORE slots from the pre-block state
-    let pre_client = EthRpcClient::new(rpc_url, pre_block);
+    let pre_client = EthRpcClient::with_config(rpc_url, pre_block, rpc_config);
     for (addr, slot) in &slots {
         if let Ok(val) = pre_client.eth_get_storage_at(*addr, *slot) {
             initial_values.insert((*addr, *slot), val);

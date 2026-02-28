@@ -20,6 +20,7 @@ fn step_record_serializes() {
         call_value: None,
         storage_writes: None,
         log_topics: None,
+        log_data: None,
     };
     let json = serde_json::to_value(&step).expect("StepRecord should serialize");
     assert_eq!(json["step_index"], 0);
@@ -46,6 +47,7 @@ fn replay_trace_serializes() {
             call_value: None,
             storage_writes: None,
             log_topics: None,
+            log_data: None,
         }],
         config: ReplayConfig::default(),
         gas_used: 21000,
@@ -81,6 +83,7 @@ fn step_record_fields() {
         call_value: None,
         storage_writes: None,
         log_topics: None,
+        log_data: None,
     };
     let json = serde_json::to_string(&step).expect("should serialize");
     for field in [
