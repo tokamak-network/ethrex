@@ -2372,3 +2372,352 @@ mod reentrancy_sentinel_e2e_tests {
         );
     }
 }
+
+// ===========================================================================
+// Live Reentrancy Pipeline — Full 6-phase E2E test with real bytecode execution.
+//
+// Unlike the mock-receipt tests above, this test:
+//   1. Deploys actual attacker + victim contracts in LEVM
+//   2. Executes the reentrancy attack and captures the opcode trace
+//   3. Runs AttackClassifier + FundFlowTracer on the real trace
+//   4. Feeds real execution results through the SentinelService pipeline
+//   5. Verifies alerts and metrics end-to-end
+// ===========================================================================
+
+#[cfg(feature = "autopsy")]
+mod live_reentrancy_pipeline_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+    use ethrex_common::constants::EMPTY_TRIE_HASH;
+    use ethrex_common::types::{
+        Account, Block, BlockBody, BlockHeader, Code, EIP1559Transaction, Receipt, Transaction,
+        TxKind, TxType,
+    };
+    use ethrex_common::{Address, U256};
+    use ethrex_levm::db::gen_db::GeneralizedDatabase;
+    use ethrex_levm::Environment;
+    use ethrex_storage::{EngineType, Store};
+    use rustc_hash::FxHashMap;
+
+    use crate::autopsy::classifier::AttackClassifier;
+    use crate::autopsy::fund_flow::FundFlowTracer;
+    use crate::autopsy::types::AttackPattern;
+    use crate::engine::ReplayEngine;
+    use crate::sentinel::service::{AlertHandler, SentinelService};
+    use crate::sentinel::types::{AnalysisConfig, SentinelAlert, SentinelConfig};
+    use crate::types::ReplayConfig;
+
+    const TEST_GAS_LIMIT: u64 = 10_000_000;
+
+    fn big_balance() -> U256 {
+        U256::from(10).pow(U256::from(30))
+    }
+
+    fn make_test_db(accounts: Vec<(Address, Code)>) -> GeneralizedDatabase {
+        let store =
+            Store::new("", EngineType::InMemory).expect("in-memory store");
+        let header = BlockHeader {
+            state_root: *EMPTY_TRIE_HASH,
+            ..Default::default()
+        };
+        let vm_db: ethrex_vm::DynVmDatabase = Box::new(
+            ethrex_blockchain::vm::StoreVmDatabase::new(store, header)
+                .expect("StoreVmDatabase"),
+        );
+
+        let balance = big_balance();
+        let mut cache = FxHashMap::default();
+        for (addr, code) in accounts {
+            cache.insert(addr, Account::new(balance, code, 0, FxHashMap::default()));
+        }
+
+        GeneralizedDatabase::new_with_account_state(Arc::new(vm_db), cache)
+    }
+
+    /// Victim: sends 1 wei to CALLER via CALL, then SSTORE slot 0 = 1.
+    fn victim_bytecode() -> Vec<u8> {
+        vec![
+            0x60, 0x00, // PUSH1 0 (retLen)
+            0x60, 0x00, // PUSH1 0 (retOff)
+            0x60, 0x00, // PUSH1 0 (argsLen)
+            0x60, 0x00, // PUSH1 0 (argsOff)
+            0x60, 0x01, // PUSH1 1 (value = 1 wei)
+            0x33, // CALLER
+            0x61, 0xFF, 0xFF, // PUSH2 0xFFFF (gas)
+            0xF1, // CALL
+            0x50, // POP
+            0x60, 0x01, // PUSH1 1
+            0x60, 0x00, // PUSH1 0
+            0x55, // SSTORE(slot=0, value=1)
+            0x00, // STOP
+        ]
+    }
+
+    /// Attacker: counter in slot 0. If counter < 2: increment + CALL victim.
+    fn attacker_bytecode(victim_addr: Address) -> Vec<u8> {
+        let victim_byte = victim_addr.as_bytes()[19];
+        vec![
+            0x60, 0x00, // PUSH1 0 (slot)
+            0x54, // SLOAD(0)
+            0x80, // DUP1
+            0x60, 0x02, // PUSH1 2
+            0x11, // GT
+            0x15, // ISZERO
+            0x60, 0x23, // PUSH1 0x23
+            0x57, // JUMPI
+            0x60, 0x01, // PUSH1 1
+            0x01, // ADD
+            0x60, 0x00, // PUSH1 0
+            0x55, // SSTORE
+            0x60, 0x00, // PUSH1 0 (retLen)
+            0x60, 0x00, // PUSH1 0 (retOff)
+            0x60, 0x00, // PUSH1 0 (argsLen)
+            0x60, 0x00, // PUSH1 0 (argsOff)
+            0x60, 0x00, // PUSH1 0 (value)
+            0x60, victim_byte, // PUSH1 victim
+            0x61, 0xFF, 0xFF, // PUSH2 0xFFFF (gas)
+            0xF1, // CALL
+            0x50, // POP
+            0x00, // STOP
+            0x5B, // JUMPDEST
+            0x50, // POP
+            0x00, // STOP
+        ]
+    }
+
+    struct CapturingAlertHandler {
+        count: Arc<AtomicUsize>,
+        alerts: Arc<std::sync::Mutex<Vec<SentinelAlert>>>,
+    }
+
+    impl AlertHandler for CapturingAlertHandler {
+        fn on_alert(&self, alert: SentinelAlert) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut v) = self.alerts.lock() {
+                v.push(alert);
+            }
+        }
+    }
+
+    #[test]
+    fn test_live_reentrancy_full_detection_pipeline() {
+        // ---------------------------------------------------------------
+        // Phase 1: Deploy & Execute — real reentrancy attack in LEVM
+        // ---------------------------------------------------------------
+        let attacker_addr = Address::from_low_u64_be(0x42);
+        let victim_addr = Address::from_low_u64_be(0x43);
+        let sender_addr = Address::from_low_u64_be(0x100);
+
+        let accounts = vec![
+            (
+                attacker_addr,
+                Code::from_bytecode(Bytes::from(attacker_bytecode(victim_addr))),
+            ),
+            (
+                victim_addr,
+                Code::from_bytecode(Bytes::from(victim_bytecode())),
+            ),
+            (sender_addr, Code::from_bytecode(Bytes::new())),
+        ];
+
+        let mut db = make_test_db(accounts);
+        let env = Environment {
+            origin: sender_addr,
+            gas_limit: TEST_GAS_LIMIT,
+            block_gas_limit: TEST_GAS_LIMIT,
+            ..Default::default()
+        };
+        let tx = Transaction::EIP1559Transaction(EIP1559Transaction {
+            to: TxKind::Call(attacker_addr),
+            data: Bytes::new(),
+            ..Default::default()
+        });
+
+        let engine = ReplayEngine::record(&mut db, env, &tx, ReplayConfig::default())
+            .expect("reentrancy TX should execute successfully");
+
+        let trace = engine.trace();
+        let steps = engine.steps_range(0, engine.len());
+
+        // ---------------------------------------------------------------
+        // Phase 2: Verify Attack — call depth >= 3, SSTORE exists
+        // ---------------------------------------------------------------
+        let max_depth = steps.iter().map(|s| s.depth).max().unwrap_or(0);
+        assert!(
+            max_depth >= 3,
+            "Expected call depth >= 3 for reentrancy, got {max_depth}"
+        );
+
+        let sstore_count = steps.iter().filter(|s| s.opcode == 0x55).count();
+        assert!(
+            sstore_count >= 2,
+            "Expected at least 2 SSTOREs (attacker counter writes), got {sstore_count}"
+        );
+
+        // ---------------------------------------------------------------
+        // Phase 3: Classify — AttackClassifier detects Reentrancy
+        // ---------------------------------------------------------------
+        let detected = AttackClassifier::classify_with_confidence(steps);
+
+        let reentrancy = detected
+            .iter()
+            .find(|d| matches!(d.pattern, AttackPattern::Reentrancy { .. }));
+
+        assert!(
+            reentrancy.is_some(),
+            "AttackClassifier should detect reentrancy on real trace. Detected: {detected:?}"
+        );
+
+        let reentrancy = reentrancy.unwrap();
+        assert!(
+            reentrancy.confidence >= 0.7,
+            "Reentrancy confidence should be >= 0.7, got {}",
+            reentrancy.confidence
+        );
+
+        if let AttackPattern::Reentrancy {
+            target_contract, ..
+        } = &reentrancy.pattern
+        {
+            assert_eq!(
+                *target_contract, attacker_addr,
+                "Reentrancy target should be the re-entered contract (attacker)"
+            );
+        }
+
+        // ---------------------------------------------------------------
+        // Phase 4: Fund Flow — ETH transfers from victim → attacker
+        // ---------------------------------------------------------------
+        let flows = FundFlowTracer::trace(steps);
+
+        let eth_flows: Vec<_> = flows.iter().filter(|f| f.token.is_none()).collect();
+        assert!(
+            !eth_flows.is_empty(),
+            "FundFlowTracer should detect ETH transfers (victim sends 1 wei per CALL)"
+        );
+
+        // Verify at least one flow goes from victim to attacker
+        let victim_to_attacker = eth_flows
+            .iter()
+            .any(|f| f.from == victim_addr && f.to == attacker_addr);
+        assert!(
+            victim_to_attacker,
+            "Should have ETH flow from victim ({victim_addr:?}) to attacker ({attacker_addr:?}). Flows: {eth_flows:?}"
+        );
+
+        // ---------------------------------------------------------------
+        // Phase 5: Sentinel Pipeline — real receipt → SentinelService
+        // ---------------------------------------------------------------
+        let alert_count = Arc::new(AtomicUsize::new(0));
+        let captured_alerts = Arc::new(std::sync::Mutex::new(Vec::<SentinelAlert>::new()));
+        let handler = CapturingAlertHandler {
+            count: alert_count.clone(),
+            alerts: captured_alerts.clone(),
+        };
+
+        let store = Store::new("", EngineType::InMemory).expect("in-memory store");
+
+        // Tuned config for stealthy reentrancy (1 wei value, ~82k gas):
+        // - suspicion_threshold: 0.1 (production: 0.5, designed for loud attacks)
+        // - min_gas_used: 50_000 (production: 500_000) — our attack uses ~82k gas
+        // This demonstrates the pipeline works even for stealthy, low-gas attacks.
+        let config = SentinelConfig {
+            suspicion_threshold: 0.1,
+            min_gas_used: 50_000,
+            ..Default::default()
+        };
+
+        // prefilter_alert_mode: deep analysis can't replay from Store
+        // (no genesis state) — emit lightweight alert from PreFilter.
+        let analysis_config = AnalysisConfig {
+            prefilter_alert_mode: true,
+            ..Default::default()
+        };
+
+        let service =
+            SentinelService::new(store, config, analysis_config, Box::new(handler));
+
+        // Build receipt from real execution results
+        let receipt = Receipt {
+            tx_type: TxType::EIP1559,
+            succeeded: trace.success,
+            cumulative_gas_used: trace.gas_used,
+            logs: vec![],
+        };
+
+        // Set gas_limit close to gas_used (>95% ratio) to trigger H5 gas anomaly
+        let tight_gas_limit = trace.gas_used + trace.gas_used / 20; // ~105% of used
+        let sentinel_tx = Transaction::EIP1559Transaction(EIP1559Transaction {
+            to: TxKind::Call(attacker_addr),
+            gas_limit: tight_gas_limit,
+            data: Bytes::new(),
+            ..Default::default()
+        });
+
+        let block = Block {
+            header: BlockHeader {
+                number: 19_500_000,
+                gas_used: trace.gas_used,
+                gas_limit: 30_000_000,
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions: vec![sentinel_tx],
+                ..Default::default()
+            },
+        };
+
+        use ethrex_blockchain::BlockObserver;
+        service.on_block_committed(block, vec![receipt]);
+
+        // Wait for worker thread to process
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // ---------------------------------------------------------------
+        // Phase 6: Alert Validation — verify alert content + metrics
+        // ---------------------------------------------------------------
+        let count = alert_count.load(Ordering::SeqCst);
+        assert!(
+            count >= 1,
+            "Expected at least 1 alert from sentinel pipeline, got {count}"
+        );
+
+        // Verify alert has suspicion reasons
+        let alerts = captured_alerts.lock().unwrap();
+        let alert = &alerts[0];
+        assert!(
+            !alert.suspicion_reasons.is_empty(),
+            "Alert should have at least one suspicion reason"
+        );
+        assert!(
+            alert.suspicion_score > 0.0,
+            "Alert suspicion_score should be > 0, got {}",
+            alert.suspicion_score
+        );
+
+        // Verify metrics
+        let snap = service.metrics().snapshot();
+        assert!(
+            snap.blocks_scanned >= 1,
+            "Expected blocks_scanned >= 1, got {}",
+            snap.blocks_scanned
+        );
+        assert!(
+            snap.txs_scanned >= 1,
+            "Expected txs_scanned >= 1, got {}",
+            snap.txs_scanned
+        );
+        assert!(
+            snap.txs_flagged >= 1,
+            "Expected txs_flagged >= 1, got {}",
+            snap.txs_flagged
+        );
+        assert!(
+            snap.alerts_emitted >= 1,
+            "Expected alerts_emitted >= 1, got {}",
+            snap.alerts_emitted
+        );
+    }
+}
