@@ -145,6 +145,19 @@ pub struct L2Config {
     pub fee_config: Arc<RwLock<FeeConfig>>,
 }
 
+/// Observer trait for receiving notifications when blocks are committed to storage.
+///
+/// Implementations must be non-blocking — heavy processing should be deferred
+/// to a background thread or channel. The `on_block_committed` method is called
+/// on the block processing hot path.
+pub trait BlockObserver: Send + Sync {
+    /// Called after a block has been successfully stored.
+    ///
+    /// The `block` and `receipts` are cloned copies; the originals have been
+    /// consumed by `store_block()`.
+    fn on_block_committed(&self, block: Block, receipts: Vec<Receipt>);
+}
+
 /// Core blockchain implementation for block validation and execution.
 ///
 /// The `Blockchain` struct is the main entry point for all blockchain operations:
@@ -171,7 +184,6 @@ pub struct L2Config {
 ///     // Process transactions from mempool
 /// }
 /// ```
-#[derive(Debug)]
 pub struct Blockchain {
     /// Underlying storage for blocks and state.
     storage: Store,
@@ -189,6 +201,24 @@ pub struct Blockchain {
     /// Maps payload IDs to either completed payloads or in-progress build tasks.
     /// Kept around in case consensus requests the same payload twice.
     pub payloads: Arc<TokioMutex<Vec<(u64, PayloadOrTask)>>>,
+    /// Optional observer for block commit events (e.g., sentinel hack detection).
+    ///
+    /// When set, the observer is notified after every successful `store_block()` call
+    /// with a clone of the block and its receipts. The observer must be non-blocking.
+    block_observer: Option<Arc<dyn BlockObserver>>,
+}
+
+impl core::fmt::Debug for Blockchain {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Blockchain")
+            .field("is_synced", &self.is_synced)
+            .field("options", &self.options)
+            .field(
+                "block_observer",
+                &self.block_observer.as_ref().map(|_| "Some(<observer>)"),
+            )
+            .finish()
+    }
 }
 
 /// Configuration options for the blockchain.
@@ -295,6 +325,7 @@ impl Blockchain {
             is_synced: AtomicBool::new(false),
             payloads: Arc::new(TokioMutex::new(Vec::new())),
             options: blockchain_opts,
+            block_observer: None,
         }
     }
 
@@ -305,7 +336,19 @@ impl Blockchain {
             is_synced: AtomicBool::new(false),
             payloads: Arc::new(TokioMutex::new(Vec::new())),
             options: BlockchainOptions::default(),
+            block_observer: None,
         }
+    }
+
+    /// Attach a block observer that will be notified after every successful `store_block()`.
+    pub fn with_block_observer(mut self, observer: Arc<dyn BlockObserver>) -> Self {
+        self.block_observer = Some(observer);
+        self
+    }
+
+    /// Set or replace the block observer at runtime.
+    pub fn set_block_observer(&mut self, observer: Option<Arc<dyn BlockObserver>>) {
+        self.block_observer = observer;
     }
 
     /// Executes a block withing a new vm instance and state
@@ -1886,9 +1929,23 @@ impl Blockchain {
             block.body.transactions.len(),
         );
 
+        // Clone block + receipts for observer before store_block consumes them
+        let observer_data = self
+            .block_observer
+            .as_ref()
+            .map(|_| (block.clone(), res.receipts.clone()));
+
         let merkleized = Instant::now();
         let result = self.store_block(block, account_updates_list, res);
         let stored = Instant::now();
+
+        // Notify observer after successful store
+        if result.is_ok()
+            && let Some((block_clone, receipts)) = observer_data
+            && let Some(observer) = &self.block_observer
+        {
+            observer.on_block_committed(block_clone, receipts);
+        }
 
         if self.options.perf_logs_enabled {
             Self::print_add_block_logs(
@@ -1974,9 +2031,23 @@ impl Blockchain {
                 .store_witness(block_hash, block_number, witness)?;
         };
 
+        // Clone block + receipts for observer before store_block consumes them
+        let observer_data = self
+            .block_observer
+            .as_ref()
+            .map(|_| (block.clone(), res.receipts.clone()));
+
         let result = self.store_block(block, account_updates_list, res);
 
         let stored = Instant::now();
+
+        // Notify observer after successful store
+        if result.is_ok()
+            && let Some((block_clone, receipts)) = observer_data
+            && let Some(observer) = &self.block_observer
+        {
+            observer.on_block_committed(block_clone, receipts);
+        }
 
         let instants = std::array::from_fn(move |i| {
             if i < instants.len() {

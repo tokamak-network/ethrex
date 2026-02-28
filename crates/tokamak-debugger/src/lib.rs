@@ -15,5 +15,8 @@ pub mod cli;
 #[cfg(feature = "autopsy")]
 pub mod autopsy;
 
+#[cfg(feature = "sentinel")]
+pub mod sentinel;
+
 #[cfg(test)]
 mod tests;

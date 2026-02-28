@@ -1,7 +1,7 @@
 # Tokamak Remaining Work Roadmap
 
 **Created**: 2026-02-24 | **Updated**: 2026-02-28
-**Context**: Overall ~96% complete. JIT core done (Phases 2-8). Phase A: ALL P0 COMPLETE (A-1 ✅ A-2 ✅ A-3 ✅ A-4 ✅). Phase B: B-1 ✅ B-2 ✅ B-3 ✅ — ALL COMPLETE. Phase C: C-1 ✅ C-2 ✅ C-3 ✅ — ALL COMPLETE. Phase D: D-1 ✅ DONE (v1.1 runtime opt), D-2 ✅ DONE, D-3 ✅ DONE. Phase E: E-1 ✅ DONE, E-2 ✅ DONE, E-3 ✅ DONE, E-4 ✅ DONE (Smart Contract Autopsy Lab) — ALL COMPLETE. Phase F: F-1 ✅ DONE, F-2 ✅ DONE, F-3 ✅ DONE (scaffolding), F-4 ✅ DONE, F-5 CI CONFIGURED (awaiting sync run). Phase G: ALL COMPLETE (8/8). Phase H: Real-Time Attack Detection — NOT STARTED (5 tasks).
+**Context**: Overall ~96% complete. JIT core done (Phases 2-8). Phase A: ALL P0 COMPLETE (A-1 ✅ A-2 ✅ A-3 ✅ A-4 ✅). Phase B: B-1 ✅ B-2 ✅ B-3 ✅ — ALL COMPLETE. Phase C: C-1 ✅ C-2 ✅ C-3 ✅ — ALL COMPLETE. Phase D: D-1 ✅ DONE (v1.1 runtime opt), D-2 ✅ DONE, D-3 ✅ DONE. Phase E: E-1 ✅ DONE, E-2 ✅ DONE, E-3 ✅ DONE, E-4 ✅ DONE (Smart Contract Autopsy Lab) — ALL COMPLETE. Phase F: F-1 ✅ DONE, F-2 ✅ DONE, F-3 ✅ DONE (scaffolding), F-4 ✅ DONE, F-5 CI CONFIGURED (awaiting sync run). Phase G: ALL COMPLETE (8/8). Phase H: H-1 ✅ DONE (Pre-Filter Engine), H-2 ✅ DONE (Deep Analysis Engine), H-3 ✅ DONE (Block Processing Integration), H-4~H-5 NOT STARTED (2 tasks).
 
 ---
 
@@ -384,37 +384,37 @@
 
 The Autopsy Lab (E-4) provides post-hoc analysis of historical transactions. Phase H extends this into **real-time detection**: when the node processes a new block, suspicious transactions are automatically analyzed and alerts are generated. All E-4 analysis components (AttackClassifier, FundFlowTracer, AutopsyReport) are reused directly.
 
-### H-1. Block Execution Recording Hook [P2]
-- Hook into block processing pipeline to conditionally enable `DebugRecorder` during TX execution
-- Feature-gated: `tokamak-sentinel` (separate from `tokamak-debugger` to avoid recording overhead by default)
-- Zero overhead when disabled (compile-time feature gate, not runtime check)
-- When enabled, recorder activates only for TXs passing the pre-filter (H-2)
-- Output: `ReplayTrace` per suspicious TX, fed to classifier pipeline (H-3)
-- **Key concern**: must not slow block processing for non-suspicious TXs (<1% overhead target)
-- **Dependency**: E-1 ✅ (OpcodeRecorder already exists)
-- **Estimate**: 16-24h
+### H-1. Sentinel Pre-Filter Engine [P2] ✅ DONE
+- Receipt-based heuristic scanner: 7 heuristics (flash loan signature, high value+revert, multiple ERC-20 transfers, known contract interaction, unusual gas pattern, self-destruct indicators, price oracle+swap) ✅
+- `SentinelConfig` with configurable thresholds (suspicion_threshold, min_value_wei, min_gas_used, min_erc20_transfers, gas_ratio_threshold) ✅
+- `SuspiciousTx` + `SuspicionReason` + `AlertPriority` types with serde Serialize ✅
+- `PreFilter::scan_block()` and `PreFilter::scan_tx()` public API ✅
+- 14 known mainnet address database (Aave V2/V3, Balancer, Chainlink oracles, Uniswap V2/V3, SushiSwap, Curve, 1inch, Compound, Cream Finance) with static labels ✅
+- `sentinel` feature flag in tokamak-debugger (deps: rustc-hash, hex) ✅
+- Scoring formula: sum of per-heuristic scores, priority mapping (>=0.8 Critical, >=0.5 High, else Medium) ✅
+- **Verification**: 32 sentinel tests (4 config/types + 4 flash loan + 4 revert + 3 ERC-20 + 3 known contract + 3 gas + 2 self-destruct + 2 oracle + 7 integration), 60 total debugger tests with sentinel feature ✅
+- **Dependency**: E-1 ✅, E-4 ✅
+- **Completed**: 2026-02-28 — Pre-filter engine with 7 heuristics, sentinel feature gate, 32 tests
 
-### H-2. Lightweight Pre-Filter [P2]
-- TX-level pre-screening to decide which TXs deserve full opcode recording
-- Configurable criteria via TOML sentinel config:
-  - `min_call_depth`: only record TXs with call depth > N (default: 3)
-  - `min_gas_used`: only record TXs consuming > N gas (default: 500,000)
-  - `min_external_calls`: only record TXs with > N CALL/DELEGATECALL (default: 5)
-  - `watchlist`: always record TXs interacting with specific contract addresses
-  - `blacklist`: never record TXs from known benign contracts (e.g., token transfers)
-- Two-phase approach: (1) cheap pre-execution heuristic (gas limit, to-address), (2) post-execution check (actual depth/calls) triggers full re-execution with recorder
-- **Alternative**: single-pass approach using a lightweight counter-only recorder (counts depth/calls without capturing full stack) → if thresholds exceeded, re-execute with full recorder
-- **Dependency**: H-1
-- **Estimate**: 8-16h
+### H-2. Deep Analysis Engine [P2] --- DONE
+- TX re-execution with full opcode recording from local Store via `StoreVmDatabase`
+- `replay_tx_from_store()`: loads parent state, executes preceding TXs, attaches OpcodeRecorder to target TX
+- `DeepAnalyzer::analyze()`: orchestrates replay → AttackClassifier → FundFlowTracer → SentinelAlert
+- New types: `SentinelAlert` (block/tx/patterns/flows/summary), `SentinelError` (8 variants), `AnalysisConfig` (max_steps, min_confidence)
+- Reuses existing autopsy infrastructure: `AttackClassifier::classify_with_confidence()`, `FundFlowTracer::trace()`, `DetectedPattern`
+- `load_block_header()` sync helper for Store access
+- **Dependency**: H-1 ✅
+- **Completed**: 2026-02-28 --- Deep Analysis Engine — replay_tx_from_store, DeepAnalyzer, SentinelAlert/SentinelError/AnalysisConfig types, 20 tests (14 sentinel-only + 6 autopsy-gated)
 
-### H-3. Real-Time Classification Pipeline [P2]
+### H-3. Real-Time Classification Pipeline [P2] --- DONE
 - Background async processing: block execution (producer) → analysis thread (consumer)
 - Queue-based: `crossbeam_channel::bounded` channel with backpressure (don't unboundedly buffer)
 - Consumer thread runs per-TX: `AttackClassifier::classify()` + `FundFlowTracer::trace()` + `AutopsyReport::build()`
 - Pattern-detected reports stored in local DB/file (rotating log)
 - Metrics: `sentinel_txs_analyzed`, `sentinel_patterns_detected`, `sentinel_analysis_latency_ms`
-- **Dependency**: H-1, H-2, E-4 ✅ (classifier/tracer/report reused directly)
+- **Dependency**: H-1 ✅, H-2 ✅, E-4 ✅ (classifier/tracer/report reused directly)
 - **Estimate**: 12-20h
+- **Completed**: 2026-02-28 --- BlockObserver trait in ethrex-blockchain, SentinelService (background worker thread with mpsc channel, two-stage PreFilter→DeepAnalyzer pipeline), non-blocking hooks in add_block/add_block_pipeline after store_block, AlertHandler trait + LogAlertHandler, 11 tests
 
 ### H-4. Alert & Notification System [P2]
 - Dispatch alerts when `AttackClassifier` detects patterns
@@ -455,7 +455,10 @@ Week 10: [P1] G-4 ✅ (JIT-to-JIT direct dispatch) + G-6 ✅ (LRU cache eviction
 Week 11: [P2] G-8 ✅ (precompile JIT acceleration — fast dispatch + metric tracking)
 Week 12: [P2] E-4 ✅ (Smart Contract Autopsy Lab — post-hoc attack analysis)
 Later:   [P3] F-5
-Future:  [P2] H-1 → H-2 → H-3 → H-4 (real-time sentinel pipeline)
+Week 13: [P2] H-1 ✅ (Sentinel Pre-Filter Engine — 7 heuristics, 32 tests)
+Week 13: [P2] H-2 ✅ (Deep Analysis Engine — replay + classifier + fund flow, 20 tests)
+Week 13: [P2] H-3 ✅ (Block Processing Integration — BlockObserver, SentinelService, 11 tests)
+Future:  [P2] H-4 (alert & notification system)
 Future:  [P3] H-5 (sentinel dashboard)
 ```
 

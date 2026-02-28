@@ -1,8 +1,8 @@
 # Tokamak Client Status Report
 
 **Date**: 2026-02-28
-**Branch**: `feat/tokamak-autopsy-lab`
-**Overall Completion**: ~96% (Phase H not started)
+**Branch**: `feat/tokamak-autopsy`
+**Overall Completion**: ~98% (Phase H: 3/5 complete — H-1 ✅ H-2 ✅ H-3 ✅)
 
 ---
 
@@ -96,18 +96,20 @@
 **Remaining:**
 - Web UI (optional)
 
-### Feature #22: Real-Time Attack Detection — Sentinel (0%)
+### Feature #22: Real-Time Attack Detection — Sentinel (~55%)
 
 **Purpose:** Transform the post-hoc Autopsy Lab into a real-time monitoring system. When the ethrex full node processes new blocks, suspicious transactions are automatically analyzed and alerts are generated.
 
+**Completed:**
+- H-1: Sentinel Pre-Filter Engine — receipt-based heuristic scanner with 7 heuristics (flash loan/revert/ERC-20/known contract/gas/self-destruct/oracle+swap), `sentinel` feature flag, 14 known mainnet addresses, configurable thresholds, 32 tests
+- H-2: Deep Analysis Engine — replay_tx_from_store (Store→StoreVmDatabase→Evm, preceding TX execution, OpcodeRecorder attachment), DeepAnalyzer (reuses AttackClassifier/FundFlowTracer/DetectedPattern from autopsy), SentinelAlert + SentinelError + AnalysisConfig types, load_block_header helper, 20 tests (14 sentinel-only + 6 autopsy-gated) (2026-02-28)
+- H-3: Block Processing Integration — BlockObserver trait in ethrex-blockchain, SentinelService (background worker thread with mpsc channel, two-stage PreFilter→DeepAnalyzer pipeline), non-blocking hooks in add_block/add_block_pipeline after store_block, AlertHandler trait + LogAlertHandler, 11 tests (2026-02-28)
+
 **Planned:**
-- H-1: Block execution recording hook (conditional `DebugRecorder` activation during block processing)
-- H-2: Lightweight pre-filter (TX screening by call depth / gas / external calls / watchlist)
-- H-3: Real-time classification pipeline (async producer-consumer with `AttackClassifier` + `FundFlowTracer`)
-- H-4: Alert & notification system (webhook / Slack / log, severity mapping, de-duplication, rate limiting)
+- H-4: Alert & notification system (webhook / log / structured tracing, severity mapping, de-duplication, rate limiting)
 - H-5: Sentinel dashboard (live WebSocket feed, historical alert browsing, Grafana metrics export)
 
-**Architecture:** All E-4 analysis components reused directly. New code focuses on triggering, filtering, and alerting.
+**Architecture:** All E-4 analysis components reused directly. Pre-filter runs on receipt data (no opcode recording needed for fast path). Only suspicious TXs trigger expensive deep analysis on a background thread.
 
 **Key constraint:** <1% overhead on block processing when sentinel is enabled but TX doesn't match pre-filter. Zero overhead when feature disabled (compile-time gate).
 
@@ -137,9 +139,9 @@ Measured after Volkov R21-R23 fixes (corrected measurement order).
 | LEVM JIT infra | `crates/vm/levm/src/jit/` (9 files) | ~2,700 |
 | tokamak-jit crate | `crates/vm/tokamak-jit/src/` (14 files) | ~5,650 |
 | tokamak-bench crate | `crates/tokamak-bench/src/` (11 files) | ~1,700 |
-| tokamak-debugger | `crates/tokamak-debugger/src/` (26 files) | ~4,200 |
+| tokamak-debugger | `crates/tokamak-debugger/src/` (33 files) | ~6,950 |
 | LEVM debugger hook | `crates/vm/levm/src/debugger_hook.rs` | ~27 |
-| **Total** | | **~13,880** |
+| **Total** | | **~16,630** |
 
 Base ethrex codebase: ~103K lines Rust.
 
@@ -229,7 +231,7 @@ R23(5.0) -> R24(8.0)
 - Phase IV: Validation & confidence — `DetectedPattern` wrapper with 0.0–1.0 confidence + evidence chains, per-pattern scoring methods, 10 curated mainnet exploit validation scaffolds (DAO, Euler, Curve, Harvest, Cream, bZx, Ronin, Wormhole, Mango, Parity), 16 new tests (6 scoring + 10 ignored mainnet)
 
 ### Not Started
-- Phase H: Real-Time Attack Detection (Sentinel) — 5 tasks planned (H-1 through H-5)
+- Phase H: Real-Time Attack Detection (Sentinel) — H-1 ✅ H-2 ✅ H-3 ✅ done, 2 tasks remaining (H-4, H-5)
 - EF grant application
 - External node operator adoption
 

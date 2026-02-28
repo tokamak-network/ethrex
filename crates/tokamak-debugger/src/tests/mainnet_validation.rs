@@ -14,8 +14,7 @@
 use ethrex_common::H256;
 
 use crate::autopsy::{
-    classifier::AttackClassifier, fund_flow::FundFlowTracer, remote_db::RemoteVmDatabase,
-    report::AutopsyReport, rpc_client::EthRpcClient, types::AttackPattern,
+    remote_db::RemoteVmDatabase, rpc_client::EthRpcClient, types::AttackPattern,
 };
 
 /// Parse a hex tx hash string into H256.

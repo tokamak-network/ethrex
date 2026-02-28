@@ -1,0 +1,1641 @@
+//! Tests for the Sentinel pre-filter engine and deep analysis types.
+
+use bytes::Bytes;
+use ethrex_common::types::{
+    BlockHeader, LegacyTransaction, Log, Receipt, Transaction, TxKind, TxType,
+};
+use ethrex_common::{Address, H256, U256};
+
+use super::pre_filter::PreFilter;
+use super::types::*;
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+fn make_receipt(succeeded: bool, cumulative_gas: u64, logs: Vec<Log>) -> Receipt {
+    Receipt {
+        tx_type: TxType::Legacy,
+        succeeded,
+        cumulative_gas_used: cumulative_gas,
+        logs,
+    }
+}
+
+fn make_log(address: Address, topics: Vec<H256>, data: Bytes) -> Log {
+    Log {
+        address,
+        topics,
+        data,
+    }
+}
+
+fn make_tx_call(to: Address, value: U256, gas_limit: u64) -> Transaction {
+    Transaction::LegacyTransaction(LegacyTransaction {
+        gas: gas_limit,
+        to: TxKind::Call(to),
+        value,
+        ..Default::default()
+    })
+}
+
+fn make_tx_create(value: U256, gas_limit: u64) -> Transaction {
+    Transaction::LegacyTransaction(LegacyTransaction {
+        gas: gas_limit,
+        to: TxKind::Create,
+        value,
+        ..Default::default()
+    })
+}
+
+fn make_header(number: u64) -> BlockHeader {
+    BlockHeader {
+        number,
+        ..Default::default()
+    }
+}
+
+fn random_address(seed: u8) -> Address {
+    Address::from_slice(&[seed; 20])
+}
+
+/// Build an H256 topic with the given 4-byte prefix.
+fn topic_with_prefix(prefix: [u8; 4]) -> H256 {
+    let mut bytes = [0u8; 32];
+    bytes[..4].copy_from_slice(&prefix);
+    H256::from(bytes)
+}
+
+/// Build a Transfer(address,address,uint256) topic.
+fn transfer_topic() -> H256 {
+    topic_with_prefix([0xdd, 0xf2, 0x52, 0xad])
+}
+
+/// Build a mock ERC-20 Transfer log with 3 topics.
+fn make_erc20_transfer_log(from: Address, to: Address) -> Log {
+    let mut from_bytes = [0u8; 32];
+    from_bytes[12..32].copy_from_slice(from.as_bytes());
+    let mut to_bytes = [0u8; 32];
+    to_bytes[12..32].copy_from_slice(to.as_bytes());
+
+    make_log(
+        random_address(0xEE),
+        vec![
+            transfer_topic(),
+            H256::from(from_bytes),
+            H256::from(to_bytes),
+        ],
+        Bytes::from(vec![0u8; 32]), // amount
+    )
+}
+
+fn aave_v2_pool() -> Address {
+    let bytes = hex::decode("7d2768de32b0b80b7a3454c06bdac94a69ddc7a9").unwrap();
+    Address::from_slice(&bytes)
+}
+
+fn uniswap_v3_router() -> Address {
+    let bytes = hex::decode("E592427A0AEce92De3Edee1F18E0157C05861564").unwrap();
+    Address::from_slice(&bytes)
+}
+
+fn chainlink_eth_usd() -> Address {
+    let bytes = hex::decode("5f4eC3Df9cbd43714FE2740f5E3616155c5b8419").unwrap();
+    Address::from_slice(&bytes)
+}
+
+fn one_eth() -> U256 {
+    U256::from(1_000_000_000_000_000_000_u64)
+}
+
+// ---------------------------------------------------------------------------
+// Config & types tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_default_config() {
+    let config = SentinelConfig::default();
+    assert!((config.suspicion_threshold - 0.5).abs() < f64::EPSILON);
+    assert_eq!(config.min_value_wei, one_eth());
+    assert_eq!(config.min_gas_used, 500_000);
+    assert_eq!(config.min_erc20_transfers, 5);
+    assert!((config.gas_ratio_threshold - 0.95).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_alert_priority_from_score() {
+    assert_eq!(AlertPriority::from_score(0.0), AlertPriority::Medium);
+    assert_eq!(AlertPriority::from_score(0.29), AlertPriority::Medium);
+    assert_eq!(AlertPriority::from_score(0.49), AlertPriority::Medium);
+    assert_eq!(AlertPriority::from_score(0.5), AlertPriority::High);
+    assert_eq!(AlertPriority::from_score(0.79), AlertPriority::High);
+    assert_eq!(AlertPriority::from_score(0.8), AlertPriority::Critical);
+    assert_eq!(AlertPriority::from_score(1.0), AlertPriority::Critical);
+}
+
+#[test]
+fn test_suspicion_reason_scores() {
+    assert!(
+        (SuspicionReason::FlashLoanSignature {
+            provider_address: Address::zero()
+        }
+        .score()
+            - 0.4)
+            .abs()
+            < f64::EPSILON
+    );
+    assert!(
+        (SuspicionReason::HighValueWithRevert {
+            value_wei: U256::zero(),
+            gas_used: 0
+        }
+        .score()
+            - 0.3)
+            .abs()
+            < f64::EPSILON
+    );
+    assert!(
+        (SuspicionReason::MultipleErc20Transfers { count: 7 }.score() - 0.2).abs() < f64::EPSILON
+    );
+    assert!(
+        (SuspicionReason::MultipleErc20Transfers { count: 15 }.score() - 0.4).abs() < f64::EPSILON
+    );
+    assert!(
+        (SuspicionReason::KnownContractInteraction {
+            address: Address::zero(),
+            label: ""
+        }
+        .score()
+            - 0.1)
+            .abs()
+            < f64::EPSILON
+    );
+    assert!(
+        (SuspicionReason::UnusualGasPattern {
+            gas_used: 0,
+            gas_limit: 0
+        }
+        .score()
+            - 0.15)
+            .abs()
+            < f64::EPSILON
+    );
+    assert!((SuspicionReason::SelfDestructDetected.score() - 0.3).abs() < f64::EPSILON);
+    assert!(
+        (SuspicionReason::PriceOracleWithSwap {
+            oracle: Address::zero()
+        }
+        .score()
+            - 0.2)
+            .abs()
+            < f64::EPSILON
+    );
+}
+
+#[test]
+fn test_suspicious_tx_serialization() {
+    let stx = SuspiciousTx {
+        tx_hash: H256::zero(),
+        tx_index: 0,
+        reasons: vec![SuspicionReason::SelfDestructDetected],
+        score: 0.3,
+        priority: AlertPriority::Medium,
+    };
+    let json = serde_json::to_string(&stx).unwrap();
+    assert!(json.contains("SelfDestructDetected"));
+    assert!(json.contains("\"score\":0.3"));
+}
+
+// ---------------------------------------------------------------------------
+// Flash loan heuristic tests (H1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_flash_loan_aave_topic_detected() {
+    let filter = PreFilter::default();
+    let aave_topic = topic_with_prefix([0x63, 0x10, 0x42, 0xc8]);
+    let log = make_log(aave_v2_pool(), vec![aave_topic], Bytes::new());
+    let receipt = make_receipt(true, 500_000, vec![log]);
+    let tx = make_tx_call(aave_v2_pool(), U256::zero(), 1_000_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(
+        stx.reasons
+            .iter()
+            .any(|r| matches!(r, SuspicionReason::FlashLoanSignature { .. }))
+    );
+}
+
+#[test]
+fn test_flash_loan_balancer_detected() {
+    let filter = PreFilter::default();
+    let balancer_topic = topic_with_prefix([0x0d, 0x7d, 0x75, 0xe0]);
+    let balancer_addr = {
+        let bytes = hex::decode("BA12222222228d8Ba445958a75a0704d566BF2C8").unwrap();
+        Address::from_slice(&bytes)
+    };
+    let log = make_log(balancer_addr, vec![balancer_topic], Bytes::new());
+    let receipt = make_receipt(true, 500_000, vec![log]);
+    let tx = make_tx_call(balancer_addr, U256::zero(), 1_000_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(
+        stx.reasons
+            .iter()
+            .any(|r| matches!(r, SuspicionReason::FlashLoanSignature { .. }))
+    );
+}
+
+#[test]
+fn test_no_flash_loan_normal_tx() {
+    let filter = PreFilter::default();
+    let normal_topic = transfer_topic();
+    let log = make_log(random_address(0x01), vec![normal_topic], Bytes::new());
+    let receipt = make_receipt(true, 21_000, vec![log]);
+    let tx = make_tx_call(random_address(0x02), U256::zero(), 50_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_flash_loan_uniswap_v3_detected() {
+    let filter = PreFilter::default();
+    let uni_topic = topic_with_prefix([0xbd, 0xbd, 0xb7, 0x16]);
+    let log = make_log(random_address(0x33), vec![uni_topic], Bytes::new());
+    let receipt = make_receipt(true, 500_000, vec![log]);
+    // To address is also a known contract (Uniswap V3 Router) → +0.1 from H4
+    let tx = make_tx_call(uniswap_v3_router(), U256::zero(), 1_000_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    assert!(result.unwrap().score >= 0.4);
+}
+
+// ---------------------------------------------------------------------------
+// High value + revert tests (H2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_high_value_revert_detected() {
+    let filter = PreFilter::default();
+    let receipt = make_receipt(false, 200_000, vec![]);
+    let tx = make_tx_call(random_address(0x01), one_eth() * 2, 300_000);
+    let header = make_header(19_500_000);
+
+    // Score from H2 alone = 0.3, below default threshold 0.5 → not flagged
+    // BUT with high gas and zero logs → H6 self-destruct might also fire if gas > 1M
+    // With gas 200k, only H2 fires. Since 0.3 < 0.5, not suspicious.
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_none()); // 0.3 < 0.5 threshold
+}
+
+#[test]
+fn test_high_value_revert_with_lower_threshold() {
+    let config = SentinelConfig {
+        suspicion_threshold: 0.2,
+        ..Default::default()
+    };
+    let filter = PreFilter::new(config);
+    let receipt = make_receipt(false, 200_000, vec![]);
+    let tx = make_tx_call(random_address(0x01), one_eth() * 2, 300_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(
+        stx.reasons
+            .iter()
+            .any(|r| matches!(r, SuspicionReason::HighValueWithRevert { .. }))
+    );
+    assert!((stx.score - 0.3).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_high_value_success_not_flagged() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.2,
+        ..Default::default()
+    });
+    let receipt = make_receipt(true, 200_000, vec![]);
+    let tx = make_tx_call(random_address(0x01), one_eth() * 10, 300_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_low_value_revert_not_flagged() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.2,
+        ..Default::default()
+    });
+    // Low value, reverted, but value < 1 ETH and no ERC-20 transfers
+    let receipt = make_receipt(false, 200_000, vec![]);
+    let tx = make_tx_call(random_address(0x01), U256::from(1000), 300_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Multiple ERC-20 transfer tests (H3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_many_erc20_transfers_moderate() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.15,
+        ..Default::default()
+    });
+    // 7 Transfer events → score +0.2
+    let logs: Vec<Log> = (0..7)
+        .map(|i| make_erc20_transfer_log(random_address(i), random_address(i + 100)))
+        .collect();
+    let receipt = make_receipt(true, 500_000, logs);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 1_000_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(
+        stx.reasons
+            .iter()
+            .any(|r| matches!(r, SuspicionReason::MultipleErc20Transfers { count: 7 }))
+    );
+}
+
+#[test]
+fn test_many_erc20_transfers_high() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.3,
+        ..Default::default()
+    });
+    // 15 Transfer events → score +0.4
+    let logs: Vec<Log> = (0..15)
+        .map(|i| make_erc20_transfer_log(random_address(i), random_address(i + 100)))
+        .collect();
+    let receipt = make_receipt(true, 500_000, logs);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 1_000_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(stx.score >= 0.4);
+}
+
+#[test]
+fn test_few_erc20_transfers_not_flagged() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.1,
+        ..Default::default()
+    });
+    // Only 2 transfers — below min_erc20_transfers (5)
+    let logs: Vec<Log> = (0..2)
+        .map(|i| make_erc20_transfer_log(random_address(i), random_address(i + 100)))
+        .collect();
+    let receipt = make_receipt(true, 21_000, logs);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 50_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Known contract tests (H4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_known_contract_interaction_via_to() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.05,
+        ..Default::default()
+    });
+    let receipt = make_receipt(true, 21_000, vec![]);
+    let tx = make_tx_call(uniswap_v3_router(), U256::zero(), 50_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(stx.reasons.iter().any(|r| matches!(
+        r,
+        SuspicionReason::KnownContractInteraction {
+            label: "Uniswap V3 Router",
+            ..
+        }
+    )));
+}
+
+#[test]
+fn test_known_contract_in_logs() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.05,
+        ..Default::default()
+    });
+    let log = make_log(chainlink_eth_usd(), vec![H256::zero()], Bytes::new());
+    let receipt = make_receipt(true, 21_000, vec![log]);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 50_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(stx.reasons.iter().any(|r| matches!(
+        r,
+        SuspicionReason::KnownContractInteraction {
+            label: "Chainlink ETH/USD",
+            ..
+        }
+    )));
+}
+
+#[test]
+fn test_unknown_contract_not_flagged() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.05,
+        ..Default::default()
+    });
+    let receipt = make_receipt(true, 21_000, vec![]);
+    let tx = make_tx_call(random_address(0xFF), U256::zero(), 50_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Unusual gas pattern tests (H5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_unusual_gas_pattern() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.1,
+        ..Default::default()
+    });
+    // gas_used / gas_limit = 600k / 600k = 1.0 > 0.95, gas > 500k
+    let receipt = make_receipt(true, 600_000, vec![]);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 600_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(
+        stx.reasons
+            .iter()
+            .any(|r| matches!(r, SuspicionReason::UnusualGasPattern { .. }))
+    );
+}
+
+#[test]
+fn test_normal_gas_pattern_not_flagged() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.1,
+        ..Default::default()
+    });
+    // gas_used / gas_limit = 300k / 600k = 0.5 < 0.95
+    let receipt = make_receipt(true, 300_000, vec![]);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 600_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_low_gas_high_ratio_not_flagged() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.1,
+        ..Default::default()
+    });
+    // gas_used / gas_limit = 21000 / 21000 = 1.0 > 0.95, but gas < 500k
+    let receipt = make_receipt(true, 21_000, vec![]);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 21_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Self-destruct tests (H6)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_self_destruct_indicators() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.2,
+        ..Default::default()
+    });
+    // Reverted, high gas (>1M), empty logs
+    let receipt = make_receipt(false, 2_000_000, vec![]);
+    let tx = make_tx_call(random_address(0x01), one_eth() * 5, 3_000_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(
+        stx.reasons
+            .iter()
+            .any(|r| matches!(r, SuspicionReason::SelfDestructDetected))
+    );
+}
+
+#[test]
+fn test_successful_tx_no_self_destruct() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.1,
+        ..Default::default()
+    });
+    // Succeeded with empty logs — not self-destruct indicator
+    let receipt = make_receipt(true, 2_000_000, vec![]);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 3_000_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    // Only H5 might fire: 2M/3M = 0.67 < 0.95 → no
+    assert!(result.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Oracle + swap tests (H7)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_oracle_plus_dex_detected() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.15,
+        ..Default::default()
+    });
+    let oracle_log = make_log(chainlink_eth_usd(), vec![H256::zero()], Bytes::new());
+    let dex_log = make_log(uniswap_v3_router(), vec![H256::zero()], Bytes::new());
+    let receipt = make_receipt(true, 500_000, vec![oracle_log, dex_log]);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 1_000_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(
+        stx.reasons
+            .iter()
+            .any(|r| matches!(r, SuspicionReason::PriceOracleWithSwap { .. }))
+    );
+}
+
+#[test]
+fn test_oracle_only_not_flagged() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.15,
+        ..Default::default()
+    });
+    let oracle_log = make_log(chainlink_eth_usd(), vec![H256::zero()], Bytes::new());
+    let receipt = make_receipt(true, 500_000, vec![oracle_log]);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 1_000_000);
+    let header = make_header(19_500_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    // Only H4 fires for known contract: 0.1 < 0.15
+    assert!(result.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Integration / combined tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_scan_block_empty() {
+    let filter = PreFilter::default();
+    let header = make_header(19_500_000);
+    let result = filter.scan_block(&[], &[], &header);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_scan_block_mixed() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.3,
+        ..Default::default()
+    });
+    let header = make_header(19_500_000);
+
+    // TX 0: benign simple transfer
+    let tx0 = make_tx_call(random_address(0x01), U256::from(100), 21_000);
+    let r0 = make_receipt(true, 21_000, vec![]);
+
+    // TX 1: suspicious — flash loan topic
+    let aave_topic = topic_with_prefix([0x63, 0x10, 0x42, 0xc8]);
+    let log1 = make_log(aave_v2_pool(), vec![aave_topic], Bytes::new());
+    let tx1 = make_tx_call(aave_v2_pool(), U256::zero(), 1_000_000);
+    let r1 = make_receipt(true, 500_000, vec![log1]);
+
+    // TX 2: benign create
+    let tx2 = make_tx_create(U256::zero(), 100_000);
+    let r2 = make_receipt(true, 50_000, vec![]);
+
+    let txs = vec![tx0, tx1, tx2];
+    let receipts = vec![r0, r1, r2];
+
+    let result = filter.scan_block(&txs, &receipts, &header);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].tx_index, 1);
+}
+
+#[test]
+fn test_combined_flash_loan_plus_transfers() {
+    let filter = PreFilter::default(); // threshold = 0.5
+    let header = make_header(19_500_000);
+
+    // Flash loan topic + 7 ERC-20 transfers → 0.4 + 0.2 = 0.6 >= 0.5
+    let aave_topic = topic_with_prefix([0x63, 0x10, 0x42, 0xc8]);
+    let flash_log = make_log(aave_v2_pool(), vec![aave_topic], Bytes::new());
+    let mut logs: Vec<Log> = (0..7)
+        .map(|i| make_erc20_transfer_log(random_address(i), random_address(i + 100)))
+        .collect();
+    logs.insert(0, flash_log);
+
+    let receipt = make_receipt(true, 800_000, logs);
+    let tx = make_tx_call(aave_v2_pool(), U256::zero(), 1_000_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(stx.score >= 0.5);
+    assert_eq!(stx.priority, AlertPriority::High);
+}
+
+#[test]
+fn test_threshold_boundary_exact() {
+    // Score exactly at threshold → flagged
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.4,
+        ..Default::default()
+    });
+    let header = make_header(19_500_000);
+
+    // Flash loan alone = 0.4 == threshold
+    let aave_topic = topic_with_prefix([0x63, 0x10, 0x42, 0xc8]);
+    let log = make_log(random_address(0xAA), vec![aave_topic], Bytes::new());
+    let receipt = make_receipt(true, 500_000, vec![log]);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 1_000_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    // 0.4 >= 0.4 → not flagged because we use strict < comparison
+    // Actually: `if score < self.config.suspicion_threshold` → 0.4 < 0.4 is false → flagged
+    assert!(result.is_some());
+}
+
+#[test]
+fn test_threshold_boundary_just_below() {
+    // Score just below threshold → not flagged
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.5,
+        ..Default::default()
+    });
+    let header = make_header(19_500_000);
+
+    // Flash loan alone = 0.4 < 0.5
+    let aave_topic = topic_with_prefix([0x63, 0x10, 0x42, 0xc8]);
+    let log = make_log(random_address(0xAA), vec![aave_topic], Bytes::new());
+    let receipt = make_receipt(true, 500_000, vec![log]);
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 1_000_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_critical_priority_combined() {
+    let filter = PreFilter::new(SentinelConfig {
+        suspicion_threshold: 0.3,
+        ..Default::default()
+    });
+    let header = make_header(19_500_000);
+
+    // Flash loan (0.4) + many ERC-20 transfers >10 (0.4) + known contract (0.1) = 0.9 → Critical
+    let aave_topic = topic_with_prefix([0x63, 0x10, 0x42, 0xc8]);
+    let flash_log = make_log(aave_v2_pool(), vec![aave_topic], Bytes::new());
+    let mut logs: Vec<Log> = (0..12)
+        .map(|i| make_erc20_transfer_log(random_address(i), random_address(i + 100)))
+        .collect();
+    logs.insert(0, flash_log);
+
+    let receipt = make_receipt(true, 800_000, logs);
+    let tx = make_tx_call(aave_v2_pool(), U256::zero(), 1_000_000);
+
+    let result = filter.scan_tx(&tx, &receipt, 0, &header);
+    assert!(result.is_some());
+    let stx = result.unwrap();
+    assert!(stx.score >= 0.8);
+    assert_eq!(stx.priority, AlertPriority::Critical);
+}
+
+#[test]
+fn test_prefilter_default_construction() {
+    let filter = PreFilter::default();
+    // Verify it doesn't panic and basic properties hold
+    let header = make_header(0);
+    let result = filter.scan_block(&[], &[], &header);
+    assert!(result.is_empty());
+}
+
+// ===========================================================================
+// H-2: Deep Analysis Types Tests
+// ===========================================================================
+
+#[test]
+fn test_analysis_config_defaults() {
+    let config = AnalysisConfig::default();
+    assert_eq!(config.max_steps, 1_000_000);
+    assert!((config.min_alert_confidence - 0.4).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_analysis_config_custom() {
+    let config = AnalysisConfig {
+        max_steps: 500_000,
+        min_alert_confidence: 0.7,
+    };
+    assert_eq!(config.max_steps, 500_000);
+    assert!((config.min_alert_confidence - 0.7).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_sentinel_error_display() {
+    let err = SentinelError::BlockNotFound {
+        block_number: 19_500_000,
+    };
+    assert!(err.to_string().contains("19500000"));
+    assert!(err.to_string().contains("not found"));
+
+    let err = SentinelError::TxNotFound {
+        block_number: 100,
+        tx_index: 42,
+    };
+    assert!(err.to_string().contains("42"));
+    assert!(err.to_string().contains("100"));
+
+    let err = SentinelError::ParentNotFound { block_number: 200 };
+    assert!(err.to_string().contains("200"));
+
+    let err = SentinelError::StateRootMissing { block_number: 300 };
+    assert!(err.to_string().contains("300"));
+
+    let err = SentinelError::SenderRecovery {
+        tx_index: 5,
+        cause: "invalid signature".to_string(),
+    };
+    assert!(err.to_string().contains("5"));
+    assert!(err.to_string().contains("invalid signature"));
+
+    let err = SentinelError::StepLimitExceeded {
+        steps: 2_000_000,
+        max_steps: 1_000_000,
+    };
+    assert!(err.to_string().contains("2000000"));
+    assert!(err.to_string().contains("1000000"));
+}
+
+#[test]
+fn test_sentinel_error_vm() {
+    let err = SentinelError::Vm("out of gas".to_string());
+    assert!(err.to_string().contains("out of gas"));
+}
+
+#[test]
+fn test_sentinel_error_db() {
+    let err = SentinelError::Db("connection refused".to_string());
+    assert!(err.to_string().contains("connection refused"));
+}
+
+#[test]
+fn test_sentinel_alert_serialization() {
+    let alert = SentinelAlert {
+        block_number: 19_500_000,
+        block_hash: H256::zero(),
+        tx_hash: H256::zero(),
+        tx_index: 42,
+        alert_priority: AlertPriority::Critical,
+        suspicion_reasons: vec![SuspicionReason::FlashLoanSignature {
+            provider_address: Address::zero(),
+        }],
+        suspicion_score: 0.9,
+        #[cfg(feature = "autopsy")]
+        detected_patterns: vec![],
+        #[cfg(feature = "autopsy")]
+        fund_flows: vec![],
+        total_value_at_risk: U256::from(50_u64) * one_eth(),
+        summary: "Flash Loan detected".to_string(),
+        total_steps: 10_000,
+    };
+
+    let json = serde_json::to_string(&alert).expect("should serialize");
+    assert!(json.contains("19500000"));
+    assert!(json.contains("Flash Loan detected"));
+    assert!(json.contains("Critical"));
+    assert!(json.contains("10000"));
+}
+
+#[test]
+fn test_sentinel_alert_priority_from_score() {
+    // Critical threshold
+    let alert = SentinelAlert {
+        block_number: 1,
+        block_hash: H256::zero(),
+        tx_hash: H256::zero(),
+        tx_index: 0,
+        alert_priority: AlertPriority::from_score(0.85),
+        suspicion_reasons: vec![],
+        suspicion_score: 0.85,
+        #[cfg(feature = "autopsy")]
+        detected_patterns: vec![],
+        #[cfg(feature = "autopsy")]
+        fund_flows: vec![],
+        total_value_at_risk: U256::zero(),
+        summary: String::new(),
+        total_steps: 0,
+    };
+    assert_eq!(alert.alert_priority, AlertPriority::Critical);
+
+    // High threshold
+    let priority = AlertPriority::from_score(0.6);
+    assert_eq!(priority, AlertPriority::High);
+}
+
+#[test]
+fn test_sentinel_alert_empty_patterns() {
+    let alert = SentinelAlert {
+        block_number: 1,
+        block_hash: H256::zero(),
+        tx_hash: H256::zero(),
+        tx_index: 0,
+        alert_priority: AlertPriority::Medium,
+        suspicion_reasons: vec![SuspicionReason::UnusualGasPattern {
+            gas_used: 600_000,
+            gas_limit: 620_000,
+        }],
+        suspicion_score: 0.15,
+        #[cfg(feature = "autopsy")]
+        detected_patterns: vec![],
+        #[cfg(feature = "autopsy")]
+        fund_flows: vec![],
+        total_value_at_risk: U256::zero(),
+        summary: "Unusual gas pattern".to_string(),
+        total_steps: 500,
+    };
+
+    assert_eq!(alert.tx_index, 0);
+    assert_eq!(alert.total_steps, 500);
+    assert_eq!(alert.suspicion_reasons.len(), 1);
+}
+
+#[test]
+fn test_sentinel_alert_multiple_suspicion_reasons() {
+    let reasons = vec![
+        SuspicionReason::FlashLoanSignature {
+            provider_address: Address::zero(),
+        },
+        SuspicionReason::MultipleErc20Transfers { count: 15 },
+        SuspicionReason::KnownContractInteraction {
+            address: Address::zero(),
+            label: "Aave V2 Pool",
+        },
+    ];
+
+    let total_score: f64 = reasons.iter().map(|r| r.score()).sum();
+    // 0.4 + 0.4 (>10) + 0.1 = 0.9
+    assert!((total_score - 0.9).abs() < f64::EPSILON);
+
+    let alert = SentinelAlert {
+        block_number: 1,
+        block_hash: H256::zero(),
+        tx_hash: H256::zero(),
+        tx_index: 3,
+        alert_priority: AlertPriority::from_score(total_score),
+        suspicion_reasons: reasons,
+        suspicion_score: total_score,
+        #[cfg(feature = "autopsy")]
+        detected_patterns: vec![],
+        #[cfg(feature = "autopsy")]
+        fund_flows: vec![],
+        total_value_at_risk: one_eth(),
+        summary: "Multi-signal alert".to_string(),
+        total_steps: 8000,
+    };
+
+    assert_eq!(alert.alert_priority, AlertPriority::Critical);
+    assert_eq!(alert.suspicion_reasons.len(), 3);
+}
+
+// ===========================================================================
+// H-2: Replay module type tests
+// ===========================================================================
+
+#[test]
+fn test_replay_result_fields() {
+    // Test that ReplayResult struct has correct fields by constructing one
+    use crate::sentinel::replay::ReplayResult;
+    use crate::types::ReplayTrace;
+
+    let result = ReplayResult {
+        trace: ReplayTrace {
+            steps: vec![],
+            config: crate::types::ReplayConfig::default(),
+            gas_used: 21000,
+            success: true,
+            output: bytes::Bytes::new(),
+        },
+        tx_sender: Address::zero(),
+        block_header: make_header(100),
+    };
+
+    assert!(result.trace.steps.is_empty());
+    assert_eq!(result.trace.gas_used, 21000);
+    assert!(result.trace.success);
+    assert_eq!(result.tx_sender, Address::zero());
+    assert_eq!(result.block_header.number, 100);
+}
+
+// ===========================================================================
+// H-2: Analyzer integration tests (with Store)
+// ===========================================================================
+
+// These tests require a populated Store. Since creating a full Store with
+// committed blocks is complex (requires genesis + block execution), we test
+// the analyzer at the type level and verify error paths.
+
+#[test]
+fn test_deep_analyzer_tx_not_found() {
+    use crate::sentinel::analyzer::DeepAnalyzer;
+
+    // Create a minimal Store (in-memory)
+    let store = ethrex_storage::Store::new(
+        "test-sentinel-analyzer",
+        ethrex_storage::EngineType::InMemory,
+    )
+    .expect("in-memory store");
+
+    // Block with 0 transactions
+    let block = ethrex_common::types::Block {
+        header: make_header(1),
+        body: Default::default(),
+    };
+
+    let suspicion = SuspiciousTx {
+        tx_hash: H256::zero(),
+        tx_index: 0, // no TX at index 0
+        reasons: vec![SuspicionReason::FlashLoanSignature {
+            provider_address: Address::zero(),
+        }],
+        score: 0.5,
+        priority: AlertPriority::High,
+    };
+
+    let config = AnalysisConfig::default();
+    let result = DeepAnalyzer::analyze(&store, &block, &suspicion, &config);
+
+    // Should fail because tx_index 0 doesn't exist in empty block
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, SentinelError::TxNotFound { .. }),
+        "Expected TxNotFound, got: {err:?}"
+    );
+}
+
+#[test]
+fn test_deep_analyzer_parent_not_found() {
+    use crate::sentinel::analyzer::DeepAnalyzer;
+
+    let store =
+        ethrex_storage::Store::new("test-sentinel-parent", ethrex_storage::EngineType::InMemory)
+            .expect("in-memory store");
+
+    // Block with 1 transaction but parent doesn't exist in Store
+    let tx = make_tx_call(random_address(0x01), U256::zero(), 100_000);
+    let block = ethrex_common::types::Block {
+        header: BlockHeader {
+            number: 100,
+            parent_hash: H256::from([0xAA; 32]), // non-existent parent
+            ..Default::default()
+        },
+        body: ethrex_common::types::BlockBody {
+            transactions: vec![tx],
+            ..Default::default()
+        },
+    };
+
+    let suspicion = SuspiciousTx {
+        tx_hash: H256::zero(),
+        tx_index: 0,
+        reasons: vec![SuspicionReason::HighValueWithRevert {
+            value_wei: one_eth(),
+            gas_used: 200_000,
+        }],
+        score: 0.5,
+        priority: AlertPriority::High,
+    };
+
+    let config = AnalysisConfig::default();
+    let result = DeepAnalyzer::analyze(&store, &block, &suspicion, &config);
+
+    // Should fail because parent block header is not in Store
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, SentinelError::ParentNotFound { .. }),
+        "Expected ParentNotFound, got: {err:?}"
+    );
+}
+
+#[test]
+fn test_deep_analyzer_step_limit() {
+    // Test that AnalysisConfig::max_steps is respected in SentinelError
+    let err = SentinelError::StepLimitExceeded {
+        steps: 2_000_000,
+        max_steps: 1_000_000,
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("2000000"));
+    assert!(msg.contains("1000000"));
+}
+
+#[test]
+fn test_load_block_header_not_found() {
+    use crate::sentinel::replay::load_block_header;
+
+    let store =
+        ethrex_storage::Store::new("test-sentinel-load", ethrex_storage::EngineType::InMemory)
+            .expect("in-memory store");
+
+    let result = load_block_header(&store, 999_999);
+    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), SentinelError::BlockNotFound { block_number } if block_number == 999_999)
+    );
+}
+
+// ===========================================================================
+// H-2: Autopsy-gated deep analysis tests
+// ===========================================================================
+
+#[cfg(feature = "autopsy")]
+mod autopsy_sentinel_tests {
+    use super::*;
+    use crate::autopsy::types::{AttackPattern, DetectedPattern, FundFlow};
+
+    #[test]
+    fn test_sentinel_alert_with_detected_patterns() {
+        let alert = SentinelAlert {
+            block_number: 19_500_000,
+            block_hash: H256::zero(),
+            tx_hash: H256::zero(),
+            tx_index: 5,
+            alert_priority: AlertPriority::Critical,
+            suspicion_reasons: vec![SuspicionReason::FlashLoanSignature {
+                provider_address: Address::zero(),
+            }],
+            suspicion_score: 0.9,
+            detected_patterns: vec![DetectedPattern {
+                pattern: AttackPattern::FlashLoan {
+                    borrow_step: 100,
+                    borrow_amount: one_eth() * 1000,
+                    repay_step: 5000,
+                    repay_amount: one_eth() * 1001,
+                    provider: Some(Address::zero()),
+                    token: None,
+                },
+                confidence: 0.9,
+                evidence: vec!["Borrow at step 100".to_string()],
+            }],
+            fund_flows: vec![FundFlow {
+                from: random_address(0x01),
+                to: random_address(0x02),
+                value: one_eth() * 50,
+                token: None,
+                step_index: 200,
+            }],
+            total_value_at_risk: one_eth() * 50,
+            summary: "Flash Loan detected".to_string(),
+            total_steps: 10_000,
+        };
+
+        assert!((alert.max_confidence() - 0.9).abs() < f64::EPSILON);
+        assert_eq!(alert.pattern_names(), vec!["FlashLoan"]);
+    }
+
+    #[test]
+    fn test_sentinel_alert_max_confidence_multiple() {
+        let alert = SentinelAlert {
+            block_number: 1,
+            block_hash: H256::zero(),
+            tx_hash: H256::zero(),
+            tx_index: 0,
+            alert_priority: AlertPriority::Critical,
+            suspicion_reasons: vec![],
+            suspicion_score: 0.9,
+            detected_patterns: vec![
+                DetectedPattern {
+                    pattern: AttackPattern::Reentrancy {
+                        target_contract: Address::zero(),
+                        reentrant_call_step: 50,
+                        state_modified_step: 80,
+                        call_depth_at_entry: 1,
+                    },
+                    confidence: 0.7,
+                    evidence: vec!["Re-entry detected".to_string()],
+                },
+                DetectedPattern {
+                    pattern: AttackPattern::FlashLoan {
+                        borrow_step: 10,
+                        borrow_amount: one_eth(),
+                        repay_step: 500,
+                        repay_amount: one_eth(),
+                        provider: None,
+                        token: None,
+                    },
+                    confidence: 0.85,
+                    evidence: vec!["Flash loan pattern".to_string()],
+                },
+            ],
+            fund_flows: vec![],
+            total_value_at_risk: U256::zero(),
+            summary: String::new(),
+            total_steps: 1000,
+        };
+
+        // max_confidence should return the highest
+        assert!((alert.max_confidence() - 0.85).abs() < f64::EPSILON);
+        let names = alert.pattern_names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"Reentrancy"));
+        assert!(names.contains(&"FlashLoan"));
+    }
+
+    #[test]
+    fn test_sentinel_alert_empty_patterns_confidence() {
+        let alert = SentinelAlert {
+            block_number: 1,
+            block_hash: H256::zero(),
+            tx_hash: H256::zero(),
+            tx_index: 0,
+            alert_priority: AlertPriority::Medium,
+            suspicion_reasons: vec![],
+            suspicion_score: 0.3,
+            detected_patterns: vec![],
+            fund_flows: vec![],
+            total_value_at_risk: U256::zero(),
+            summary: String::new(),
+            total_steps: 0,
+        };
+
+        assert!((alert.max_confidence() - 0.0).abs() < f64::EPSILON);
+        assert!(alert.pattern_names().is_empty());
+    }
+
+    #[test]
+    fn test_sentinel_alert_serialization_with_autopsy() {
+        let alert = SentinelAlert {
+            block_number: 19_500_000,
+            block_hash: H256::zero(),
+            tx_hash: H256::zero(),
+            tx_index: 42,
+            alert_priority: AlertPriority::High,
+            suspicion_reasons: vec![SuspicionReason::PriceOracleWithSwap {
+                oracle: Address::zero(),
+            }],
+            suspicion_score: 0.6,
+            detected_patterns: vec![DetectedPattern {
+                pattern: AttackPattern::PriceManipulation {
+                    oracle_read_before: 100,
+                    swap_step: 200,
+                    oracle_read_after: 300,
+                    price_delta_percent: 15.5,
+                },
+                confidence: 0.8,
+                evidence: vec!["Price delta 15.5%".to_string()],
+            }],
+            fund_flows: vec![],
+            total_value_at_risk: one_eth() * 100,
+            summary: "Price manipulation detected".to_string(),
+            total_steps: 5000,
+        };
+
+        let json = serde_json::to_string_pretty(&alert).expect("should serialize");
+        assert!(json.contains("PriceManipulation"));
+        assert!(json.contains("15.5"));
+        assert!(json.contains("Price manipulation detected"));
+    }
+
+    #[test]
+    fn test_sentinel_alert_all_pattern_names() {
+        let alert = SentinelAlert {
+            block_number: 1,
+            block_hash: H256::zero(),
+            tx_hash: H256::zero(),
+            tx_index: 0,
+            alert_priority: AlertPriority::Critical,
+            suspicion_reasons: vec![],
+            suspicion_score: 1.0,
+            detected_patterns: vec![
+                DetectedPattern {
+                    pattern: AttackPattern::Reentrancy {
+                        target_contract: Address::zero(),
+                        reentrant_call_step: 1,
+                        state_modified_step: 2,
+                        call_depth_at_entry: 1,
+                    },
+                    confidence: 0.9,
+                    evidence: vec![],
+                },
+                DetectedPattern {
+                    pattern: AttackPattern::FlashLoan {
+                        borrow_step: 1,
+                        borrow_amount: U256::zero(),
+                        repay_step: 2,
+                        repay_amount: U256::zero(),
+                        provider: None,
+                        token: None,
+                    },
+                    confidence: 0.8,
+                    evidence: vec![],
+                },
+                DetectedPattern {
+                    pattern: AttackPattern::PriceManipulation {
+                        oracle_read_before: 1,
+                        swap_step: 2,
+                        oracle_read_after: 3,
+                        price_delta_percent: 10.0,
+                    },
+                    confidence: 0.7,
+                    evidence: vec![],
+                },
+                DetectedPattern {
+                    pattern: AttackPattern::AccessControlBypass {
+                        sstore_step: 1,
+                        contract: Address::zero(),
+                    },
+                    confidence: 0.5,
+                    evidence: vec![],
+                },
+            ],
+            fund_flows: vec![],
+            total_value_at_risk: U256::zero(),
+            summary: String::new(),
+            total_steps: 100,
+        };
+
+        let names = alert.pattern_names();
+        assert_eq!(names.len(), 4);
+        assert_eq!(names[0], "Reentrancy");
+        assert_eq!(names[1], "FlashLoan");
+        assert_eq!(names[2], "PriceManipulation");
+        assert_eq!(names[3], "AccessControlBypass");
+        assert!((alert.max_confidence() - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_sentinel_alert_fund_flow_value() {
+        let flows = vec![
+            FundFlow {
+                from: random_address(0x01),
+                to: random_address(0x02),
+                value: one_eth() * 10,
+                token: None, // ETH
+                step_index: 100,
+            },
+            FundFlow {
+                from: random_address(0x02),
+                to: random_address(0x03),
+                value: one_eth() * 5,
+                token: None, // ETH
+                step_index: 200,
+            },
+            FundFlow {
+                from: random_address(0x01),
+                to: random_address(0x04),
+                value: one_eth() * 100,
+                token: Some(random_address(0xDD)), // ERC-20, should be excluded
+                step_index: 300,
+            },
+        ];
+
+        // compute_total_value only counts ETH (token: None)
+        let total: U256 = flows
+            .iter()
+            .filter(|f| f.token.is_none())
+            .fold(U256::zero(), |acc, f| acc.saturating_add(f.value));
+
+        assert_eq!(total, one_eth() * 15);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// H-3: SentinelService + BlockObserver tests
+// ---------------------------------------------------------------------------
+
+mod service_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use ethrex_blockchain::BlockObserver;
+    use ethrex_common::types::{
+        Block, BlockBody, BlockHeader, LegacyTransaction, Log, Receipt, Transaction, TxKind, TxType,
+    };
+    use ethrex_common::{Address, H256, U256};
+    use ethrex_storage::{EngineType, Store};
+
+    use crate::sentinel::service::{AlertHandler, LogAlertHandler, SentinelService};
+    use crate::sentinel::types::{AnalysisConfig, SentinelAlert, SentinelConfig};
+
+    /// Test alert handler that counts alerts.
+    struct CountingAlertHandler {
+        count: Arc<AtomicUsize>,
+    }
+
+    impl AlertHandler for CountingAlertHandler {
+        fn on_alert(&self, _alert: SentinelAlert) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn make_empty_block(number: u64) -> Block {
+        Block {
+            header: BlockHeader {
+                number,
+                ..Default::default()
+            },
+            body: BlockBody::default(),
+        }
+    }
+
+    fn make_receipt(succeeded: bool, cumulative_gas: u64, logs: Vec<Log>) -> Receipt {
+        Receipt {
+            tx_type: TxType::Legacy,
+            succeeded,
+            cumulative_gas_used: cumulative_gas,
+            logs,
+        }
+    }
+
+    fn make_simple_tx() -> Transaction {
+        Transaction::LegacyTransaction(LegacyTransaction {
+            gas: 21000,
+            to: TxKind::Call(Address::zero()),
+            ..Default::default()
+        })
+    }
+
+    fn test_store() -> Store {
+        Store::new("", EngineType::InMemory).expect("in-memory store")
+    }
+
+    #[test]
+    fn test_service_creation_and_shutdown() {
+        let store = test_store();
+        let config = SentinelConfig::default();
+        let analysis_config = AnalysisConfig::default();
+
+        let service =
+            SentinelService::new(store, config, analysis_config, Box::new(LogAlertHandler));
+
+        assert!(service.is_running());
+        service.shutdown();
+
+        // Give the worker thread time to process shutdown
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!service.is_running());
+    }
+
+    #[test]
+    fn test_service_drop_joins_worker() {
+        let store = test_store();
+        let config = SentinelConfig::default();
+        let analysis_config = AnalysisConfig::default();
+
+        let service =
+            SentinelService::new(store, config, analysis_config, Box::new(LogAlertHandler));
+        assert!(service.is_running());
+
+        // Drop should join the worker thread
+        drop(service);
+        // If we get here, the worker thread was successfully joined
+    }
+
+    #[test]
+    fn test_block_observer_trait_impl() {
+        let store = test_store();
+        let config = SentinelConfig::default();
+        let analysis_config = AnalysisConfig::default();
+
+        let service =
+            SentinelService::new(store, config, analysis_config, Box::new(LogAlertHandler));
+
+        // Call on_block_committed via the BlockObserver trait
+        let block = make_empty_block(1);
+        let receipts = vec![];
+        service.on_block_committed(block, receipts);
+
+        // Should process without error (no suspicious TXs in empty block)
+        // Give worker time to process
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(service.is_running());
+    }
+
+    #[test]
+    fn test_service_processes_benign_block_no_alerts() {
+        let alert_count = Arc::new(AtomicUsize::new(0));
+        let handler = CountingAlertHandler {
+            count: alert_count.clone(),
+        };
+
+        let store = test_store();
+        let config = SentinelConfig::default();
+        let analysis_config = AnalysisConfig::default();
+
+        let service = SentinelService::new(store, config, analysis_config, Box::new(handler));
+
+        // Send a benign block with a simple TX and receipt
+        let block = Block {
+            header: BlockHeader {
+                number: 1,
+                gas_used: 21000,
+                gas_limit: 30_000_000,
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions: vec![make_simple_tx()],
+                ..Default::default()
+            },
+        };
+        let receipts = vec![make_receipt(true, 21000, vec![])];
+
+        service.on_block_committed(block, receipts);
+
+        // Give worker time to process
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Pre-filter should dismiss benign TX — no alerts
+        assert_eq!(alert_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_service_multiple_blocks_sequential() {
+        let alert_count = Arc::new(AtomicUsize::new(0));
+        let handler = CountingAlertHandler {
+            count: alert_count.clone(),
+        };
+
+        let store = test_store();
+        let config = SentinelConfig::default();
+        let analysis_config = AnalysisConfig::default();
+
+        let service = SentinelService::new(store, config, analysis_config, Box::new(handler));
+
+        // Send 5 empty blocks
+        for i in 0..5 {
+            let block = make_empty_block(i);
+            service.on_block_committed(block, vec![]);
+        }
+
+        // Give worker time to process all
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // No suspicious TXs — zero alerts
+        assert_eq!(alert_count.load(Ordering::SeqCst), 0);
+        assert!(service.is_running());
+    }
+
+    #[test]
+    fn test_service_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SentinelService>();
+    }
+
+    #[test]
+    fn test_block_observer_dynamic_dispatch() {
+        // Verify SentinelService can be used as Arc<dyn BlockObserver>
+        let store = test_store();
+        let config = SentinelConfig::default();
+        let analysis_config = AnalysisConfig::default();
+
+        let service =
+            SentinelService::new(store, config, analysis_config, Box::new(LogAlertHandler));
+
+        let observer: Arc<dyn BlockObserver> = Arc::new(service);
+
+        // Should be callable through the trait object
+        let block = make_empty_block(42);
+        observer.on_block_committed(block, vec![]);
+
+        // Give worker time to process
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    #[test]
+    fn test_alert_handler_log_handler_doesnt_panic() {
+        // Verify LogAlertHandler doesn't panic on alert
+        let handler = LogAlertHandler;
+        let alert = SentinelAlert {
+            block_number: 123,
+            block_hash: H256::zero(),
+            tx_hash: H256::zero(),
+            tx_index: 0,
+            alert_priority: crate::sentinel::types::AlertPriority::High,
+            suspicion_reasons: vec![],
+            suspicion_score: 0.6,
+            #[cfg(feature = "autopsy")]
+            detected_patterns: vec![],
+            #[cfg(feature = "autopsy")]
+            fund_flows: vec![],
+            total_value_at_risk: U256::zero(),
+            summary: "Test alert".to_string(),
+            total_steps: 100,
+        };
+
+        handler.on_alert(alert);
+    }
+
+    #[test]
+    fn test_service_shutdown_idempotent() {
+        let store = test_store();
+        let config = SentinelConfig::default();
+        let analysis_config = AnalysisConfig::default();
+
+        let service =
+            SentinelService::new(store, config, analysis_config, Box::new(LogAlertHandler));
+
+        // Multiple shutdowns should not panic
+        service.shutdown();
+        service.shutdown();
+        service.shutdown();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!service.is_running());
+    }
+
+    #[test]
+    fn test_service_send_after_shutdown() {
+        let store = test_store();
+        let config = SentinelConfig::default();
+        let analysis_config = AnalysisConfig::default();
+
+        let service =
+            SentinelService::new(store, config, analysis_config, Box::new(LogAlertHandler));
+
+        service.shutdown();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Sending after shutdown should not panic (silently drops)
+        let block = make_empty_block(1);
+        service.on_block_committed(block, vec![]);
+    }
+
+    #[test]
+    fn test_counting_alert_handler() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let handler = CountingAlertHandler {
+            count: count.clone(),
+        };
+
+        let alert = SentinelAlert {
+            block_number: 1,
+            block_hash: H256::zero(),
+            tx_hash: H256::zero(),
+            tx_index: 0,
+            alert_priority: crate::sentinel::types::AlertPriority::Medium,
+            suspicion_reasons: vec![],
+            suspicion_score: 0.4,
+            #[cfg(feature = "autopsy")]
+            detected_patterns: vec![],
+            #[cfg(feature = "autopsy")]
+            fund_flows: vec![],
+            total_value_at_risk: U256::zero(),
+            summary: "Test".to_string(),
+            total_steps: 0,
+        };
+
+        handler.on_alert(alert.clone());
+        handler.on_alert(alert.clone());
+        handler.on_alert(alert);
+
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+}

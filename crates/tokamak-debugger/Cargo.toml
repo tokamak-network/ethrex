@@ -21,6 +21,14 @@ autopsy = [
     "dep:serde_json",
     "dep:rustc-hash",
 ]
+sentinel = [
+    "dep:rustc-hash",
+    "dep:hex",
+    "dep:ethrex-storage",
+    "dep:ethrex-blockchain",
+    "dep:ethrex-vm",
+    "dep:serde_json",
+]
 
 [dependencies]
 ethrex-levm = { workspace = true, features = ["tokamak-debugger"] }
