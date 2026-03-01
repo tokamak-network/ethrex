@@ -339,6 +339,12 @@ impl ProofData {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::panic,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
 
