@@ -840,6 +840,7 @@ fn test_sentinel_alert_serialization() {
         total_value_at_risk: U256::from(50_u64) * one_eth(),
         summary: "Flash Loan detected".to_string(),
         total_steps: 10_000,
+        feature_vector: None,
     };
 
     let json = serde_json::to_string(&alert).expect("should serialize");
@@ -867,6 +868,7 @@ fn test_sentinel_alert_priority_from_score() {
         total_value_at_risk: U256::zero(),
         summary: String::new(),
         total_steps: 0,
+        feature_vector: None,
     };
     assert_eq!(alert.alert_priority, AlertPriority::Critical);
 
@@ -895,6 +897,7 @@ fn test_sentinel_alert_empty_patterns() {
         total_value_at_risk: U256::zero(),
         summary: "Unusual gas pattern".to_string(),
         total_steps: 500,
+        feature_vector: None,
     };
 
     assert_eq!(alert.tx_index, 0);
@@ -934,6 +937,7 @@ fn test_sentinel_alert_multiple_suspicion_reasons() {
         total_value_at_risk: one_eth(),
         summary: "Multi-signal alert".to_string(),
         total_steps: 8000,
+        feature_vector: None,
     };
 
     assert_eq!(alert.alert_priority, AlertPriority::Critical);
@@ -1005,7 +1009,7 @@ fn test_deep_analyzer_tx_not_found() {
     };
 
     let config = AnalysisConfig::default();
-    let result = DeepAnalyzer::analyze(&store, &block, &suspicion, &config);
+    let result = DeepAnalyzer::analyze(&store, &block, &suspicion, &config, None);
 
     // Should fail because tx_index 0 doesn't exist in empty block
     assert!(result.is_err());
@@ -1050,7 +1054,7 @@ fn test_deep_analyzer_parent_not_found() {
     };
 
     let config = AnalysisConfig::default();
-    let result = DeepAnalyzer::analyze(&store, &block, &suspicion, &config);
+    let result = DeepAnalyzer::analyze(&store, &block, &suspicion, &config, None);
 
     // Should fail because parent block header is not in Store
     assert!(result.is_err());
@@ -1131,6 +1135,7 @@ mod autopsy_sentinel_tests {
             total_value_at_risk: one_eth() * 50,
             summary: "Flash Loan detected".to_string(),
             total_steps: 10_000,
+            feature_vector: None,
         };
 
         assert!((alert.max_confidence() - 0.9).abs() < f64::EPSILON);
@@ -1175,6 +1180,7 @@ mod autopsy_sentinel_tests {
             total_value_at_risk: U256::zero(),
             summary: String::new(),
             total_steps: 1000,
+            feature_vector: None,
         };
 
         // max_confidence should return the highest
@@ -1200,6 +1206,7 @@ mod autopsy_sentinel_tests {
             total_value_at_risk: U256::zero(),
             summary: String::new(),
             total_steps: 0,
+            feature_vector: None,
         };
 
         assert!((alert.max_confidence() - 0.0).abs() < f64::EPSILON);
@@ -1232,6 +1239,7 @@ mod autopsy_sentinel_tests {
             total_value_at_risk: one_eth() * 100,
             summary: "Price manipulation detected".to_string(),
             total_steps: 5000,
+            feature_vector: None,
         };
 
         let json = serde_json::to_string_pretty(&alert).expect("should serialize");
@@ -1296,6 +1304,7 @@ mod autopsy_sentinel_tests {
             total_value_at_risk: U256::zero(),
             summary: String::new(),
             total_steps: 100,
+            feature_vector: None,
         };
 
         let names = alert.pattern_names();
@@ -1564,6 +1573,7 @@ mod service_tests {
             total_value_at_risk: U256::zero(),
             summary: "Test alert".to_string(),
             total_steps: 100,
+            feature_vector: None,
         };
 
         handler.on_alert(alert);
@@ -1626,6 +1636,7 @@ mod service_tests {
             total_value_at_risk: U256::zero(),
             summary: "Test".to_string(),
             total_steps: 0,
+            feature_vector: None,
         };
 
         handler.on_alert(alert.clone());
@@ -1686,6 +1697,7 @@ mod h5_integration_tests {
             total_value_at_risk: U256::zero(),
             summary: format!("H5 test alert block={}", block_number),
             total_steps: 100,
+            feature_vector: None,
         }
     }
 
@@ -1916,8 +1928,8 @@ mod h5_integration_tests {
         // Verify Prometheus format structure (HELP + TYPE per metric)
         let help_count = text.matches("# HELP").count();
         let type_count = text.matches("# TYPE").count();
-        assert_eq!(help_count, 8, "should have 8 HELP lines");
-        assert_eq!(type_count, 8, "should have 8 TYPE lines");
+        assert_eq!(help_count, 14, "should have 14 HELP lines");
+        assert_eq!(type_count, 14, "should have 14 TYPE lines");
 
         // All types should be counters
         assert_eq!(

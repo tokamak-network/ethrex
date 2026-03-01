@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-01
 **Branch**: `feat/tokamak-autopsy`
-**Overall Completion**: ~99% (Phase H: 5/5 complete — H-1 ✅ H-2 ✅ H-3 ✅ H-4 ✅ H-5 ✅)
+**Overall Completion**: ~99% (Phase H: 5/5 + H-6 expansion complete — H-1 ✅ H-2 ✅ H-3 ✅ H-4 ✅ H-5 ✅ H-6a ✅ H-6b ✅ H-6c ✅ H-6d ✅)
 
 ---
 
@@ -107,10 +107,14 @@
 - H-3: Block Processing Integration — BlockObserver trait in ethrex-blockchain, SentinelService (background worker thread with mpsc channel, two-stage PreFilter→DeepAnalyzer pipeline), non-blocking hooks in add_block/add_block_pipeline after store_block, AlertHandler trait + LogAlertHandler, 11 tests (2026-02-28)
 - H-4: Alert & Notification System — AlertDispatcher (composite fan-out), JsonlFileAlertHandler (append-only JSONL), StdoutAlertHandler (containerized), WebhookAlertHandler (HTTP POST + exponential backoff retry, autopsy-gated), AlertDeduplicator (block-window pattern+contract suppression), AlertRateLimiter (sliding-window max N/min), composable AlertHandler pipeline, 14 tests (2026-02-28)
 - H-5: Sentinel Dashboard — WsAlertBroadcaster (real-time WebSocket alert feed via tokio-tungstenite, subscriber management with disconnected cleanup), AlertHistory (JSONL-based historical query engine with pagination and filtering by block range/priority/pattern type), SentinelMetrics (Prometheus-compatible exporter with 8 atomic counters, MetricsSnapshot, to_prometheus_text() exposition format, integrated into SentinelService worker loop with Instant-based timing), Dashboard UI (Astro + React sentinel page with live feed, history table, metrics panel) (2026-02-28)
+- H-6a: CLI & Configuration — TOML-compatible SentinelFullConfig (6 sub-configs), load_config/merge_cli_overrides/validate, 6 `--sentinel.*` CLI flags, init_sentinel() in initializers.rs, SentinelComponents struct, 11 tests (2026-03-01)
+- H-6b: Mempool Monitoring — MempoolPreFilter with 5 calldata heuristics (flash loan selector, high value DeFi, high gas + known contract, suspicious contract creation, multicall), MempoolObserver trait + hooks in blockchain, MempoolAlert/MempoolSuspicionReason types, 20 tests (2026-03-01)
+- H-6c: Adaptive Analysis Pipeline — AnalysisStep trait with StepResult (Continue/Dismiss/AddSteps), FeatureVector (16 features from opcode trace), 6 pipeline steps (TraceAnalyzer/PatternMatcher/FundFlowAnalyzer/AnomalyDetector/ConfidenceScorer/ReportGenerator), StatisticalAnomalyDetector (z-score + sigmoid), PipelineMetrics, ~15 tests (2026-03-01)
+- H-6d: Auto Pause — PauseController (AtomicBool + Condvar + auto-resume timeout), AutoPauseHandler (circuit breaker on critical alerts), 2 pause checkpoints in block processing, sentinel_resume/sentinel_status JSON-RPC methods, 8 tests (2026-03-01)
 
-**Architecture:** All E-4 analysis components reused directly. Pre-filter runs on receipt data (no opcode recording needed for fast path). Only suspicious TXs trigger expensive deep analysis on a background thread.
+**Architecture:** All E-4 analysis components reused directly. Pre-filter runs on receipt data (no opcode recording needed for fast path). Only suspicious TXs trigger expensive deep analysis on a background thread. H-6 adds CLI wiring, mempool pre-execution detection, dynamic pipeline with ML anomaly scoring, and auto-pause circuit breaker.
 
-**Key constraint:** <1% overhead on block processing when sentinel is enabled but TX doesn't match pre-filter. Zero overhead when feature disabled (compile-time gate).
+**Key constraint:** <1% overhead on block processing when sentinel is enabled but TX doesn't match pre-filter. Zero overhead when feature disabled (compile-time gate). PauseController fast path = single atomic load.
 
 ---
 
@@ -138,9 +142,9 @@ Measured after Volkov R21-R23 fixes (corrected measurement order).
 | LEVM JIT infra | `crates/vm/levm/src/jit/` (9 files) | ~2,700 |
 | tokamak-jit crate | `crates/vm/tokamak-jit/src/` (14 files) | ~5,650 |
 | tokamak-bench crate | `crates/tokamak-bench/src/` (11 files) | ~1,700 |
-| tokamak-debugger | `crates/tokamak-debugger/src/` (45 files) | ~13,900 |
+| tokamak-debugger | `crates/tokamak-debugger/src/` (50 files) | ~16,000 |
 | LEVM debugger hook | `crates/vm/levm/src/debugger_hook.rs` | ~27 |
-| **Total** | | **~23,980** |
+| **Total** | | **~26,080** |
 
 Base ethrex codebase: ~103K lines Rust.
 
@@ -236,6 +240,13 @@ R23(5.0) -> R24(8.0)
 - Alert & Notification System (H-4) — AlertDispatcher, JsonlFileAlertHandler, StdoutAlertHandler, WebhookAlertHandler (autopsy-gated), AlertDeduplicator, AlertRateLimiter, 14 tests (2026-02-28)
 - Sentinel Dashboard (H-5) — WsAlertBroadcaster (real-time WebSocket feed, subscriber cleanup), AlertHistory (JSONL query engine with pagination/filtering), SentinelMetrics (8 atomic counters, Prometheus text exposition, integrated into worker loop with timing), Dashboard UI (Astro + React sentinel page with live feed, history table, metrics panel) (2026-02-28)
 - Live Reentrancy E2E Pipeline — full 6-phase test with real bytecode execution: LEVM deploy+execute → trace verification (depth>=3, SSTORE>=2) → AttackClassifier (reentrancy 70%+) → FundFlowTracer (ETH drain victim→attacker) → SentinelService (real receipt, prefilter_alert_mode) → alert+metrics validation. Executable demo at `examples/reentrancy_demo.rs`. 263 passing + 10 ignored tests (2026-03-01)
+
+### Recently Completed (H-6 Expansion)
+- CLI & Configuration (H-6a) — TOML config, 6 CLI flags, init_sentinel(), SentinelComponents, 11 tests (2026-03-01)
+- Mempool Monitoring (H-6b) — MempoolPreFilter (5 heuristics), MempoolObserver trait + blockchain hooks, 20 tests (2026-03-01)
+- Adaptive Pipeline (H-6c) — AnalysisStep trait, FeatureVector, 6-step pipeline, z-score anomaly detector, ~15 tests (2026-03-01)
+- Auto Pause (H-6d) — PauseController (AtomicBool + Condvar), AutoPauseHandler, RPC resume/status, 8 tests (2026-03-01)
+- **Total**: 310 passing + 10 ignored debugger tests + 5 PauseController tests = 325 tests (2026-03-01)
 
 ### Not Started
 - EF grant application

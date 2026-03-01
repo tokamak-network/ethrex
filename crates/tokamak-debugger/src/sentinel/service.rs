@@ -12,14 +12,20 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use ethrex_blockchain::BlockObserver;
-use ethrex_common::types::{Block, Receipt};
+use ethrex_blockchain::{BlockObserver, MempoolObserver};
+use ethrex_common::types::{Block, Receipt, Transaction};
+use ethrex_common::{Address, H256};
 use ethrex_storage::Store;
+
+use super::config::MempoolMonitorConfig;
+use super::mempool_filter::MempoolPreFilter;
 
 use super::analyzer::DeepAnalyzer;
 use super::metrics::SentinelMetrics;
 use super::pre_filter::PreFilter;
 use super::types::{AlertPriority, AnalysisConfig, SentinelAlert, SentinelConfig, SuspiciousTx};
+
+use super::types::MempoolAlert;
 
 /// Message sent from the block processing pipeline to the sentinel worker.
 enum SentinelMessage {
@@ -28,6 +34,8 @@ enum SentinelMessage {
         block: Box<Block>,
         receipts: Vec<Receipt>,
     },
+    /// A pending mempool TX was flagged as suspicious.
+    MempoolFlagged { alert: MempoolAlert },
     /// Graceful shutdown request.
     Shutdown,
 }
@@ -64,6 +72,8 @@ pub struct SentinelService {
     sender: Mutex<mpsc::Sender<SentinelMessage>>,
     worker_handle: Mutex<Option<JoinHandle<()>>>,
     metrics: Arc<SentinelMetrics>,
+    /// Stateless mempool pre-filter (Send + Sync, no Mutex needed).
+    mempool_filter: Option<MempoolPreFilter>,
 }
 
 impl SentinelService {
@@ -76,6 +86,17 @@ impl SentinelService {
         config: SentinelConfig,
         analysis_config: AnalysisConfig,
         alert_handler: Box<dyn AlertHandler>,
+    ) -> Self {
+        Self::with_mempool(store, config, analysis_config, alert_handler, None)
+    }
+
+    /// Create a sentinel service with optional mempool monitoring.
+    pub fn with_mempool(
+        store: Store,
+        config: SentinelConfig,
+        analysis_config: AnalysisConfig,
+        alert_handler: Box<dyn AlertHandler>,
+        mempool_config: Option<MempoolMonitorConfig>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel();
         let metrics = Arc::new(SentinelMetrics::new());
@@ -95,10 +116,14 @@ impl SentinelService {
             })
             .expect("Failed to spawn sentinel worker thread");
 
+        let mempool_filter =
+            mempool_config.map(|cfg| MempoolPreFilter::new(&cfg));
+
         Self {
             sender: Mutex::new(sender),
             worker_handle: Mutex::new(Some(worker_handle)),
             metrics,
+            mempool_filter,
         }
     }
 
@@ -131,6 +156,7 @@ impl SentinelService {
         metrics: Arc<SentinelMetrics>,
     ) {
         let pre_filter = PreFilter::new(config);
+        let pipeline = super::pipeline::AnalysisPipeline::default_pipeline();
 
         while let Ok(msg) = receiver.recv() {
             match msg {
@@ -143,13 +169,41 @@ impl SentinelService {
                         &analysis_config,
                         &*alert_handler,
                         &metrics,
+                        &pipeline,
                     );
+                }
+                SentinelMessage::MempoolFlagged { alert } => {
+                    metrics.increment_mempool_alerts_emitted();
+                    // Convert MempoolAlert to a lightweight SentinelAlert for the handler pipeline
+                    let sentinel_alert = SentinelAlert {
+                        block_number: 0, // pending — not yet in a block
+                        block_hash: ethrex_common::H256::zero(),
+                        tx_hash: alert.tx_hash,
+                        tx_index: 0,
+                        alert_priority: AlertPriority::from_score(alert.score),
+                        suspicion_reasons: vec![],
+                        suspicion_score: alert.score,
+                        #[cfg(feature = "autopsy")]
+                        detected_patterns: vec![],
+                        #[cfg(feature = "autopsy")]
+                        fund_flows: vec![],
+                        total_value_at_risk: ethrex_common::U256::zero(),
+                        summary: format!(
+                            "Mempool alert: {} reasons (score={:.2})",
+                            alert.reasons.len(),
+                            alert.score
+                        ),
+                        total_steps: 0,
+                        feature_vector: None,
+                    };
+                    alert_handler.on_alert(sentinel_alert);
                 }
                 SentinelMessage::Shutdown => break,
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_block(
         store: &Store,
         block: &Block,
@@ -158,6 +212,7 @@ impl SentinelService {
         analysis_config: &AnalysisConfig,
         alert_handler: &dyn AlertHandler,
         metrics: &SentinelMetrics,
+        pipeline: &super::pipeline::AnalysisPipeline,
     ) {
         metrics.increment_blocks_scanned();
         metrics.increment_txs_scanned(block.body.transactions.len() as u64);
@@ -178,7 +233,7 @@ impl SentinelService {
         // Stage 2: Deep analysis for each suspicious TX
         for suspicion in &suspicious_txs {
             let analysis_start = Instant::now();
-            match DeepAnalyzer::analyze(store, block, suspicion, analysis_config) {
+            match DeepAnalyzer::analyze(store, block, suspicion, analysis_config, Some(pipeline)) {
                 Ok(Some(alert)) => {
                     let analysis_ms = analysis_start.elapsed().as_millis() as u64;
                     metrics.add_deep_analysis_ms(analysis_ms);
@@ -245,6 +300,24 @@ impl SentinelService {
                 suspicion.score
             ),
             total_steps: 0,
+            feature_vector: None,
+        }
+    }
+}
+
+impl MempoolObserver for SentinelService {
+    fn on_transaction_added(&self, tx: &Transaction, sender: Address, tx_hash: H256) {
+        self.metrics.increment_mempool_txs_scanned();
+
+        let Some(ref filter) = self.mempool_filter else {
+            return;
+        };
+
+        if let Some(alert) = filter.scan_transaction(tx, sender, tx_hash) {
+            self.metrics.increment_mempool_txs_flagged();
+            if let Ok(sender_lock) = self.sender.lock() {
+                let _ = sender_lock.send(SentinelMessage::MempoolFlagged { alert });
+            }
         }
     }
 }

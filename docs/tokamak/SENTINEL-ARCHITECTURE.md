@@ -213,7 +213,44 @@ The worker thread holds a `Store` reference. If the process exits while the work
 
 ## Known Limitations
 
-1. **Silent error in worker loop**: Deep analysis errors are suppressed in the worker. Planned fix in H-4 (tracing integration).
-2. **Unbounded channel**: `mpsc::channel()` is unbounded. Under sustained block bursts, memory could grow. H-4 will add backpressure.
+1. **Silent error in worker loop**: Deep analysis errors are suppressed in the worker. Addressed in H-4 (structured logging via AlertDispatcher).
+2. **Unbounded channel**: `mpsc::channel()` is unbounded. Under sustained block bursts, memory could grow. H-4 adds AlertRateLimiter for downstream backpressure.
 3. **Single worker thread**: One worker processes blocks sequentially. If deep analysis is slow, blocks queue up. Acceptable for current throughput requirements.
-4. **No persistence**: Alerts are ephemeral (passed to AlertHandler). H-4 will add structured logging and H-5 will add dashboard storage.
+4. **Alert persistence**: H-4 added JSONL file logging, H-5 added AlertHistory query engine and dashboard.
+5. **PreFilter blind spot for stealthy attacks**: The 7 receipt-based heuristics are optimized for "loud" attacks (flash loans, high-value reverts, mass ERC-20 transfers). A minimal reentrancy attack (1 wei value, ~82k gas, successful execution, no ERC-20 transfers) triggers zero heuristics. The E2E pipeline test validates this gap using lowered thresholds (`suspicion_threshold: 0.1, min_gas_used: 50_000`) and `prefilter_alert_mode: true`. Production mitigation options: calldata pattern analysis, ML-based scoring, or mempool-level inspection (H-6 optional scope).
+
+---
+
+## 8. E2E Validation
+
+The live reentrancy E2E test (`examples/reentrancy_demo.rs`) validates the full 6-phase pipeline with real bytecode execution:
+
+```
+Phase 1: Deploy & Execute  → LEVM executes attacker/victim contracts
+Phase 2: Verify Attack      → call depth >= 3, SSTORE count >= 2
+Phase 3: Classify            → AttackClassifier detects Reentrancy (conf >= 0.7)
+Phase 4: Fund Flow           → FundFlowTracer traces ETH transfers
+Phase 5: Sentinel Pipeline   → real receipt → PreFilter → SentinelService → alert
+Phase 6: Alert Validation    → alert content + metrics verification
+```
+
+Key insight: stealthy attacks bypass PreFilter entirely. The `prefilter_alert_mode` flag ensures alerts are still emitted when deep analysis is unavailable (no Store for replay).
+
+---
+
+## 9. H-6 Expansion (Planned)
+
+H-6 extends the sentinel with 4 sub-tasks documented in `docs/tokamak/H6-EXPANDED-PLAN.md`:
+
+| Sub-task | Purpose |
+|----------|---------|
+| H-6a | CLI integration + TOML configuration |
+| H-6b | Mempool monitoring (pre-execution calldata heuristics) |
+| H-6c | Adaptive analysis pipeline (dynamic multi-step, statistical anomaly scoring) |
+| H-6d | Auto-pause (block processing suspension on Critical alerts + resume RPC) |
+
+Key design decisions carried from H-1~H-5:
+- **DIP pattern reuse**: `MempoolObserver` trait in blockchain (same pattern as `BlockObserver`)
+- **PauseController**: `AtomicBool` + `Condvar` with `wait_timeout()` auto-resume — no permanent halt risk
+- **Feature containment**: All H-6 code gated under `sentinel` feature (no new sub-features)
+- **Adaptive pipeline**: Replaces fixed DeepAnalyzer with `AnalysisStep` trait chain + dynamic step injection, while reusing existing `AttackClassifier`/`FundFlowTracer` as step implementations

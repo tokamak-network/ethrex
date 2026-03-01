@@ -207,6 +207,8 @@ pub struct RpcApiContext {
     pub gas_ceil: u64,
     /// Channel for sending blocks to the block executor worker thread.
     pub block_worker_channel: UnboundedSender<BlockWorkerMessage>,
+    /// Optional pause controller for sentinel auto-pause functionality.
+    pub pause_controller: Option<Arc<ethrex_blockchain::PauseController>>,
 }
 
 /// Client version information used for identification in the Engine API and P2P.
@@ -454,7 +456,7 @@ pub fn start_block_executor(blockchain: Arc<Blockchain>) -> UnboundedSender<Bloc
 /// # Shutdown
 ///
 /// All servers shut down gracefully on SIGINT (Ctrl+C).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn start_api(
     http_addr: SocketAddr,
     ws_addr: Option<SocketAddr>,
@@ -470,6 +472,7 @@ pub async fn start_api(
     log_filter_handler: Option<reload::Handle<EnvFilter, Registry>>,
     gas_ceil: u64,
     extra_data: String,
+    pause_controller: Option<Arc<ethrex_blockchain::PauseController>>,
 ) -> Result<(), RpcErr> {
     // TODO: Refactor how filters are handled,
     // filters are used by the filters endpoints (eth_newFilter, eth_getFilterChanges, ...etc)
@@ -492,6 +495,7 @@ pub async fn start_api(
         log_filter_handler,
         gas_ceil,
         block_worker_channel,
+        pause_controller,
     };
 
     // Periodically clean up the active filters for the filters endpoints.
@@ -684,6 +688,7 @@ pub async fn map_http_requests(req: &RpcRequest, context: RpcApiContext) -> Resu
         Ok(RpcNamespace::Web3) => map_web3_requests(req, context),
         Ok(RpcNamespace::Net) => map_net_requests(req, context).await,
         Ok(RpcNamespace::Mempool) => map_mempool_requests(req, context),
+        Ok(RpcNamespace::Sentinel) => map_sentinel_requests_readonly(req, context),
         Ok(RpcNamespace::Engine) => Err(RpcErr::Internal(
             "Engine namespace not allowed in map_http_requests".to_owned(),
         )),
@@ -699,6 +704,7 @@ pub async fn map_authrpc_requests(
     match req.namespace() {
         Ok(RpcNamespace::Engine) => map_engine_requests(req, context).await,
         Ok(RpcNamespace::Eth) => map_eth_requests(req, context).await,
+        Ok(RpcNamespace::Sentinel) => map_sentinel_requests(req, context),
         _ => Err(RpcErr::MethodNotFound(req.method.clone())),
     }
 }
@@ -854,6 +860,56 @@ pub async fn map_admin_requests(
         "admin_setLogLevel" => admin::set_log_level(req, &context.log_filter_handler),
         "admin_addPeer" => admin::add_peer(&mut context, req).await,
         unknown_admin_method => Err(RpcErr::MethodNotFound(unknown_admin_method.to_owned())),
+    }
+}
+
+/// Routes read-only `sentinel_*` requests on the public HTTP endpoint.
+/// `sentinel_resume` requires authentication and is only available via authrpc.
+pub fn map_sentinel_requests_readonly(
+    req: &RpcRequest,
+    context: RpcApiContext,
+) -> Result<Value, RpcErr> {
+    let Some(ref pc) = context.pause_controller else {
+        return Err(RpcErr::Internal(
+            "Sentinel pause controller is not configured".to_owned(),
+        ));
+    };
+
+    match req.method.as_str() {
+        "sentinel_status" => Ok(serde_json::json!({
+            "paused": pc.is_paused(),
+            "paused_for_secs": pc.paused_for_secs(),
+            "auto_resume_in": pc.auto_resume_remaining(),
+        })),
+        "sentinel_resume" => Err(RpcErr::Internal(
+            "sentinel_resume requires authenticated RPC (authrpc)".to_owned(),
+        )),
+        unknown => Err(RpcErr::MethodNotFound(unknown.to_owned())),
+    }
+}
+
+/// Routes all `sentinel_*` namespace requests (authenticated via authrpc).
+pub fn map_sentinel_requests(req: &RpcRequest, context: RpcApiContext) -> Result<Value, RpcErr> {
+    let Some(ref pc) = context.pause_controller else {
+        return Err(RpcErr::Internal(
+            "Sentinel pause controller is not configured".to_owned(),
+        ));
+    };
+
+    match req.method.as_str() {
+        "sentinel_resume" => {
+            let was_paused = pc.is_paused();
+            pc.resume();
+            Ok(serde_json::json!(was_paused))
+        }
+        "sentinel_status" => {
+            Ok(serde_json::json!({
+                "paused": pc.is_paused(),
+                "paused_for_secs": pc.paused_for_secs(),
+                "auto_resume_in": pc.auto_resume_remaining(),
+            }))
+        }
+        unknown => Err(RpcErr::MethodNotFound(unknown.to_owned())),
     }
 }
 

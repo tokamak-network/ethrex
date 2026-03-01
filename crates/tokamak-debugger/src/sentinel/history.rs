@@ -262,6 +262,7 @@ mod tests {
             total_value_at_risk: U256::zero(),
             summary: format!("Test alert at block {}", block_number),
             total_steps: 100,
+            feature_vector: None,
         }
     }
 

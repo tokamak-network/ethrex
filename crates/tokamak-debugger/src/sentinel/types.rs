@@ -85,7 +85,7 @@ impl SuspicionReason {
 }
 
 /// Alert priority derived from combined suspicion score.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AlertPriority {
     /// Score >= 0.3 but < 0.5
     Medium,
@@ -140,7 +140,8 @@ pub struct SentinelAlert {
     pub alert_priority: AlertPriority,
     /// Pre-filter suspicion reasons that triggered deep analysis.
     pub suspicion_reasons: Vec<SuspicionReason>,
-    /// Pre-filter score.
+    /// Combined score: max(prefilter heuristic score, pipeline confidence).
+    /// For alerts without pipeline analysis, this equals the prefilter score.
     pub suspicion_score: f64,
     /// Attack patterns confirmed by deep analysis.
     #[cfg(feature = "autopsy")]
@@ -154,6 +155,9 @@ pub struct SentinelAlert {
     pub summary: String,
     /// Number of opcode steps recorded during replay.
     pub total_steps: usize,
+    /// Numerical feature vector extracted by the adaptive pipeline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_vector: Option<super::pipeline::FeatureVector>,
 }
 
 #[cfg(feature = "autopsy")]
@@ -206,4 +210,51 @@ pub enum SentinelError {
 
     #[error("Step limit exceeded: {steps} > {max_steps}")]
     StepLimitExceeded { steps: usize, max_steps: usize },
+}
+
+// ---------------------------------------------------------------------------
+// Mempool monitoring types
+// ---------------------------------------------------------------------------
+
+/// Alert emitted when a pending mempool transaction looks suspicious.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MempoolAlert {
+    /// Hash of the pending transaction.
+    pub tx_hash: H256,
+    /// Sender of the pending transaction.
+    pub sender: Address,
+    /// Target address (None for contract creation).
+    pub target: Option<Address>,
+    /// Reasons the transaction was flagged.
+    pub reasons: Vec<MempoolSuspicionReason>,
+    /// Combined suspicion score.
+    pub score: f64,
+}
+
+/// Reason why a mempool transaction was flagged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MempoolSuspicionReason {
+    /// Calldata starts with a known flash-loan function selector.
+    FlashLoanSelector { selector: [u8; 4] },
+    /// High-value TX targeting a known DeFi contract.
+    HighValueDeFi { value_wei: U256, target: Address },
+    /// High gas + known DeFi contract interaction.
+    HighGasKnownContract { gas_limit: u64, target: Address },
+    /// Contract creation with unusually large init code.
+    SuspiciousContractCreation { init_code_size: usize },
+    /// Multicall pattern on a known DeFi router.
+    MulticallPattern { target: Address },
+}
+
+impl MempoolSuspicionReason {
+    /// Fixed score contribution for this reason.
+    pub fn score(&self) -> f64 {
+        match self {
+            Self::FlashLoanSelector { .. } => 0.4,
+            Self::HighValueDeFi { .. } => 0.3,
+            Self::HighGasKnownContract { .. } => 0.2,
+            Self::SuspiciousContractCreation { .. } => 0.25,
+            Self::MulticallPattern { .. } => 0.3,
+        }
+    }
 }

@@ -27,6 +27,18 @@ pub struct SentinelMetrics {
     prefilter_total_us: AtomicU64,
     /// Cumulative deep analysis time in milliseconds.
     deep_analysis_total_ms: AtomicU64,
+    /// Total pending mempool transactions scanned.
+    mempool_txs_scanned: AtomicU64,
+    /// Mempool transactions flagged as suspicious.
+    mempool_txs_flagged: AtomicU64,
+    /// Alerts emitted from mempool scanning.
+    mempool_alerts_emitted: AtomicU64,
+    /// Total pipeline steps executed across all analyses.
+    pipeline_steps_executed: AtomicU64,
+    /// Pipeline steps that resulted in early dismissal.
+    pipeline_steps_dismissed: AtomicU64,
+    /// Cumulative pipeline duration in milliseconds.
+    pipeline_duration_ms: AtomicU64,
 }
 
 impl SentinelMetrics {
@@ -41,6 +53,12 @@ impl SentinelMetrics {
             alerts_rate_limited: AtomicU64::new(0),
             prefilter_total_us: AtomicU64::new(0),
             deep_analysis_total_ms: AtomicU64::new(0),
+            mempool_txs_scanned: AtomicU64::new(0),
+            mempool_txs_flagged: AtomicU64::new(0),
+            mempool_alerts_emitted: AtomicU64::new(0),
+            pipeline_steps_executed: AtomicU64::new(0),
+            pipeline_steps_dismissed: AtomicU64::new(0),
+            pipeline_duration_ms: AtomicU64::new(0),
         }
     }
 
@@ -78,6 +96,32 @@ impl SentinelMetrics {
         self.deep_analysis_total_ms.fetch_add(ms, Ordering::Relaxed);
     }
 
+    pub fn increment_mempool_txs_scanned(&self) {
+        self.mempool_txs_scanned.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn increment_mempool_txs_flagged(&self) {
+        self.mempool_txs_flagged.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn increment_mempool_alerts_emitted(&self) {
+        self.mempool_alerts_emitted.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn add_pipeline_steps_executed(&self, count: u64) {
+        self.pipeline_steps_executed
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    pub fn add_pipeline_steps_dismissed(&self, count: u64) {
+        self.pipeline_steps_dismissed
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    pub fn add_pipeline_duration_ms(&self, ms: u64) {
+        self.pipeline_duration_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+
     // -- Snapshot / export --
 
     /// Read all counters into a non-atomic snapshot.
@@ -95,6 +139,12 @@ impl SentinelMetrics {
             alerts_rate_limited: self.alerts_rate_limited.load(Ordering::Relaxed),
             prefilter_total_us: self.prefilter_total_us.load(Ordering::Relaxed),
             deep_analysis_total_ms: self.deep_analysis_total_ms.load(Ordering::Relaxed),
+            mempool_txs_scanned: self.mempool_txs_scanned.load(Ordering::Relaxed),
+            mempool_txs_flagged: self.mempool_txs_flagged.load(Ordering::Relaxed),
+            mempool_alerts_emitted: self.mempool_alerts_emitted.load(Ordering::Relaxed),
+            pipeline_steps_executed: self.pipeline_steps_executed.load(Ordering::Relaxed),
+            pipeline_steps_dismissed: self.pipeline_steps_dismissed.load(Ordering::Relaxed),
+            pipeline_duration_ms: self.pipeline_duration_ms.load(Ordering::Relaxed),
         }
     }
 
@@ -127,6 +177,12 @@ pub struct MetricsSnapshot {
     pub alerts_rate_limited: u64,
     pub prefilter_total_us: u64,
     pub deep_analysis_total_ms: u64,
+    pub mempool_txs_scanned: u64,
+    pub mempool_txs_flagged: u64,
+    pub mempool_alerts_emitted: u64,
+    pub pipeline_steps_executed: u64,
+    pub pipeline_steps_dismissed: u64,
+    pub pipeline_duration_ms: u64,
 }
 
 impl MetricsSnapshot {
@@ -182,6 +238,42 @@ impl MetricsSnapshot {
             "Cumulative deep analysis time in milliseconds",
             self.deep_analysis_total_ms,
         );
+        write_counter(
+            &mut out,
+            "sentinel_mempool_txs_scanned",
+            "Total pending mempool transactions scanned",
+            self.mempool_txs_scanned,
+        );
+        write_counter(
+            &mut out,
+            "sentinel_mempool_txs_flagged",
+            "Mempool transactions flagged as suspicious",
+            self.mempool_txs_flagged,
+        );
+        write_counter(
+            &mut out,
+            "sentinel_mempool_alerts_emitted",
+            "Alerts emitted from mempool scanning",
+            self.mempool_alerts_emitted,
+        );
+        write_counter(
+            &mut out,
+            "sentinel_pipeline_steps_executed",
+            "Total pipeline steps executed across all analyses",
+            self.pipeline_steps_executed,
+        );
+        write_counter(
+            &mut out,
+            "sentinel_pipeline_steps_dismissed",
+            "Pipeline steps that resulted in early dismissal",
+            self.pipeline_steps_dismissed,
+        );
+        write_counter(
+            &mut out,
+            "sentinel_pipeline_duration_ms",
+            "Cumulative pipeline duration in milliseconds",
+            self.pipeline_duration_ms,
+        );
 
         out
     }
@@ -197,10 +289,40 @@ impl fmt::Display for MetricsSnapshot {
         writeln!(f, "  alerts_deduplicated:  {}", self.alerts_deduplicated)?;
         writeln!(f, "  alerts_rate_limited:  {}", self.alerts_rate_limited)?;
         writeln!(f, "  prefilter_total_us:   {}", self.prefilter_total_us)?;
-        write!(
+        writeln!(
             f,
             "  deep_analysis_total_ms: {}",
             self.deep_analysis_total_ms
+        )?;
+        writeln!(
+            f,
+            "  mempool_txs_scanned:  {}",
+            self.mempool_txs_scanned
+        )?;
+        writeln!(
+            f,
+            "  mempool_txs_flagged:  {}",
+            self.mempool_txs_flagged
+        )?;
+        writeln!(
+            f,
+            "  mempool_alerts_emitted: {}",
+            self.mempool_alerts_emitted
+        )?;
+        writeln!(
+            f,
+            "  pipeline_steps_executed: {}",
+            self.pipeline_steps_executed
+        )?;
+        writeln!(
+            f,
+            "  pipeline_steps_dismissed: {}",
+            self.pipeline_steps_dismissed
+        )?;
+        write!(
+            f,
+            "  pipeline_duration_ms:   {}",
+            self.pipeline_duration_ms
         )
     }
 }
@@ -305,7 +427,7 @@ mod tests {
 
         // Each metric should have exactly 3 lines: HELP, TYPE, value
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 24); // 8 metrics * 3 lines each
+        assert_eq!(lines.len(), 42); // 14 metrics * 3 lines each
     }
 
     #[test]

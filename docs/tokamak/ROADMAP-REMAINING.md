@@ -1,7 +1,7 @@
 # Tokamak Remaining Work Roadmap
 
-**Created**: 2026-02-24 | **Updated**: 2026-02-28
-**Context**: Overall ~98% complete. JIT core done (Phases 2-8). Phase A: ALL P0 COMPLETE (A-1 ✅ A-2 ✅ A-3 ✅ A-4 ✅). Phase B: B-1 ✅ B-2 ✅ B-3 ✅ — ALL COMPLETE. Phase C: C-1 ✅ C-2 ✅ C-3 ✅ — ALL COMPLETE. Phase D: D-1 ✅ DONE (v1.1 runtime opt), D-2 ✅ DONE, D-3 ✅ DONE. Phase E: E-1 ✅ DONE, E-2 ✅ DONE, E-3 ✅ DONE, E-4 ✅ DONE (Smart Contract Autopsy Lab) — ALL COMPLETE. Phase F: F-1 ✅ DONE, F-2 ✅ DONE, F-3 ✅ DONE (scaffolding), F-4 ✅ DONE, F-5 CI CONFIGURED (awaiting sync run). Phase G: ALL COMPLETE (8/8). Phase H: ALL COMPLETE (5/5) — H-1 ✅ H-2 ✅ H-3 ✅ H-4 ✅ H-5 ✅.
+**Created**: 2026-02-24 | **Updated**: 2026-03-01
+**Context**: Overall ~99% complete. JIT core done (Phases 2-8). Phase A: ALL P0 COMPLETE (A-1 ✅ A-2 ✅ A-3 ✅ A-4 ✅). Phase B: B-1 ✅ B-2 ✅ B-3 ✅ — ALL COMPLETE. Phase C: C-1 ✅ C-2 ✅ C-3 ✅ — ALL COMPLETE. Phase D: D-1 ✅ DONE (v1.1 runtime opt), D-2 ✅ DONE, D-3 ✅ DONE. Phase E: E-1 ✅ DONE, E-2 ✅ DONE, E-3 ✅ DONE, E-4 ✅ DONE (Smart Contract Autopsy Lab) — ALL COMPLETE. Phase F: F-1 ✅ DONE, F-2 ✅ DONE, F-3 ✅ DONE (scaffolding), F-4 ✅ DONE, F-5 CI CONFIGURED (awaiting sync run). Phase G: ALL COMPLETE (8/8). Phase H: ALL COMPLETE (5/5 + H-6 expansion) — H-1 ✅ H-2 ✅ H-3 ✅ H-4 ✅ H-5 ✅ H-6a ✅ H-6b ✅ H-6c ✅ H-6d ✅.
 
 ---
 
@@ -436,6 +436,55 @@ The Autopsy Lab (E-4) provides post-hoc analysis of historical transactions. Pha
 - **Dependency**: H-3 ✅, H-4 ✅, F-2 ✅
 - **Completed**: 2026-02-28 — WsAlertBroadcaster, AlertHistory, SentinelMetrics, Dashboard UI
 
+### H-6a. CLI & Configuration [P2] ✅ DONE
+- TOML-compatible `SentinelFullConfig` aggregating all sub-configs (PrefilterConfig, AnalysisTomlConfig, AlertOutputConfig, MempoolMonitorConfig, AutoPauseConfig, AdaptivePipelineConfig) ✅
+- `load_config(path)` — TOML deserialization with `[sentinel]` wrapper ✅
+- `merge_cli_overrides()` — CLI flags take precedence over TOML values ✅
+- `validate()` — threshold range checks ✅
+- `to_sentinel_config()` — ETH to wei conversion for domain type ✅
+- 6 `--sentinel.*` CLI flags in `cmd/ethrex/cli.rs` (all `#[cfg(feature = "sentinel")]` gated) ✅
+- `init_sentinel()` in `initializers.rs` — builds alert pipeline, creates SentinelService + optional AutoPauseHandler ✅
+- `SentinelComponents` struct with Default (all None) ✅
+- **Verification**: 11 config tests (roundtrip, defaults, validation, CLI merge) ✅
+- **Dependency**: H-3 ✅, H-4 ✅
+- **Completed**: 2026-03-01 — config.rs, CLI wiring, init_sentinel()
+
+### H-6b. Mempool Monitoring [P2] ✅ DONE
+- `MempoolPreFilter` — stateless, immutable, `Send + Sync` safe ✅
+- 5 calldata heuristics: flash loan selector (6 known selectors), high value DeFi, high gas + known contract, suspicious contract creation (>10KB), multicall pattern ✅
+- `scan_transaction()` public API returning `Option<MempoolAlert>` ✅
+- 11 known mainnet DeFi addresses (Aave V2/V3, Balancer, Uniswap V2/V3, SushiSwap, Curve, 1inch, Compound, Cream) ✅
+- `MempoolObserver` trait in `ethrex-blockchain` + hooks in `add_transaction_to_pool` / `add_blob_transaction_to_pool` ✅
+- `MempoolObserver` impl for `SentinelService` with `MempoolTransaction` message variant ✅
+- `MempoolAlert` + `MempoolSuspicionReason` types with per-reason scoring ✅
+- **Verification**: 20 mempool filter tests (4 per heuristic + integration) ✅
+- **Dependency**: H-6a ✅
+- **Completed**: 2026-03-01 — mempool_filter.rs, MempoolObserver trait, service integration
+
+### H-6c. Adaptive Analysis Pipeline [P2] ✅ DONE
+- `AnalysisStep` trait with `execute()` returning `StepResult` (Continue/Dismiss/AddSteps) ✅
+- `AnalysisContext` — shared mutable state across pipeline steps ✅
+- `FeatureVector` — 16 f64 features extracted from opcode trace (total_steps, unique_addresses, max_call_depth, sstore/sload/call counts, reentrancy_depth, etc.) ✅
+- 6 concrete steps: TraceAnalyzer, PatternMatcher (autopsy-gated), FundFlowAnalyzer (autopsy-gated), AnomalyDetector, ConfidenceScorer, ReportGenerator ✅
+- `AnalysisPipeline` orchestrator with `default_pipeline()` and `analyze()` returning `(Option<SentinelAlert>, PipelineMetrics)` ✅
+- `StatisticalAnomalyDetector` — z-score based with sigmoid mapping (`AnomalyModel` trait) ✅
+- Confidence formula: pattern×0.4 + anomaly×0.3 + prefilter×0.2 + fund_flow×0.1 (with/without autopsy variants) ✅
+- `PipelineMetrics` — steps_executed, steps_dismissed, total_duration_ms, step_durations ✅
+- **Verification**: ~15 pipeline + ML tests (feature vector, dismiss, AddSteps, confidence, metrics, anomaly scoring) ✅
+- **Dependency**: H-6a ✅
+- **Completed**: 2026-03-01 — pipeline.rs, ml_model.rs
+
+### H-6d. Auto Pause [P2] ✅ DONE
+- `PauseController` struct in `ethrex-blockchain` (NOT feature-gated) — `AtomicBool` + `Condvar` + `Mutex<Option<Instant>>` ✅
+- Methods: `pause()`, `resume()` (idempotent via compare_exchange), `wait_if_paused()` (fast path = single atomic load), `is_paused()`, `paused_for_secs()`, `auto_resume_remaining()` ✅
+- Auto-resume via `condvar.wait_timeout()` with configurable timeout ✅
+- `AutoPauseHandler` implementing `AlertHandler` — circuit breaker on critical+high-confidence alerts ✅
+- 2 pause checkpoints in `add_block_pipeline()` and `add_blocks_in_batch()` ✅
+- `sentinel_resume` + `sentinel_status` JSON-RPC methods for operator control ✅
+- **Verification**: 5 PauseController tests + 3 AutoPauseHandler tests ✅
+- **Dependency**: H-6a ✅
+- **Completed**: 2026-03-01 — PauseController, AutoPauseHandler, RPC methods
+
 ---
 
 ## Execution Order
@@ -459,6 +508,8 @@ Week 13: [P2] H-2 ✅ (Deep Analysis Engine — replay + classifier + fund flow,
 Week 13: [P2] H-3 ✅ (Block Processing Integration — BlockObserver, SentinelService, 11 tests)
 Week 13: [P2] H-4 ✅ (Alert & Notification System — dispatcher, JSONL, webhook, dedup, rate limiter, 14 tests)
 Week 13: [P3] H-5 ✅ (Sentinel Dashboard — WsAlertBroadcaster, AlertHistory, SentinelMetrics, Dashboard UI)
+Week 14: [P2] H-6a ✅ (CLI & Config — TOML, 6 CLI flags, init_sentinel()) + H-6d ✅ (Auto Pause — PauseController, RPC resume)
+Week 14: [P2] H-6b ✅ (Mempool Monitoring — 5 heuristics, MempoolObserver) + H-6c ✅ (Adaptive Pipeline — FeatureVector, z-score ML, dynamic steps)
 ```
 
 ---

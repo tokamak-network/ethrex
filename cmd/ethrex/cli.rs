@@ -316,6 +316,70 @@ pub struct Options {
         env = "ETHREX_PRECOMPUTE_WITNESSES"
     )]
     pub precompute_witnesses: bool,
+
+    // -- Sentinel options (requires `sentinel` feature) --
+    #[cfg(feature = "sentinel")]
+    #[arg(
+        long = "sentinel.enabled",
+        action = ArgAction::SetTrue,
+        default_value = "false",
+        help = "Enable real-time hack detection sentinel",
+        help_heading = "Sentinel options",
+        env = "ETHREX_SENTINEL_ENABLED"
+    )]
+    pub sentinel_enabled: bool,
+
+    #[cfg(feature = "sentinel")]
+    #[arg(
+        long = "sentinel.config",
+        value_name = "TOML_PATH",
+        help = "Path to sentinel TOML configuration file",
+        help_heading = "Sentinel options",
+        env = "ETHREX_SENTINEL_CONFIG"
+    )]
+    pub sentinel_config: Option<PathBuf>,
+
+    #[cfg(feature = "sentinel")]
+    #[arg(
+        long = "sentinel.alert-file",
+        value_name = "JSONL_PATH",
+        help = "Path for JSONL alert output file",
+        help_heading = "Sentinel options",
+        env = "ETHREX_SENTINEL_ALERT_FILE"
+    )]
+    pub sentinel_alert_file: Option<PathBuf>,
+
+    #[cfg(feature = "sentinel")]
+    #[arg(
+        long = "sentinel.auto-pause",
+        action = ArgAction::SetTrue,
+        default_value = "false",
+        help = "Enable auto-pause on critical alerts",
+        help_heading = "Sentinel options",
+        env = "ETHREX_SENTINEL_AUTO_PAUSE"
+    )]
+    pub sentinel_auto_pause: bool,
+
+    #[cfg(feature = "sentinel")]
+    #[arg(
+        long = "sentinel.mempool",
+        action = ArgAction::SetTrue,
+        default_value = "false",
+        help = "Enable mempool monitoring for pre-execution detection",
+        help_heading = "Sentinel options",
+        env = "ETHREX_SENTINEL_MEMPOOL"
+    )]
+    pub sentinel_mempool: bool,
+
+    #[cfg(feature = "sentinel")]
+    #[arg(
+        long = "sentinel.webhook-url",
+        value_name = "URL",
+        help = "Webhook URL for HTTP POST alert notifications",
+        help_heading = "Sentinel options",
+        env = "ETHREX_SENTINEL_WEBHOOK_URL"
+    )]
+    pub sentinel_webhook_url: Option<String>,
 }
 
 impl Options {
@@ -393,6 +457,18 @@ impl Default for Options {
             gas_limit: DEFAULT_BUILDER_GAS_CEIL,
             max_blobs_per_block: None,
             precompute_witnesses: false,
+            #[cfg(feature = "sentinel")]
+            sentinel_enabled: false,
+            #[cfg(feature = "sentinel")]
+            sentinel_config: None,
+            #[cfg(feature = "sentinel")]
+            sentinel_alert_file: None,
+            #[cfg(feature = "sentinel")]
+            sentinel_auto_pause: false,
+            #[cfg(feature = "sentinel")]
+            sentinel_mempool: false,
+            #[cfg(feature = "sentinel")]
+            sentinel_webhook_url: None,
         }
     }
 }

@@ -140,6 +140,7 @@ mod tests {
             total_value_at_risk: U256::zero(),
             summary: "test ws alert".to_string(),
             total_steps: 100,
+            feature_vector: None,
         }
     }
 

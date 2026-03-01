@@ -15,6 +15,7 @@ use crate::autopsy::fund_flow::FundFlowTracer;
 #[cfg(feature = "autopsy")]
 use crate::autopsy::types::FundFlow;
 
+use super::pipeline::AnalysisPipeline;
 use super::replay::replay_tx_from_store;
 use super::types::{AlertPriority, AnalysisConfig, SentinelAlert, SentinelError, SuspiciousTx};
 
@@ -27,6 +28,9 @@ pub struct DeepAnalyzer;
 impl DeepAnalyzer {
     /// Analyze a suspicious transaction by replaying it with opcode recording.
     ///
+    /// If an `AnalysisPipeline` is provided, delegates to the adaptive pipeline.
+    /// Otherwise, falls back to the legacy fixed analysis flow.
+    ///
     /// Returns `Some(SentinelAlert)` if the deep analysis confirms suspicious
     /// patterns above the configured confidence threshold. Returns `None` if
     /// the transaction turns out to be benign after deep analysis.
@@ -35,7 +39,14 @@ impl DeepAnalyzer {
         block: &Block,
         suspicion: &SuspiciousTx,
         config: &AnalysisConfig,
+        pipeline: Option<&AnalysisPipeline>,
     ) -> Result<Option<SentinelAlert>, SentinelError> {
+        // If an adaptive pipeline is provided, delegate to it
+        if let Some(pipeline) = pipeline {
+            let (alert, _metrics) = pipeline.analyze(store, block, suspicion, config)?;
+            return Ok(alert);
+        }
+
         let block_number = block.header.number;
         let block_hash = block.header.hash();
 
@@ -111,6 +122,7 @@ impl DeepAnalyzer {
             total_value_at_risk,
             summary,
             total_steps,
+            feature_vector: None,
         };
 
         Ok(Some(alert))

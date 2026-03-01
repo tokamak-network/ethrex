@@ -3863,6 +3863,7 @@ dependencies = [
  "spawned-rt",
  "thiserror 2.0.18",
  "tikv-jemallocator",
+ "tokamak-debugger",
  "tokio",
  "tokio-util",
  "tracing",
@@ -13225,6 +13226,7 @@ dependencies = [
  "serde_json",
  "sha3",
  "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]
