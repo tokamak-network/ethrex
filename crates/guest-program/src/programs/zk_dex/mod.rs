@@ -75,13 +75,11 @@ impl GuestProgram for ZkDexGuestProgram {
 
             let bytes = rkyv::to_bytes::<RkyvError>(&app_input)
                 .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
-            Ok(bytes.to_vec())
+            return Ok(bytes.to_vec());
         }
 
-        // 4. Re-serialize as AppProgramInput via rkyv.
-        let bytes = rkyv::to_bytes::<RkyvError>(&app_input)
-            .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
-        Ok(bytes.to_vec())
+        #[cfg(not(feature = "l2"))]
+        Ok(raw_input.to_vec())
     }
 
     fn encode_output(&self, raw_output: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
