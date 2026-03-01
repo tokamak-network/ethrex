@@ -33,11 +33,31 @@ fn main() {
     if programs.contains(&"zk-dex".to_string()) {
         #[cfg(all(not(clippy), feature = "sp1"))]
         build_sp1_zk_dex();
+    } else {
+        // Ensure placeholder ELF exists so `include_bytes!` doesn't fail
+        // when zk-dex isn't in the build list.
+        ensure_elf_placeholder("./bin/sp1-zk-dex");
     }
 
     if programs.contains(&"tokamon".to_string()) {
         #[cfg(all(not(clippy), feature = "sp1"))]
         build_sp1_tokamon();
+    } else {
+        // Ensure placeholder ELF exists so `include_bytes!` doesn't fail
+        // when tokamon isn't in the build list.
+        ensure_elf_placeholder("./bin/sp1-tokamon");
+    }
+}
+
+/// Create an empty placeholder ELF file if it doesn't already exist.
+/// This prevents `include_bytes!` from failing during `cargo check`
+/// when a guest program wasn't included in the build.
+fn ensure_elf_placeholder(bin_dir: &str) {
+    let out_dir = format!("{bin_dir}/out");
+    let elf_path = format!("{out_dir}/riscv32im-succinct-zkvm-elf");
+    if !std::path::Path::new(&elf_path).exists() {
+        let _ = std::fs::create_dir_all(&out_dir);
+        let _ = std::fs::write(&elf_path, b"");
     }
 }
 
