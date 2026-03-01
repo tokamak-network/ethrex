@@ -16,6 +16,7 @@
 //! for CI setup instructions.
 
 #[cfg(feature = "sp1")]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod sp1_tests {
     use ethrex_guest_program::programs::EvmL2GuestProgram;
     use ethrex_guest_program::traits::{GuestProgram, backends};
@@ -59,6 +60,7 @@ mod sp1_tests {
 }
 
 #[cfg(feature = "risc0")]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod risc0_tests {
     use ethrex_guest_program::programs::EvmL2GuestProgram;
     use ethrex_guest_program::traits::{GuestProgram, backends};

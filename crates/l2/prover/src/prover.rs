@@ -212,15 +212,15 @@ impl<B: ProverBackend> Prover<B> {
 
             // Enforce input size limit.
             let limits = program.resource_limits();
-            if let Some(max) = limits.max_input_bytes {
-                if serialized.len() > max {
-                    return Err(BackendError::resource_limit(format!(
-                        "input size {} bytes exceeds limit of {} bytes for program '{}'",
-                        serialized.len(),
-                        max,
-                        program_id
-                    )));
-                }
+            if let Some(max) = limits.max_input_bytes
+                && serialized.len() > max
+            {
+                return Err(BackendError::resource_limit(format!(
+                    "input size {} bytes exceeds limit of {} bytes for program '{}'",
+                    serialized.len(),
+                    max,
+                    program_id
+                )));
             }
 
             if self.timed {
@@ -228,12 +228,12 @@ impl<B: ProverBackend> Prover<B> {
                     self.backend
                         .prove_with_elf_timed(elf, &serialized, format)?;
                 // Enforce proving duration limit.
-                if let Some(max_dur) = limits.max_proving_duration {
-                    if elapsed > max_dur {
-                        return Err(BackendError::resource_limit(format!(
-                            "proving took {elapsed:.2?} which exceeds limit of {max_dur:.2?} for program '{program_id}'"
-                        )));
-                    }
+                if let Some(max_dur) = limits.max_proving_duration
+                    && elapsed > max_dur
+                {
+                    return Err(BackendError::resource_limit(format!(
+                        "proving took {elapsed:.2?} which exceeds limit of {max_dur:.2?} for program '{program_id}'"
+                    )));
                 }
                 info!(
                     batch = batch_number,
