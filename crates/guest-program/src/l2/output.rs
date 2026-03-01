@@ -92,16 +92,16 @@ mod tests {
         // 8 fixed fields × 32 bytes = 256 bytes (no variable parts).
         assert_eq!(encoded.len(), 256);
         // Field positions: each 32 bytes apart.
-        assert_eq!(&encoded[0..32], &[0x01; 32]);   // initial_state_hash
-        assert_eq!(&encoded[32..64], &[0x02; 32]);   // final_state_hash
-        assert_eq!(&encoded[64..96], &[0x03; 32]);   // l1_out_messages_merkle_root
-        assert_eq!(&encoded[96..128], &[0x04; 32]);  // l1_in_messages_rolling_hash
+        assert_eq!(&encoded[0..32], &[0x01; 32]); // initial_state_hash
+        assert_eq!(&encoded[32..64], &[0x02; 32]); // final_state_hash
+        assert_eq!(&encoded[64..96], &[0x03; 32]); // l1_out_messages_merkle_root
+        assert_eq!(&encoded[96..128], &[0x04; 32]); // l1_in_messages_rolling_hash
         assert_eq!(&encoded[128..160], &[0x05; 32]); // blob_versioned_hash
         assert_eq!(&encoded[160..192], &[0x06; 32]); // last_block_hash
         // chain_id = 7, big-endian in 32 bytes
-        assert_eq!(encoded[255 - 32], 7);            // chain_id last byte of its slot
+        assert_eq!(encoded[255 - 32], 7); // chain_id last byte of its slot
         // non_privileged_count = 8, big-endian in 32 bytes
-        assert_eq!(encoded[255], 8);                  // non_privileged_count last byte
+        assert_eq!(encoded[255], 8); // non_privileged_count last byte
     }
 
     /// Verify encoding with balance diffs includes the variable-length portion.

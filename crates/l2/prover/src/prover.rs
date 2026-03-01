@@ -194,14 +194,11 @@ impl<B: ProverBackend> Prover<B> {
         program_id: &str,
     ) -> Result<BatchProof, BackendError> {
         // Try to resolve an ELF binary from the registry for this program + backend.
-        let elf_and_program = self
-            .registry
-            .get(program_id)
-            .and_then(|program| {
-                program
-                    .elf(self.backend.backend_name())
-                    .map(|elf| (program, elf))
-            });
+        let elf_and_program = self.registry.get(program_id).and_then(|program| {
+            program
+                .elf(self.backend.backend_name())
+                .map(|elf| (program, elf))
+        });
 
         if let Some((program, elf)) = elf_and_program {
             // Registry-based path: serialize input to raw bytes, then prove_with_elf.

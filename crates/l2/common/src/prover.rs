@@ -393,8 +393,7 @@ mod tests {
     #[test]
     fn batch_response_without_program_id_deserializes() {
         // Old-format coordinator: no program_id field.
-        let json =
-            r#"{"BatchResponse":{"batch_number":42,"input":null,"format":null}}"#;
+        let json = r#"{"BatchResponse":{"batch_number":42,"input":null,"format":null}}"#;
         let data: ProofData = serde_json::from_str(json).expect("should deserialize");
         match data {
             ProofData::BatchResponse {
@@ -450,8 +449,7 @@ mod tests {
             prover_type: ProverType::Exec,
             calldata: vec![],
         });
-        let original =
-            ProofData::proof_submit_with_program(5, proof, "tokamon".to_string());
+        let original = ProofData::proof_submit_with_program(5, proof, "tokamon".to_string());
         let json = serde_json::to_string(&original).expect("serialize");
         let deserialized: ProofData = serde_json::from_str(&json).expect("deserialize");
         match deserialized {
@@ -469,11 +467,8 @@ mod tests {
 
     #[test]
     fn empty_supported_programs_roundtrip() {
-        let original = ProofData::batch_request_with_programs(
-            "hash".to_string(),
-            ProverType::Exec,
-            vec![],
-        );
+        let original =
+            ProofData::batch_request_with_programs("hash".to_string(), ProverType::Exec, vec![]);
         let json = serde_json::to_string(&original).expect("serialize");
         let deserialized: ProofData = serde_json::from_str(&json).expect("deserialize");
         match deserialized {

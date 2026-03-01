@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Each variant represents a specific game action that mutates the
 /// global game state.
-#[derive(Serialize, Deserialize, RSerialize, RDeserialize, Archive, Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Serialize, Deserialize, RSerialize, RDeserialize, Archive, Clone, Debug, PartialEq, Eq,
+)]
 pub enum ActionType {
     /// Create a new reward spot at a location.
     CreateSpot,

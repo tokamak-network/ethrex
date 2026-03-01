@@ -56,7 +56,12 @@ impl GuestProgramRegistry {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+#[allow(
+    clippy::panic,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
     use ethrex_guest_program::traits::GuestProgramError;
@@ -283,8 +288,7 @@ mod tests {
         // Serialize → deserialize roundtrip (simulates zkVM stdin flow).
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&input).expect("serialize");
         let restored: DexProgramInput =
-            rkyv::from_bytes::<DexProgramInput, rkyv::rancor::Error>(&bytes)
-                .expect("deserialize");
+            rkyv::from_bytes::<DexProgramInput, rkyv::rancor::Error>(&bytes).expect("deserialize");
         assert_eq!(restored.initial_state_root, input.initial_state_root);
         assert_eq!(restored.transfers[0].amount, 500);
         assert_eq!(restored.transfers[0].nonce, 42);

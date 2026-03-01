@@ -318,10 +318,18 @@ mod tests {
     fn validate_elf_via_trait_default() {
         struct TestProgram;
         impl GuestProgram for TestProgram {
-            fn program_id(&self) -> &str { "test" }
-            fn elf(&self, _: &str) -> Option<&[u8]> { None }
-            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> { None }
-            fn program_type_id(&self) -> u8 { 99 }
+            fn program_id(&self) -> &str {
+                "test"
+            }
+            fn elf(&self, _: &str) -> Option<&[u8]> {
+                None
+            }
+            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> {
+                None
+            }
+            fn program_type_id(&self) -> u8 {
+                99
+            }
         }
 
         let prog = TestProgram;
@@ -345,10 +353,18 @@ mod tests {
     fn stub_uses_default_limits() {
         struct StubProgram;
         impl GuestProgram for StubProgram {
-            fn program_id(&self) -> &str { "stub" }
-            fn elf(&self, _: &str) -> Option<&[u8]> { None }
-            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> { None }
-            fn program_type_id(&self) -> u8 { 99 }
+            fn program_id(&self) -> &str {
+                "stub"
+            }
+            fn elf(&self, _: &str) -> Option<&[u8]> {
+                None
+            }
+            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> {
+                None
+            }
+            fn program_type_id(&self) -> u8 {
+                99
+            }
         }
         let limits = StubProgram.resource_limits();
         assert!(limits.max_input_bytes.is_none());
@@ -365,10 +381,18 @@ mod tests {
     fn version_default_is_0_0_0() {
         struct StubV;
         impl GuestProgram for StubV {
-            fn program_id(&self) -> &str { "stub-v" }
-            fn elf(&self, _: &str) -> Option<&[u8]> { None }
-            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> { None }
-            fn program_type_id(&self) -> u8 { 99 }
+            fn program_id(&self) -> &str {
+                "stub-v"
+            }
+            fn elf(&self, _: &str) -> Option<&[u8]> {
+                None
+            }
+            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> {
+                None
+            }
+            fn program_type_id(&self) -> u8 {
+                99
+            }
         }
         assert_eq!(StubV.version(), "0.0.0");
     }
@@ -382,10 +406,18 @@ mod tests {
     fn elf_hash_none_for_missing_elf() {
         struct NoElf;
         impl GuestProgram for NoElf {
-            fn program_id(&self) -> &str { "no-elf" }
-            fn elf(&self, _: &str) -> Option<&[u8]> { None }
-            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> { None }
-            fn program_type_id(&self) -> u8 { 99 }
+            fn program_id(&self) -> &str {
+                "no-elf"
+            }
+            fn elf(&self, _: &str) -> Option<&[u8]> {
+                None
+            }
+            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> {
+                None
+            }
+            fn program_type_id(&self) -> u8 {
+                99
+            }
         }
         assert!(NoElf.elf_hash("sp1").is_none());
     }
@@ -394,10 +426,18 @@ mod tests {
     fn elf_hash_deterministic() {
         struct FixedElf;
         impl GuestProgram for FixedElf {
-            fn program_id(&self) -> &str { "fixed" }
-            fn elf(&self, _: &str) -> Option<&[u8]> { Some(b"deterministic-content") }
-            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> { None }
-            fn program_type_id(&self) -> u8 { 99 }
+            fn program_id(&self) -> &str {
+                "fixed"
+            }
+            fn elf(&self, _: &str) -> Option<&[u8]> {
+                Some(b"deterministic-content")
+            }
+            fn vk_bytes(&self, _: &str) -> Option<Vec<u8>> {
+                None
+            }
+            fn program_type_id(&self) -> u8 {
+                99
+            }
         }
         let h1 = FixedElf.elf_hash("sp1").unwrap();
         let h2 = FixedElf.elf_hash("sp1").unwrap();
@@ -430,20 +470,24 @@ mod tests {
         // Test with various edge-case inputs.
         let all_bytes: Vec<u8> = (0..=255).collect();
         let inputs: Vec<&[u8]> = vec![
-            b"",                          // empty
-            b"\x00",                      // null byte
-            b"\xff\xff\xff\xff",          // all-ones
-            &[0u8; 1024],                 // large zero-filled
-            b"\x7fELF",                   // ELF magic (wrong context)
-            b"hello world",              // ASCII
-            &all_bytes,                   // all byte values
+            b"",                 // empty
+            b"\x00",             // null byte
+            b"\xff\xff\xff\xff", // all-ones
+            &[0u8; 1024],        // large zero-filled
+            b"\x7fELF",          // ELF magic (wrong context)
+            b"hello world",      // ASCII
+            &all_bytes,          // all byte values
         ];
 
         for prog in &programs {
             for input in &inputs {
                 // Must not panic; result is always Ok for pass-through.
                 let result = prog.serialize_input(input);
-                assert!(result.is_ok(), "{}: serialize_input panicked", prog.program_id());
+                assert!(
+                    result.is_ok(),
+                    "{}: serialize_input panicked",
+                    prog.program_id()
+                );
                 assert_eq!(result.unwrap(), *input);
             }
         }
@@ -467,7 +511,11 @@ mod tests {
         for prog in &programs {
             for input in &inputs {
                 let result = prog.encode_output(input);
-                assert!(result.is_ok(), "{}: encode_output panicked", prog.program_id());
+                assert!(
+                    result.is_ok(),
+                    "{}: encode_output panicked",
+                    prog.program_id()
+                );
                 assert_eq!(result.unwrap(), *input);
             }
         }
@@ -489,12 +537,12 @@ mod tests {
             vec![],
             vec![0],
             vec![0x7f, b'E', b'L', b'F'], // valid magic but too short
-            vec![0; 20],                   // right length, wrong magic
-            vec![0xff; 100],               // garbage
-            make_elf(0, EM_RISCV),         // invalid class 0
-            make_elf(3, EM_RISCV),         // invalid class 3
-            make_elf(ELFCLASS32, 0),       // machine 0
-            make_elf(ELFCLASS32, 0xffff),  // machine 0xffff
+            vec![0; 20],                  // right length, wrong magic
+            vec![0xff; 100],              // garbage
+            make_elf(0, EM_RISCV),        // invalid class 0
+            make_elf(3, EM_RISCV),        // invalid class 3
+            make_elf(ELFCLASS32, 0),      // machine 0
+            make_elf(ELFCLASS32, 0xffff), // machine 0xffff
         ];
 
         for backend in &test_backends {

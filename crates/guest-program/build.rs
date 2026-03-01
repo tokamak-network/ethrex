@@ -6,7 +6,11 @@ fn main() {
     // Default: "evm-l2" (backward compatible).
     // Example: GUEST_PROGRAMS=evm-l2,zk-dex,tokamon
     let programs: Vec<String> = match std::env::var("GUEST_PROGRAMS") {
-        Ok(val) => val.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        Ok(val) => val
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
         Err(_) => vec!["evm-l2".to_string()],
     };
 

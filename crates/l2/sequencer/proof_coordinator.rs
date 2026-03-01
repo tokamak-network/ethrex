@@ -256,9 +256,7 @@ impl ProofCoordinator {
         batch_proof: BatchProof,
         program_id: &str,
     ) -> Result<(), ProofCoordinatorError> {
-        info!(
-            "ProofSubmit received for batch number: {batch_number} (program: {program_id})"
-        );
+        info!("ProofSubmit received for batch number: {batch_number} (program: {program_id})");
 
         // Check if we have a proof for this batch and prover type
         let prover_type = batch_proof.prover_type();
@@ -417,12 +415,7 @@ impl ConnectionHandler {
                 }) => {
                     if let Err(e) = self
                         .proof_coordinator
-                        .handle_request(
-                            &mut stream,
-                            commit_hash,
-                            prover_type,
-                            &supported_programs,
-                        )
+                        .handle_request(&mut stream, commit_hash, prover_type, &supported_programs)
                         .await
                     {
                         error!("Failed to handle BatchRequest: {e}");

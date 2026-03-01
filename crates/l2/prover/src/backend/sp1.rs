@@ -239,11 +239,7 @@ impl ProverBackend for Sp1Backend {
         Ok((proof, start.elapsed()))
     }
 
-    fn execute_with_elf(
-        &self,
-        elf: &[u8],
-        serialized_input: &[u8],
-    ) -> Result<(), BackendError> {
+    fn execute_with_elf(&self, elf: &[u8], serialized_input: &[u8]) -> Result<(), BackendError> {
         let setup = self.get_setup();
         let mut stdin = SP1Stdin::new();
         stdin.write_slice(serialized_input);

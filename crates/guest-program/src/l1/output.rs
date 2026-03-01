@@ -46,9 +46,9 @@ mod tests {
         };
         let encoded = output.encode();
         assert_eq!(encoded.len(), 160);
-        assert_eq!(&encoded[0..32], &[0x01; 32]);   // initial_state_hash
-        assert_eq!(&encoded[32..64], &[0x02; 32]);   // final_state_hash
-        assert_eq!(&encoded[64..96], &[0x03; 32]);   // last_block_hash
+        assert_eq!(&encoded[0..32], &[0x01; 32]); // initial_state_hash
+        assert_eq!(&encoded[32..64], &[0x02; 32]); // final_state_hash
+        assert_eq!(&encoded[64..96], &[0x03; 32]); // last_block_hash
         // chain_id = 4 in big-endian 32 bytes (last byte = 4).
         assert_eq!(encoded[127], 4);
         // transaction_count = 5 in big-endian 32 bytes (last byte = 5).

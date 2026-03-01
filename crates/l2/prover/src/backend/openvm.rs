@@ -1,11 +1,11 @@
 use std::time::{Duration, Instant};
 
+use crate::backend::{BackendError, ProverBackend};
 use ethrex_guest_program::{ZKVM_OPENVM_PROGRAM_ELF, input::ProgramInput, traits::backends};
 use ethrex_l2_common::prover::{BatchProof, ProofFormat, ProverType};
 use openvm_continuations::verifier::internal::types::VmStarkProof;
 use openvm_sdk::{Sdk, StdIn, types::EvmProof};
 use openvm_stark_sdk::config::baby_bear_poseidon2::BabyBearPoseidon2Config;
-use crate::backend::{BackendError, ProverBackend};
 
 /// OpenVM-specific proof output.
 pub enum OpenVmProveOutput {

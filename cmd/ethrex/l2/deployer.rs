@@ -1518,8 +1518,10 @@ async fn initialize_contracts(
             )
             .await?;
         let calldata_values = vec![Value::Address(deployer_address)];
-        let guest_program_registry_initialization_calldata =
-            encode_calldata(GUEST_PROGRAM_REGISTRY_INITIALIZER_SIGNATURE, &calldata_values)?;
+        let guest_program_registry_initialization_calldata = encode_calldata(
+            GUEST_PROGRAM_REGISTRY_INITIALIZER_SIGNATURE,
+            &calldata_values,
+        )?;
 
         initialize_contract_no_wait(
             contract_addresses.guest_program_registry_address,

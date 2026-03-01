@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use crate::backend::{BackendError, ProverBackend};
 use ethrex_guest_program::{
     input::ProgramInput,
     methods::{ETHREX_GUEST_RISC0_ELF, ETHREX_GUEST_RISC0_ID},
@@ -12,7 +13,6 @@ use ethrex_l2_common::{
 use risc0_zkvm::{
     ExecutorEnv, InnerReceipt, ProverOpts, Receipt, default_executor, default_prover,
 };
-use crate::backend::{BackendError, ProverBackend};
 
 /// RISC0 prover backend.
 #[derive(Default)]
@@ -161,11 +161,7 @@ impl ProverBackend for Risc0Backend {
         Ok((proof, start.elapsed()))
     }
 
-    fn execute_with_elf(
-        &self,
-        elf: &[u8],
-        serialized_input: &[u8],
-    ) -> Result<(), BackendError> {
+    fn execute_with_elf(&self, elf: &[u8], serialized_input: &[u8]) -> Result<(), BackendError> {
         let env = ExecutorEnv::builder()
             .write_slice(serialized_input)
             .build()

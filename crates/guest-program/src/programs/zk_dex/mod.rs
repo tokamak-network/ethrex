@@ -78,9 +78,9 @@ impl GuestProgram for ZkDexGuestProgram {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::execution::execution_program;
     use super::types::{DexProgramInput, DexTransfer};
+    use super::*;
 
     #[test]
     fn program_id_is_zk_dex() {
@@ -208,8 +208,7 @@ mod tests {
             initial_state_root: [0xCC; 32],
             transfers: vec![sample_transfer(0), sample_transfer(1)],
         };
-        let bytes =
-            rkyv::to_bytes::<rkyv::rancor::Error>(&input).expect("rkyv serialize");
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&input).expect("rkyv serialize");
         let restored: DexProgramInput =
             rkyv::from_bytes::<DexProgramInput, rkyv::rancor::Error>(&bytes)
                 .expect("rkyv deserialize");

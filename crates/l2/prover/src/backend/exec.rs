@@ -90,15 +90,12 @@ impl ProverBackend for ExecBackend {
         Ok(elapsed)
     }
 
-    fn execute_with_elf(
-        &self,
-        _elf: &[u8],
-        serialized_input: &[u8],
-    ) -> Result<(), BackendError> {
+    fn execute_with_elf(&self, _elf: &[u8], serialized_input: &[u8]) -> Result<(), BackendError> {
         // Exec mode ignores the ELF and runs execution_program directly.
         // Deserialize the rkyv bytes back to ProgramInput.
-        let input: ProgramInput = rkyv::from_bytes::<ProgramInput, rkyv::rancor::Error>(serialized_input)
-            .map_err(|e| BackendError::serialization(e.to_string()))?;
+        let input: ProgramInput =
+            rkyv::from_bytes::<ProgramInput, rkyv::rancor::Error>(serialized_input)
+                .map_err(|e| BackendError::serialization(e.to_string()))?;
         Self::execute_core(input)?;
         Ok(())
     }
@@ -110,8 +107,9 @@ impl ProverBackend for ExecBackend {
         _format: ProofFormat,
     ) -> Result<Self::ProofOutput, BackendError> {
         warn!("\"exec\" prover backend generates no proof, only executes (ELF path)");
-        let input: ProgramInput = rkyv::from_bytes::<ProgramInput, rkyv::rancor::Error>(serialized_input)
-            .map_err(|e| BackendError::serialization(e.to_string()))?;
+        let input: ProgramInput =
+            rkyv::from_bytes::<ProgramInput, rkyv::rancor::Error>(serialized_input)
+                .map_err(|e| BackendError::serialization(e.to_string()))?;
         Self::execute_core(input)
     }
 }
@@ -182,7 +180,9 @@ mod tests {
         };
 
         // serialize_raw should produce valid rkyv bytes.
-        let bytes = backend.serialize_raw(&input).expect("serialize_raw should succeed");
+        let bytes = backend
+            .serialize_raw(&input)
+            .expect("serialize_raw should succeed");
         assert!(!bytes.is_empty(), "serialized bytes should not be empty");
 
         // The bytes should be deserializable back to ProgramInput.

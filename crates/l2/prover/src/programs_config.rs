@@ -43,8 +43,8 @@ impl ProgramsConfig {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let content =
-            std::fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
         toml::from_str(&content).map_err(|e| format!("failed to parse {}: {e}", path.display()))
     }
 }
@@ -66,8 +66,8 @@ mod tests {
 
     #[test]
     fn load_missing_returns_default() {
-        let cfg = ProgramsConfig::load("/nonexistent/path/programs.toml")
-            .expect("should return default");
+        let cfg =
+            ProgramsConfig::load("/nonexistent/path/programs.toml").expect("should return default");
         assert_eq!(cfg.default_program, "evm-l2");
         assert_eq!(cfg.enabled_programs.len(), 3);
     }
@@ -84,19 +84,18 @@ enabled_programs = ["zk-dex", "tokamon"]
 "#,
         )
         .expect("write");
-        let cfg =
-            ProgramsConfig::load(path.to_str().expect("utf8")).expect("should parse");
+        let cfg = ProgramsConfig::load(path.to_str().expect("utf8")).expect("should parse");
         assert_eq!(cfg.default_program, "zk-dex");
         assert_eq!(cfg.enabled_programs, vec!["zk-dex", "tokamon"]);
     }
 
     #[test]
     fn filtered_registry() {
-        use std::sync::Arc;
         use crate::registry::GuestProgramRegistry;
         use ethrex_guest_program::programs::{
             EvmL2GuestProgram, TokammonGuestProgram, ZkDexGuestProgram,
         };
+        use std::sync::Arc;
 
         // Config that only enables zk-dex.
         let config = ProgramsConfig {

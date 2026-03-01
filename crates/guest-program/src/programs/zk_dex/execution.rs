@@ -30,9 +30,7 @@ pub enum DexExecutionError {
 ///
 /// This is a simplified model — a production implementation would maintain
 /// an actual Merkle tree of balances and verify sufficient funds.
-pub fn execution_program(
-    input: DexProgramInput,
-) -> Result<DexProgramOutput, DexExecutionError> {
+pub fn execution_program(input: DexProgramInput) -> Result<DexProgramOutput, DexExecutionError> {
     if input.transfers.is_empty() {
         return Err(DexExecutionError::EmptyBatch);
     }

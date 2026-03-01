@@ -26,7 +26,10 @@ mod sp1_tests {
     fn sp1_evm_l2_elf_available() {
         let program = EvmL2GuestProgram;
         let elf = program.elf(backends::SP1);
-        assert!(elf.is_some(), "SP1 ELF should be available when feature is enabled");
+        assert!(
+            elf.is_some(),
+            "SP1 ELF should be available when feature is enabled"
+        );
         let elf = elf.unwrap();
         assert!(elf.len() > 20, "ELF should be a non-trivial binary");
         program
@@ -70,7 +73,10 @@ mod risc0_tests {
     fn risc0_evm_l2_elf_available() {
         let program = EvmL2GuestProgram;
         let elf = program.elf(backends::RISC0);
-        assert!(elf.is_some(), "RISC0 ELF should be available when feature is enabled");
+        assert!(
+            elf.is_some(),
+            "RISC0 ELF should be available when feature is enabled"
+        );
         let elf = elf.unwrap();
         assert!(elf.len() > 20, "ELF should be a non-trivial binary");
         program
@@ -83,10 +89,10 @@ mod risc0_tests {
     fn risc0_evm_l2_vk_available() {
         let program = EvmL2GuestProgram;
         let vk = program.vk_bytes(backends::RISC0);
-        assert!(vk.is_some(), "RISC0 VK should be available when feature is enabled");
         assert!(
-            !vk.unwrap().is_empty(),
-            "VK bytes should not be empty"
+            vk.is_some(),
+            "RISC0 VK should be available when feature is enabled"
         );
+        assert!(!vk.unwrap().is_empty(), "VK bytes should not be empty");
     }
 }

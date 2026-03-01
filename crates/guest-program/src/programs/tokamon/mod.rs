@@ -78,9 +78,9 @@ impl GuestProgram for TokammonGuestProgram {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::execution::execution_program;
     use super::types::{ActionType, GameAction, TokammonProgramInput};
+    use super::*;
 
     #[test]
     fn program_id_is_tokamon() {
@@ -229,8 +229,7 @@ mod tests {
             initial_state_root: [0xCC; 32],
             actions: vec![claim_action(0), create_spot_action(1)],
         };
-        let bytes =
-            rkyv::to_bytes::<rkyv::rancor::Error>(&input).expect("rkyv serialize");
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&input).expect("rkyv serialize");
         let restored: TokammonProgramInput =
             rkyv::from_bytes::<TokammonProgramInput, rkyv::rancor::Error>(&bytes)
                 .expect("rkyv deserialize");

@@ -75,10 +75,7 @@ mod tests {
         assert_eq!(&encoded[0..32], &[0xAA; 32]);
         assert_eq!(&encoded[32..64], &[0xBB; 32]);
         // transfer_count is big-endian u64.
-        assert_eq!(
-            u64::from_be_bytes(encoded[64..72].try_into().unwrap()),
-            42
-        );
+        assert_eq!(u64::from_be_bytes(encoded[64..72].try_into().unwrap()), 42);
     }
 
     #[test]

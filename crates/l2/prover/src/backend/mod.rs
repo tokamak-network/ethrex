@@ -204,11 +204,7 @@ pub trait ProverBackend {
     ///
     /// `serialized_input` contains the bytes the guest program reads from the
     /// zkVM stdin (typically rkyv-encoded `ProgramInput`).
-    fn execute_with_elf(
-        &self,
-        _elf: &[u8],
-        _serialized_input: &[u8],
-    ) -> Result<(), BackendError> {
+    fn execute_with_elf(&self, _elf: &[u8], _serialized_input: &[u8]) -> Result<(), BackendError> {
         Err(BackendError::not_implemented("execute_with_elf"))
     }
 

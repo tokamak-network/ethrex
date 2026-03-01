@@ -123,10 +123,7 @@ impl DynamicGuestProgramBuilder {
     ) -> Result<Self, GuestProgramError> {
         let path = path.as_ref();
         let bytes = std::fs::read(path).map_err(|e| {
-            GuestProgramError::Internal(format!(
-                "failed to read ELF from {}: {e}",
-                path.display(),
-            ))
+            GuestProgramError::Internal(format!("failed to read ELF from {}: {e}", path.display(),))
         })?;
         if self.validate {
             validate_elf_header(backend, &bytes)?;
@@ -156,10 +153,7 @@ impl DynamicGuestProgramBuilder {
     ) -> Result<Self, GuestProgramError> {
         let path = path.as_ref();
         let bytes = std::fs::read(path).map_err(|e| {
-            GuestProgramError::Internal(format!(
-                "failed to read VK from {}: {e}",
-                path.display(),
-            ))
+            GuestProgramError::Internal(format!("failed to read VK from {}: {e}", path.display(),))
         })?;
         self.vks.insert(backend.to_string(), bytes);
         Ok(self)
@@ -243,8 +237,7 @@ mod tests {
     #[test]
     fn builder_validates_elf_by_default() {
         let bad_elf = vec![0u8; 20]; // no magic
-        let result = DynamicGuestProgram::builder("test", 1)
-            .elf_from_bytes(backends::SP1, bad_elf);
+        let result = DynamicGuestProgram::builder("test", 1).elf_from_bytes(backends::SP1, bad_elf);
         assert!(result.is_err());
     }
 
@@ -264,8 +257,7 @@ mod tests {
     fn builder_rejects_wrong_class() {
         // SP1 expects 32-bit; give it 64-bit (class = 2)
         let elf64 = make_elf(2, EM_RISCV);
-        let result = DynamicGuestProgram::builder("test", 1)
-            .elf_from_bytes(backends::SP1, elf64);
+        let result = DynamicGuestProgram::builder("test", 1).elf_from_bytes(backends::SP1, elf64);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(format!("{err}").contains("class mismatch"));
