@@ -91,6 +91,8 @@ contract Timelock is TimelockControllerUpgradeable, UUPSUpgradeable, ITimelock {
         bytes32 lastBlockHash,
         uint256 nonPrivilegedTransactions,
         bytes32 commitHash,
+        uint8 programTypeId,
+        bytes32 publicValuesHash,
         ICommonBridge.BalanceDiff[] calldata balanceDiffs,
         ICommonBridge.L2MessageRollingHash[] calldata l2MessageRollingHashes
     ) external onlyRole(SEQUENCER) {
@@ -102,6 +104,8 @@ contract Timelock is TimelockControllerUpgradeable, UUPSUpgradeable, ITimelock {
             lastBlockHash,
             nonPrivilegedTransactions,
             commitHash,
+            programTypeId,
+            publicValuesHash,
             balanceDiffs,
             l2MessageRollingHashes
         );
