@@ -10,18 +10,15 @@
 //! recipient, but the guest program has no EVM -- so we parse the
 //! calldata to find the actual recipient and credit them directly.
 
-use ethrex_common::types::{Transaction, TxKind};
 use ethrex_common::Address;
+use ethrex_common::types::{Transaction, TxKind};
 
 use super::constants::COMMON_BRIDGE_L2_ADDRESS;
 use crate::common::app_execution::AppCircuitError;
 use crate::common::app_state::AppState;
 
 /// Handle a privileged (deposit) transaction.
-pub fn handle_privileged_tx(
-    state: &mut AppState,
-    tx: &Transaction,
-) -> Result<(), AppCircuitError> {
+pub fn handle_privileged_tx(state: &mut AppState, tx: &Transaction) -> Result<(), AppCircuitError> {
     let value = tx.value();
     if value.is_zero() {
         return Ok(());

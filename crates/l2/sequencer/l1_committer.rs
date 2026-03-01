@@ -1542,20 +1542,17 @@ impl L1Committer {
             }
 
             let commit_time: u128 = self.commit_time_ms.into();
-            let timer_expired =
-                current_time - self.last_committed_batch_timestamp > commit_time;
+            let timer_expired = current_time - self.last_committed_batch_timestamp > commit_time;
 
             // Early batch commit: only if there's a pending withdrawal AND no batch
             // is waiting for proof verification (committed > verified means prover is busy).
             let early_commit = if !timer_expired {
                 let has_withdrawal = self.has_pending_withdrawals().await.unwrap_or(false);
                 if has_withdrawal {
-                    let last_verified = get_last_verified_batch(
-                        &self.eth_client,
-                        self.on_chain_proposer_address,
-                    )
-                    .await
-                    .unwrap_or(0);
+                    let last_verified =
+                        get_last_verified_batch(&self.eth_client, self.on_chain_proposer_address)
+                            .await
+                            .unwrap_or(0);
                     let no_pending_proof = current_last_committed_batch <= last_verified;
                     if no_pending_proof {
                         info!("Pending withdrawal detected, triggering early batch commit");

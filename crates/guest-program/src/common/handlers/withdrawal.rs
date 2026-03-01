@@ -50,10 +50,8 @@ pub fn handle_withdrawal(
     }
 
     // 3. Messenger.lastMessageId += 1
-    let current_id = state.get_storage(
-        L2_TO_L1_MESSENGER_ADDRESS,
-        MESSENGER_LAST_MESSAGE_ID_SLOT,
-    )?;
+    let current_id =
+        state.get_storage(L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT)?;
     let new_id = current_id + U256::one();
     state.set_storage(
         L2_TO_L1_MESSENGER_ADDRESS,
@@ -73,11 +71,7 @@ pub fn handle_withdrawal(
 ///         emitted by L2ToL1Messenger (0xfffe)
 ///
 /// The `data_hash` in Log 2 is `keccak256(abi.encodePacked(ETH_TOKEN, ETH_TOKEN, receiverOnL1, value))`.
-pub fn generate_withdrawal_logs(
-    sender: Address,
-    tx: &Transaction,
-    message_id: U256,
-) -> Vec<Log> {
+pub fn generate_withdrawal_logs(sender: Address, tx: &Transaction, message_id: U256) -> Vec<Log> {
     let value = tx.value();
     let data = tx.data();
 

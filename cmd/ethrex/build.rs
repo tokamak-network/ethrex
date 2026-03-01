@@ -27,16 +27,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::env::var("VERGEN_GIT_BRANCH"),
         std::env::var("VERGEN_GIT_SHA"),
     ) {
-        Emitter::default()
-            .add_instructions(&rustc)?
-            .emit()?;
+        Emitter::default().add_instructions(&rustc)?.emit()?;
         println!("cargo:rustc-env=VERGEN_GIT_BRANCH={}", branch.trim());
         println!("cargo:rustc-env=VERGEN_GIT_SHA={}", sha.trim());
     } else {
-        let git2 = Git2Builder::default()
-            .branch(true)
-            .sha(true)
-            .build()?;
+        let git2 = Git2Builder::default().branch(true).sha(true).build()?;
         Emitter::default()
             .add_instructions(&rustc)?
             .add_instructions(&git2)?

@@ -2,8 +2,8 @@
 //!
 //! Handles calls to known system contracts (L1Messenger, FeeTokenRegistry, etc.).
 
-use ethrex_common::types::Transaction;
 use ethrex_common::Address;
+use ethrex_common::types::Transaction;
 
 use super::constants::{
     COMMON_BRIDGE_L2_ADDRESS, FEE_TOKEN_RATIO_ADDRESS, FEE_TOKEN_REGISTRY_ADDRESS,

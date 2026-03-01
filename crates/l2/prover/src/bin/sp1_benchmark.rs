@@ -41,13 +41,13 @@ use ethrex_common::types::{
 use ethrex_common::{Address, H160, H256, U256};
 use ethrex_crypto::keccak::keccak_hash;
 use ethrex_guest_program::{
+    ZKVM_SP1_TOKAMON_ELF, ZKVM_SP1_ZK_DEX_ELF,
     programs::tokamon::types::{ActionType, GameAction, TokammonProgramInput},
     programs::zk_dex::{ZkDexGuestProgram, circuit},
     traits::GuestProgram,
-    ZKVM_SP1_TOKAMON_ELF, ZKVM_SP1_ZK_DEX_ELF,
 };
 use ethrex_rlp::encode::RLPEncode as _;
-use ethrex_trie::{Node, Trie, EMPTY_TRIE_HASH};
+use ethrex_trie::{EMPTY_TRIE_HASH, Node, Trie};
 use rkyv::rancor::Error as RkyvError;
 use secp256k1::{Message, SECP256K1, SecretKey};
 #[cfg(not(feature = "gpu"))]

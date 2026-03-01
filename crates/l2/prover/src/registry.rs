@@ -198,7 +198,9 @@ mod tests {
     #[test]
     fn zk_dex_circuit_through_registry() {
         use ethrex_guest_program::common::app_execution::{AppCircuit, AppOperation};
-        use ethrex_guest_program::programs::zk_dex::circuit::{DexCircuit, OP_TOKEN_TRANSFER, TOKEN_TRANSFER_GAS};
+        use ethrex_guest_program::programs::zk_dex::circuit::{
+            DexCircuit, OP_TOKEN_TRANSFER, TOKEN_TRANSFER_GAS,
+        };
 
         let reg = test_registry();
         let prog = reg.get("zk-dex").expect("zk-dex registered");

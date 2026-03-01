@@ -1625,20 +1625,20 @@ async fn initialize_contracts(
                 continue;
             }
 
-            let timelock_address = contract_addresses.timelock_address.ok_or(
-                DeployerError::InternalError(
-                    "Timelock address required for VK registration".to_string(),
-                ),
-            )?;
+            let timelock_address =
+                contract_addresses
+                    .timelock_address
+                    .ok_or(DeployerError::InternalError(
+                        "Timelock address required for VK registration".to_string(),
+                    ))?;
 
-            let security_council_pk = opts.bridge_owner_pk.ok_or(
-                DeployerError::ConfigValueNotSet(
-                    "--bridge-owner-pk (needed as security council for VK registration)"
-                        .to_string(),
-                ),
-            )?;
-            let security_council_signer: Signer =
-                LocalSigner::new(security_council_pk).into();
+            let security_council_pk =
+                opts.bridge_owner_pk
+                    .ok_or(DeployerError::ConfigValueNotSet(
+                        "--bridge-owner-pk (needed as security council for VK registration)"
+                            .to_string(),
+                    ))?;
+            let security_council_signer: Signer = LocalSigner::new(security_council_pk).into();
 
             const SP1_VERIFIER_ID: u8 = 1;
             let vk_calldata = encode_calldata(
@@ -1672,12 +1672,8 @@ async fn initialize_contracts(
                 },
             )
             .await?;
-            let vk_tx_hash = send_generic_transaction(
-                eth_client,
-                vk_tx,
-                &security_council_signer,
-            )
-            .await?;
+            let vk_tx_hash =
+                send_generic_transaction(eth_client, vk_tx, &security_council_signer).await?;
             info!(
                 tx_hash = %format!("{vk_tx_hash:#x}"),
                 program_id,
