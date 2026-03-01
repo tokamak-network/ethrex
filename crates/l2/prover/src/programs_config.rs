@@ -50,6 +50,7 @@ impl ProgramsConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 

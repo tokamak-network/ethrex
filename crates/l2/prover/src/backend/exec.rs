@@ -117,6 +117,7 @@ impl ProverBackend for ExecBackend {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use crate::backend::ProverBackend;
