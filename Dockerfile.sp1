@@ -60,14 +60,9 @@ COPY --from=planner /ethrex/recipe.json recipe.json
 RUN RUSTUP_TOOLCHAIN=stable cargo chef cook --release --recipe-path recipe.json $BUILD_FLAGS
 
 # Install solc 0.8.31
-RUN if [ "$(uname -m)" = aarch64 ]; \
-    then \
-    SOLC_URL=https://github.com/ethereum/solidity/releases/download/v0.8.31/solc-static-linux-arm;\
-    else \
-    SOLC_URL=https://github.com/ethereum/solidity/releases/download/v0.8.31/solc-static-linux; \
-    fi \
-    && curl -L -o /usr/bin/solc $SOLC_URL \
-    && chmod +x /usr/bin/solc
+RUN SOLC_URL="https://github.com/ethereum/solidity/releases/download/v0.8.31/solc-static-linux"; \
+    if [ "$(uname -m)" = "aarch64" ]; then SOLC_URL="${SOLC_URL}-arm"; fi; \
+    curl -L -o /usr/bin/solc "$SOLC_URL" && chmod +x /usr/bin/solc
 
 # Copy source
 COPY benches ./benches
