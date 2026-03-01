@@ -394,8 +394,10 @@ fn is_system_contract(address: Address) -> bool {
 
 /// Apply gas deduction to the sender's balance.
 ///
-/// Gas fee = gas_used * effective_gas_price.
-/// For EIP-1559: effective_gas_price = min(max_fee, base_fee + max_priority_fee).
+/// In app-specific circuits, gas costs are fixed per operation type
+/// and the fee is calculated as `gas_used * base_fee_per_gas`.
+/// Unlike EVM L2, priority fees are not applicable here since
+/// all operations have predetermined gas costs.
 fn apply_gas_deduction(
     state: &mut AppState,
     sender: Address,
