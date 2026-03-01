@@ -12,10 +12,10 @@
 
 use ethrex_common::types::AccountState;
 use ethrex_common::{Address, H256};
-use ethrex_trie::{InMemoryTrieDB, Nibbles, Node, Trie, TrieDB, EMPTY_TRIE_HASH};
 use ethrex_crypto::keccak::keccak_hash;
 use ethrex_rlp::decode::RLPDecode;
 use ethrex_rlp::encode::RLPEncode;
+use ethrex_trie::{EMPTY_TRIE_HASH, InMemoryTrieDB, Nibbles, Node, Trie, TrieDB};
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -41,6 +41,11 @@ pub enum IncrementalMptError {
 /// the state values are authentic.
 pub fn verify_state_proofs(state: &AppState) -> Result<(), IncrementalMptError> {
     let prev_root = state.prev_state_root();
+
+    // Nothing to verify when there are no proofs (e.g., empty batch).
+    if state.account_proofs().is_empty() {
+        return Ok(());
+    }
 
     // Build a partial state trie from account proofs and verify root.
     let state_trie = build_trie_from_proofs(
@@ -125,8 +130,16 @@ pub fn verify_state_proofs(state: &AppState) -> Result<(), IncrementalMptError> 
 ///
 /// This builds partial tries from the proofs, applies the dirty changes,
 /// and recomputes the root hashes incrementally.
+///
+/// If there are no dirty accounts (e.g., empty blocks with zero transactions),
+/// the previous state root is returned unchanged.
 pub fn compute_new_state_root(state: &AppState) -> Result<H256, IncrementalMptError> {
     let prev_root = state.prev_state_root();
+
+    // Short-circuit: no changes means the state root is unchanged.
+    if state.dirty_accounts().peekable().peek().is_none() && state.account_proofs().is_empty() {
+        return Ok(prev_root);
+    }
 
     // 1. Build state trie from account proofs.
     let mut state_trie = build_trie_from_proofs(
@@ -335,7 +348,10 @@ mod tests {
         state.set_balance(addr, U256::from(2000)).unwrap();
 
         let new_root = compute_new_state_root(&state).unwrap();
-        assert_ne!(new_root, root, "balance change should produce different root");
+        assert_ne!(
+            new_root, root,
+            "balance change should produce different root"
+        );
 
         // Verify the new root matches a trie built from scratch with the updated value.
         let mut expected_trie = Trie::empty_in_memory();
@@ -399,7 +415,12 @@ mod tests {
 
         // Insert 20 accounts to force branch nodes in the trie.
         let accounts: Vec<(Address, AccountState)> = (0u8..20)
-            .map(|i| (test_address(i), test_account(u64::from(i), 1000 + u64::from(i))))
+            .map(|i| {
+                (
+                    test_address(i),
+                    test_account(u64::from(i), 1000 + u64::from(i)),
+                )
+            })
             .collect();
 
         for (addr, account) in &accounts {
@@ -432,7 +453,10 @@ mod tests {
 
         // No changes → same root.
         let new_root = compute_new_state_root(&state).unwrap();
-        assert_eq!(new_root, root, "multi-account unchanged state should produce same root");
+        assert_eq!(
+            new_root, root,
+            "multi-account unchanged state should produce same root"
+        );
     }
 
     /// Test multi-account trie with balance update.
@@ -483,9 +507,7 @@ mod tests {
                 updated.balance = U256::from(9999);
             }
             let path = keccak_hash(addr.as_bytes()).to_vec();
-            expected_trie
-                .insert(path, updated.encode_to_vec())
-                .unwrap();
+            expected_trie.insert(path, updated.encode_to_vec()).unwrap();
         }
         let expected_root = expected_trie.hash_no_commit();
         assert_eq!(new_root, expected_root, "incremental root should match");

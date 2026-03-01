@@ -454,10 +454,8 @@ mod tests {
     /// it returns Err on arbitrary bytes (which are not valid rkyv ProgramInput).
     #[test]
     fn serialize_input_never_panics_on_arbitrary_bytes() {
-        let passthrough_programs: Vec<Box<dyn GuestProgram>> = vec![
-            Box::new(EvmL2GuestProgram),
-            Box::new(TokammonGuestProgram),
-        ];
+        let passthrough_programs: Vec<Box<dyn GuestProgram>> =
+            vec![Box::new(EvmL2GuestProgram), Box::new(TokammonGuestProgram)];
 
         // Test with various edge-case inputs.
         let all_bytes: Vec<u8> = (0..=255).collect();
@@ -485,10 +483,15 @@ mod tests {
         }
 
         // ZkDexGuestProgram: must not panic, but returns Err on invalid input.
-        let zk_dex = ZkDexGuestProgram;
-        for input in &inputs {
-            let result = zk_dex.serialize_input(input);
-            assert!(result.is_err(), "zk-dex should reject arbitrary bytes");
+        // Only testable with the "l2" feature (without it, serialize_input is
+        // a pass-through that returns Ok).
+        #[cfg(feature = "l2")]
+        {
+            let zk_dex = ZkDexGuestProgram;
+            for input in &inputs {
+                let result = zk_dex.serialize_input(input);
+                assert!(result.is_err(), "zk-dex should reject arbitrary bytes");
+            }
         }
     }
 

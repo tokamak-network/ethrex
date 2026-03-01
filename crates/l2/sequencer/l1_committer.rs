@@ -17,7 +17,7 @@ use ethrex_common::{
     Address, H256, U256,
     types::{
         BLOB_BASE_FEE_UPDATE_FRACTION, BlobsBundle, Block, BlockNumber, Fork, Genesis,
-        MIN_BASE_FEE_PER_BLOB_GAS, TxType, batch::Batch, blobs_bundle, fake_exponential,
+        MIN_BASE_FEE_PER_BLOB_GAS, TxKind, TxType, batch::Batch, blobs_bundle, fake_exponential,
         fee_config::FeeConfig,
     },
 };
@@ -26,8 +26,8 @@ use ethrex_l2_common::{
     calldata::Value,
     merkle_tree::compute_merkle_root,
     messages::{
-        L2Message, get_balance_diffs, get_block_l1_messages, get_block_l2_out_messages,
-        get_l1_message_hash,
+        BRIDGE_ADDRESS, L2Message, get_balance_diffs, get_block_l1_messages,
+        get_block_l2_out_messages, get_l1_message_hash,
     },
     privileged_transactions::{
         PRIVILEGED_TX_BUDGET, compute_privileged_transactions_hash, get_block_l1_in_messages,
@@ -229,6 +229,29 @@ impl L1Committer {
             genesis,
             checkpoints_dir,
         })
+    }
+
+    /// Check if there are pending withdrawal transactions in uncommitted blocks.
+    async fn has_pending_withdrawals(&self) -> Result<bool, CommitterError> {
+        let last_committed_block = self
+            .rollup_store
+            .get_block_numbers_by_batch(self.last_committed_batch)
+            .await?
+            .and_then(|blocks| blocks.last().copied())
+            .unwrap_or(0);
+
+        let latest_block = self.store.get_latest_block_number().await?;
+
+        for block_num in (last_committed_block + 1)..=latest_block {
+            if let Some(body) = self.store.get_block_body(block_num).await? {
+                for tx in &body.transactions {
+                    if tx.to() == TxKind::Call(BRIDGE_ADDRESS) {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     async fn ensure_checkpoint_for_committed_batch(
@@ -638,18 +661,32 @@ impl L1Committer {
             verify_tx: None,
         };
 
-        info!(
-            first_block = batch.first_block,
-            last_block = batch.last_block,
-            "Generating and storing witness for batch {}",
-            batch.number,
-        );
+        if batch.is_empty_batch() {
+            info!(
+                first_block = batch.first_block,
+                last_block = batch.last_block,
+                "Empty batch {} — skipping witness generation (no ZK proof needed)",
+                batch.number,
+            );
+            self.rollup_store.seal_batch(batch.clone()).await?;
+        } else {
+            info!(
+                first_block = batch.first_block,
+                last_block = batch.last_block,
+                "Generating and storing witness for batch {}",
+                batch.number,
+            );
 
-        let batch_prover_input = self.generate_batch_prover_input(&batch).await?;
+            let batch_prover_input = self.generate_batch_prover_input(&batch).await?;
 
-        self.rollup_store
-            .seal_batch_with_prover_input(batch.clone(), &self.git_commit_hash, batch_prover_input)
-            .await?;
+            self.rollup_store
+                .seal_batch_with_prover_input(
+                    batch.clone(),
+                    &self.git_commit_hash,
+                    batch_prover_input,
+                )
+                .await?;
+        }
 
         // Create the next checkpoint from the one-time checkpoint used
         let new_checkpoint_path = self
@@ -750,6 +787,41 @@ impl L1Committer {
 
                 Block::new(block_to_commit_header, block_to_commit_body)
             };
+
+            // ── Empty block fast-forward ──
+            // Empty blocks (0 transactions) don't change state, consume no blob
+            // space, and need no receipt/message processing. We skip all heavy
+            // processing and just track the block number and state root.
+            if potential_batch_block.body.transactions.is_empty() {
+                // Empty blocks don't change state — use the block header's
+                // state_root directly (which equals the parent's state_root).
+                new_state_root = potential_batch_block.header.state_root;
+
+                // Still register the block in the checkpoint store so that
+                // forkchoice_update (called at the end of batch assembly) can
+                // find it. We pass empty account updates since no state changed.
+                let account_updates_list = checkpoint_store
+                    .apply_account_updates_batch(
+                        potential_batch_block.header.parent_hash,
+                        &[], // no account updates for empty blocks
+                    )?
+                    .ok_or(CommitterError::FailedToGetInformationFromStorage(
+                        "Failed to apply empty account updates for empty block".to_owned(),
+                    ))?;
+                checkpoint_blockchain.store_block(
+                    potential_batch_block.clone(),
+                    account_updates_list,
+                    BlockExecutionResult {
+                        receipts: vec![],
+                        requests: vec![],
+                        block_gas_used: 0,
+                    },
+                )?;
+
+                last_added_block_number += 1;
+                acc_blocks.push((last_added_block_number, potential_batch_block.hash()));
+                continue;
+            }
 
             let current_block_gas_used = potential_batch_block.header.gas_used;
 
@@ -1203,7 +1275,12 @@ impl L1Committer {
             .await
             .ok()
             .flatten()
-            .unwrap_or_else(|| "evm-l2".to_string());
+            .unwrap_or_else(|| {
+                // Fall back to ETHREX_GUEST_PROGRAM_ID env var so that the
+                // committer uses the correct programTypeId even when the proof
+                // coordinator hasn't stored the program_id for this batch yet.
+                std::env::var("ETHREX_GUEST_PROGRAM_ID").unwrap_or_else(|_| "evm-l2".to_string())
+            });
         let program_type_id: u8 = resolve_program_type_id(&program_id);
 
         // For custom programs (programTypeId > 1), compute publicValuesHash.
@@ -1308,9 +1385,14 @@ impl L1Committer {
             self.on_chain_proposer_address
         };
 
+        // Determine if this is an empty batch (no transactions, no messages).
+        // Empty batches don't need blob data availability.
+        let is_empty_batch = batch.is_empty_batch();
+
         // Validium: EIP1559 Transaction.
         // Rollup: EIP4844 Transaction -> For on-chain Data Availability.
-        let tx = if !self.validium {
+        // Empty batches: EIP1559 Transaction (no blob needed).
+        let tx = if !self.validium && !is_empty_batch {
             info!("L2 is in rollup mode, sending EIP-4844 (including blob) tx to commit block");
             let le_bytes = estimate_blob_gas(
                 &self.eth_client,
@@ -1341,7 +1423,11 @@ impl L1Committer {
             .await
             .map_err(CommitterError::from)?
         } else {
-            info!("L2 is in validium mode, sending EIP-1559 (no blob) tx to commit block");
+            if is_empty_batch {
+                info!("Empty batch detected, sending EIP-1559 (no blob) tx to commit block");
+            } else {
+                info!("L2 is in validium mode, sending EIP-1559 (no blob) tx to commit block");
+            }
             build_generic_tx(
                 &self.eth_client,
                 TxType::EIP1559,
@@ -1370,7 +1456,7 @@ impl L1Committer {
                 .ok_or(CommitterError::UnexpectedError("no commit tx receipt".to_string()))?;
             let commit_gas_used = commit_tx_receipt.tx_info.gas_used.try_into()?;
             METRICS.set_batch_commitment_gas(batch.number, commit_gas_used)?;
-            if !self.validium {
+            if !self.validium && !is_empty_batch {
                 let blob_gas_used = commit_tx_receipt.tx_info.blob_gas_used
                     .ok_or(CommitterError::UnexpectedError("no blob in rollup mode".to_string()))?
                     .try_into()?;
@@ -1456,8 +1542,12 @@ impl L1Committer {
             }
 
             let commit_time: u128 = self.commit_time_ms.into();
-            let should_send_commitment =
-                current_time - self.last_committed_batch_timestamp > commit_time;
+            let timer_expired = current_time - self.last_committed_batch_timestamp > commit_time;
+            let has_withdrawal = self.has_pending_withdrawals().await.unwrap_or(false);
+            if has_withdrawal {
+                info!("Pending withdrawal detected, triggering early batch commit");
+            }
+            let should_send_commitment = timer_expired || has_withdrawal;
 
             debug!(
                 last_committed_batch_at = self.last_committed_batch_timestamp,

@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ethrex ZK-DEX Withdrawal Tracker</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #12121a;
+      --surface-2: #1a1a26;
+      --surface-3: #222233;
+      --border: #2a2a3a;
+      --text: #e0e0e8;
+      --text-dim: #8888a0;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --l1-color: #3b82f6;
+      --l2-color: #8b5cf6;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .header {
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .header h1 { font-size: 18px; font-weight: 600; }
+    .header h1 span { color: var(--accent); }
+    .nav-links { display: flex; gap: 16px; align-items: center; }
+    .nav-links a {
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 13px;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover { color: var(--text); }
+    .container { max-width: 780px; margin: 32px auto; padding: 0 16px; }
+
+    .btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: var(--accent-hover); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+    .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 6px; }
+
+    /* Toolbar: connect + filter */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .toolbar-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
+    }
+    .filter-btn {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+    .filter-btn:hover { border-color: var(--accent); color: var(--text); }
+    .filter-btn.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(99, 102, 241, 0.1);
+    }
+    .wallet-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-dim);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .wallet-chip .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+    }
+
+    .loading-state {
+      text-align: center;
+      padding: 40px;
+      color: var(--warning);
+      font-size: 14px;
+    }
+
+    /* Withdrawal list */
+    .withdrawals-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    .withdrawals-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .withdrawals-table th {
+      text-align: left;
+      padding: 10px 14px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .withdrawals-table td {
+      padding: 10px 14px;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border);
+    }
+    .withdrawals-table tr:last-child td { border-bottom: none; }
+    .withdrawals-table tr.clickable {
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .withdrawals-table tr.clickable:hover { background: var(--surface-2); }
+    .withdrawals-table tr.selected { background: var(--surface-2); }
+    .withdrawals-table tr.mine {
+      border-left: 3px solid var(--accent);
+    }
+
+    .mono {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 12px;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .status-badge.claimable {
+      background: rgba(34, 197, 94, 0.15);
+      color: var(--success);
+    }
+    .status-badge.pending {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--warning);
+    }
+    .status-badge.committed {
+      background: rgba(99, 102, 241, 0.15);
+      color: var(--accent);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+
+    /* Pagination */
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 24px;
+    }
+    .pagination button {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+    .pagination button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+    .pagination button:disabled { opacity: 0.3; cursor: not-allowed; }
+    .pagination .page-info {
+      font-size: 12px;
+      color: var(--text-dim);
+      min-width: 80px;
+      text-align: center;
+    }
+
+    /* Detail view */
+    .detail-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 24px;
+      display: none;
+    }
+    .detail-card.visible { display: block; }
+    .btn-close {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    .btn-close:hover { border-color: var(--error); color: var(--error); }
+
+    .detail-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .detail-title { font-size: 14px; font-weight: 600; }
+    .detail-sub {
+      font-size: 13px;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+    .detail-amount {
+      font-size: 13px;
+      color: var(--text-dim);
+      text-align: right;
+    }
+    .detail-amount strong {
+      color: var(--text);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+
+    /* Stages */
+    .stages { display: flex; flex-direction: column; }
+    .stage {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      position: relative;
+      padding: 12px 0;
+    }
+    .stage-indicator {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      flex-shrink: 0;
+      position: relative;
+    }
+    .stage-dot {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      position: relative;
+      z-index: 1;
+    }
+    .stage-dot.done {
+      border-color: var(--success);
+      background: rgba(34, 197, 94, 0.15);
+      color: var(--success);
+    }
+    .stage-dot.active {
+      border-color: var(--warning);
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--warning);
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .stage-dot.locked {
+      border-color: var(--border);
+      color: var(--text-dim);
+    }
+    .stage-line {
+      width: 2px;
+      height: 100%;
+      background: var(--border);
+      position: absolute;
+      top: 36px;
+      left: 11px;
+    }
+    .stage:last-child .stage-line { display: none; }
+    .stage-line.done { background: var(--success); }
+
+    .stage-content { flex: 1; min-width: 0; }
+    .stage-name {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    .stage-detail {
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .stage-detail .mono { color: var(--accent); }
+
+    .detail-links {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .detail-links a {
+      font-size: 12px;
+      color: var(--accent);
+      text-decoration: none;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    .detail-links a:hover {
+      border-color: var(--accent);
+      background: rgba(99, 102, 241, 0.1);
+    }
+
+    .auto-refresh-note {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 4px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 600px) {
+      .container { max-width: 100%; }
+      .toolbar { flex-direction: column; align-items: stretch; }
+      .withdrawals-table th:nth-child(3),
+      .withdrawals-table td:nth-child(3) { display: none; }
+      .withdrawals-table th:nth-child(4),
+      .withdrawals-table td:nth-child(4) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1><span>ethrex</span> Withdrawal Tracker</h1>
+    <div class="nav-links">
+      <a href="/">Dashboard</a>
+      <a href="/bridge.html">Bridge</a>
+      <a href="http://localhost:8083" target="_blank" id="navL1Explorer">L1 Explorer</a>
+      <a href="http://localhost:8082" target="_blank" id="navL2Explorer">L2 Explorer</a>
+    </div>
+  </div>
+
+  <div class="container">
+    <div id="loadingState" class="loading-state">Loading configuration...</div>
+
+    <div id="mainContent" style="display:none;">
+      <!-- Current time -->
+      <div style="text-align:right;font-size:12px;color:var(--text-dim);margin-bottom:8px;font-family:'SF Mono','Fira Code',monospace;" id="currentTime"></div>
+
+      <!-- Toolbar -->
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <div class="section-title">All Withdrawals</div>
+          <span id="totalCount" style="font-size:12px;color:var(--text-dim);"></span>
+        </div>
+        <div class="toolbar-right">
+          <button class="filter-btn" id="filterMineBtn" onclick="toggleFilterMine()" style="display:none;">
+            My Withdrawals
+          </button>
+          <button id="connectBtn" class="btn btn-sm" onclick="connectWallet()">Connect Wallet</button>
+        </div>
+      </div>
+
+      <!-- Wallet info -->
+      <div id="walletInfo" style="display:none;margin-bottom:12px;">
+        <div class="wallet-chip">
+          <span class="dot"></span>
+          <span id="walletLabel"></span>
+          &mdash; your withdrawals are highlighted
+        </div>
+      </div>
+
+      <!-- Table -->
+      <div class="withdrawals-card">
+        <div id="withdrawalsLoading" class="empty-state">Loading withdrawals from L2...</div>
+        <div id="withdrawalsEmpty" class="empty-state" style="display:none;">
+          No withdrawals found.<br>
+          <a href="/bridge.html" style="color:var(--accent);text-decoration:none;font-size:12px;margin-top:8px;display:inline-block;">Go to Bridge to initiate a withdrawal</a>
+        </div>
+        <table class="withdrawals-table" id="withdrawalsTable" style="display:none;">
+          <thead>
+            <tr>
+              <th>TX Hash</th>
+              <th>Amount</th>
+              <th>Sender</th>
+              <th>Receiver</th>
+              <th>Stage</th>
+            </tr>
+          </thead>
+          <tbody id="withdrawalsBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Pagination -->
+      <div class="pagination" id="pagination" style="display:none;">
+        <button onclick="goPage(-1)" id="prevBtn">&larr; Prev</button>
+        <span class="page-info" id="pageInfo"></span>
+        <button onclick="goPage(1)" id="nextBtn">Next &rarr;</button>
+      </div>
+
+      <div class="auto-refresh-note" id="refreshNote" style="display:none;">
+        Auto-refreshing every 10 seconds
+      </div>
+
+      <!-- Detail view -->
+      <div class="detail-card" id="detailCard">
+        <div class="detail-header">
+          <div>
+            <div class="detail-title">Withdrawal Details</div>
+            <div class="detail-sub" id="detailTxHash"></div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:12px;">
+            <div class="detail-amount" id="detailAmount"></div>
+            <button class="btn-close" onclick="closeDetail()" title="Close">&times;</button>
+          </div>
+        </div>
+
+        <div class="stages">
+          <div class="stage">
+            <div class="stage-indicator">
+              <div class="stage-dot" id="stageDot1"></div>
+              <div class="stage-line" id="stageLine1"></div>
+            </div>
+            <div class="stage-content">
+              <div class="stage-name">Stage 1: L2 TX Confirmed</div>
+              <div class="stage-detail" id="stageDetail1">Checking...</div>
+            </div>
+          </div>
+          <div class="stage">
+            <div class="stage-indicator">
+              <div class="stage-dot" id="stageDot2"></div>
+              <div class="stage-line" id="stageLine2"></div>
+            </div>
+            <div class="stage-content">
+              <div class="stage-name">Stage 2: Batch Committed</div>
+              <div class="stage-detail" id="stageDetail2">Waiting for Stage 1</div>
+            </div>
+          </div>
+          <div class="stage">
+            <div class="stage-indicator">
+              <div class="stage-dot" id="stageDot3"></div>
+              <div class="stage-line" id="stageLine3"></div>
+            </div>
+            <div class="stage-content">
+              <div class="stage-name">Stage 3: Batch Verified</div>
+              <div class="stage-detail" id="stageDetail3">Waiting for Stage 2</div>
+            </div>
+          </div>
+          <div class="stage">
+            <div class="stage-indicator">
+              <div class="stage-dot" id="stageDot4"></div>
+            </div>
+            <div class="stage-content">
+              <div class="stage-name">Stage 4: L1 Claim Available</div>
+              <div class="stage-detail" id="stageDetail4">Waiting for Stage 3</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-links">
+          <a id="linkL2Tx" href="#" target="_blank">View on L2 Explorer</a>
+          <a id="linkL1Proposer" href="#" target="_blank">OnChainProposer</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── Config ──
+    let CONFIG = null;
+    const COMMON_BRIDGE_L2 = '0x000000000000000000000000000000000000ffff';
+    const WITHDRAWAL_TOPIC = ethers.id("WithdrawalInitiated(address,address,uint256)");
+    const PAGE_SIZE = 10;
+
+    let l1Provider = null;
+    let l2Provider = null;
+    let connectedAddress = null;
+    let allWithdrawals = [];    // full list from logs
+    let displayList = [];       // filtered view
+    let currentPage = 0;
+    let filterMine = false;
+    let selectedTxHash = null;
+    let refreshTimer = null;
+
+    // L1 batch status (cached per refresh cycle)
+    let lastCommitted = 0n;
+    let lastVerified = 0n;
+
+    function getL1Explorer() { return CONFIG ? CONFIG.l1_explorer : 'http://localhost:8083'; }
+    function getL2Explorer() { return CONFIG ? CONFIG.l2_explorer : 'http://localhost:8082'; }
+
+    function shortenAddr(addr) {
+      if (!addr) return '?';
+      return addr.slice(0, 6) + '...' + addr.slice(-4);
+    }
+    function shortenHash(hash) {
+      if (!hash) return '?';
+      return hash.slice(0, 10) + '...' + hash.slice(-4);
+    }
+
+    // ── Clock ──
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('currentTime').textContent = now.toLocaleString();
+    }
+
+    function formatTimestamp(ts) {
+      if (!ts) return '';
+      const d = new Date(ts * 1000);
+      return d.toLocaleString();
+    }
+
+    function timeAgo(ts) {
+      if (!ts) return '';
+      const diff = Math.floor(Date.now() / 1000) - ts;
+      if (diff < 60) return diff + 's ago';
+      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+      return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    // ── Init ──
+    async function init() {
+      await loadConfig();
+      await loadWithdrawals();
+      startAutoRefresh();
+      updateClock();
+      setInterval(updateClock, 1000);
+    }
+
+    async function loadConfig() {
+      try {
+        const resp = await fetch('/config.json');
+        if (resp.ok) {
+          CONFIG = await resp.json();
+          console.log('Config loaded:', CONFIG);
+        }
+      } catch (err) {
+        console.warn('Failed to load config.json:', err);
+      }
+
+      if (CONFIG) {
+        document.getElementById('navL1Explorer').href = CONFIG.l1_explorer || 'http://localhost:8083';
+        document.getElementById('navL2Explorer').href = CONFIG.l2_explorer || 'http://localhost:8082';
+      }
+
+      document.getElementById('loadingState').style.display = 'none';
+      document.getElementById('mainContent').style.display = '';
+    }
+
+    function getProviders() {
+      const l1Rpc = CONFIG ? CONFIG.l1_rpc : 'http://localhost:8545';
+      const l2Rpc = CONFIG ? CONFIG.l2_rpc : 'http://localhost:1729';
+      if (!l1Provider) l1Provider = new ethers.JsonRpcProvider(l1Rpc);
+      if (!l2Provider) l2Provider = new ethers.JsonRpcProvider(l2Rpc);
+      return { l1: l1Provider, l2: l2Provider };
+    }
+
+    // ── Wallet ──
+    async function connectWallet() {
+      if (!window.ethereum) { alert('MetaMask is not installed.'); return; }
+      try {
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        connectedAddress = accounts[0].toLowerCase();
+        document.getElementById('connectBtn').textContent = shortenAddr(connectedAddress);
+        document.getElementById('connectBtn').classList.add('btn-outline');
+        document.getElementById('walletInfo').style.display = '';
+        document.getElementById('walletLabel').textContent = shortenAddr(connectedAddress);
+        document.getElementById('filterMineBtn').style.display = '';
+
+        window.ethereum.on('accountsChanged', async (accs) => {
+          if (accs.length === 0) { location.reload(); return; }
+          connectedAddress = accs[0].toLowerCase();
+          document.getElementById('connectBtn').textContent = shortenAddr(connectedAddress);
+          document.getElementById('walletLabel').textContent = shortenAddr(connectedAddress);
+          applyFilterAndRender();
+        });
+
+        // Re-render to highlight user's withdrawals
+        applyFilterAndRender();
+      } catch (err) {
+        console.error('Connection failed:', err);
+      }
+    }
+
+    // ── Load all withdrawals ──
+    async function loadWithdrawals() {
+      const { l1, l2 } = getProviders();
+
+      // Show loading only on first load
+      if (allWithdrawals.length === 0) {
+        document.getElementById('withdrawalsLoading').style.display = '';
+      }
+
+      try {
+        // 1. Fetch all WithdrawalInitiated logs (no sender filter)
+        const logs = await l2.getLogs({
+          address: COMMON_BRIDGE_L2,
+          topics: [WITHDRAWAL_TOPIC],
+          fromBlock: 0,
+          toBlock: 'latest'
+        });
+
+        allWithdrawals = logs.map(log => ({
+          txHash: log.transactionHash,
+          blockNumber: log.blockNumber,
+          logIndex: log.index,
+          sender: ethers.getAddress('0x' + log.topics[1].slice(26)),
+          receiver: ethers.getAddress('0x' + log.topics[2].slice(26)),
+          amount: BigInt(log.topics[3]),
+          _batch: null,
+          _stage: 0,
+          _timestamp: null
+        }));
+
+        // Fetch block timestamps
+        const blockCache = {};
+        for (const w of allWithdrawals) {
+          if (!blockCache[w.blockNumber]) {
+            try {
+              const block = await l2.getBlock(w.blockNumber);
+              blockCache[w.blockNumber] = block ? block.timestamp : null;
+            } catch { blockCache[w.blockNumber] = null; }
+          }
+          w._timestamp = blockCache[w.blockNumber];
+        }
+
+        // Newest first
+        allWithdrawals.reverse();
+
+        // 2. Fetch L1 batch status
+        const proposerAddr = CONFIG ? CONFIG.on_chain_proposer_address : null;
+        if (proposerAddr) {
+          try {
+            const proposer = new ethers.Contract(proposerAddr, [
+              "function lastCommittedBatch() view returns (uint256)",
+              "function lastVerifiedBatch() view returns (uint256)"
+            ], l1);
+            [lastCommitted, lastVerified] = await Promise.all([
+              proposer.lastCommittedBatch(),
+              proposer.lastVerifiedBatch()
+            ]);
+          } catch (err) {
+            console.warn('Failed to query L1 batch status:', err);
+          }
+        }
+
+        // 3. Get batch number for each withdrawal
+        const batchPromises = allWithdrawals.map(async (w) => {
+          try {
+            const batch = await l2.send("ethrex_getBatchByBlock", [
+              "0x" + w.blockNumber.toString(16)
+            ]);
+            return batch !== null ? BigInt(batch.number) : null;
+          } catch {
+            return null;
+          }
+        });
+        const batches = await Promise.all(batchPromises);
+
+        for (let i = 0; i < allWithdrawals.length; i++) {
+          allWithdrawals[i]._batch = batches[i];
+          allWithdrawals[i]._stage = computeStage(batches[i], lastCommitted, lastVerified);
+        }
+      } catch (err) {
+        console.error('Failed to load withdrawal logs:', err);
+      }
+
+      applyFilterAndRender();
+    }
+
+    function computeStage(batchNumber, committed, verified) {
+      if (batchNumber === null) return 1;
+      if (batchNumber > committed) return 1;
+      if (batchNumber > verified) return 2;
+      return 3;
+    }
+
+    // ── Filter + Render ──
+    function toggleFilterMine() {
+      filterMine = !filterMine;
+      document.getElementById('filterMineBtn').classList.toggle('active', filterMine);
+      currentPage = 0;
+      selectedTxHash = null;
+      document.getElementById('detailCard').classList.remove('visible');
+      applyFilterAndRender();
+    }
+
+    function applyFilterAndRender() {
+      if (filterMine && connectedAddress) {
+        displayList = allWithdrawals.filter(w =>
+          w.sender.toLowerCase() === connectedAddress ||
+          w.receiver.toLowerCase() === connectedAddress
+        );
+      } else {
+        displayList = allWithdrawals;
+      }
+
+      // Clamp page
+      const maxPage = Math.max(0, Math.ceil(displayList.length / PAGE_SIZE) - 1);
+      if (currentPage > maxPage) currentPage = maxPage;
+
+      renderTable();
+      renderPagination();
+
+      const countLabel = filterMine
+        ? displayList.length + ' of ' + allWithdrawals.length
+        : displayList.length + ' total';
+      document.getElementById('totalCount').textContent = '(' + countLabel + ')';
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById('withdrawalsBody');
+      tbody.innerHTML = '';
+
+      if (displayList.length === 0) {
+        document.getElementById('withdrawalsLoading').style.display = 'none';
+        document.getElementById('withdrawalsEmpty').style.display = '';
+        document.getElementById('withdrawalsTable').style.display = 'none';
+        document.getElementById('refreshNote').style.display = 'none';
+        return;
+      }
+
+      const start = currentPage * PAGE_SIZE;
+      const end = Math.min(start + PAGE_SIZE, displayList.length);
+      const pageItems = displayList.slice(start, end);
+
+      for (const w of pageItems) {
+        const tr = document.createElement('tr');
+        const isMine = connectedAddress && (
+          w.sender.toLowerCase() === connectedAddress ||
+          w.receiver.toLowerCase() === connectedAddress
+        );
+        tr.className = 'clickable' + (isMine ? ' mine' : '') + (w.txHash === selectedTxHash ? ' selected' : '');
+        tr.onclick = () => { selectedTxHash = w.txHash; showDetail(w); applyFilterAndRender(); };
+
+        const amountEth = parseFloat(ethers.formatEther(w.amount)).toFixed(4);
+
+        tr.innerHTML =
+          '<td class="mono">' + shortenHash(w.txHash) + '</td>' +
+          '<td>' + amountEth + ' ETH</td>' +
+          '<td class="mono">' + shortenAddr(w.sender) + '</td>' +
+          '<td class="mono">' + shortenAddr(w.receiver) + '</td>' +
+          '<td>' + renderStageBadge(w._stage) + '</td>';
+        tbody.appendChild(tr);
+      }
+
+      document.getElementById('withdrawalsLoading').style.display = 'none';
+      document.getElementById('withdrawalsEmpty').style.display = 'none';
+      document.getElementById('withdrawalsTable').style.display = '';
+      document.getElementById('refreshNote').style.display = '';
+    }
+
+    function renderStageBadge(stage) {
+      if (stage >= 3) return '<span class="status-badge claimable">Claimable</span>';
+      if (stage === 2) return '<span class="status-badge committed">Committed</span>';
+      return '<span class="status-badge pending">Pending</span>';
+    }
+
+    // ── Pagination ──
+    function renderPagination() {
+      const totalPages = Math.max(1, Math.ceil(displayList.length / PAGE_SIZE));
+      if (totalPages <= 1) {
+        document.getElementById('pagination').style.display = 'none';
+        return;
+      }
+      document.getElementById('pagination').style.display = 'flex';
+      document.getElementById('prevBtn').disabled = currentPage === 0;
+      document.getElementById('nextBtn').disabled = currentPage >= totalPages - 1;
+      document.getElementById('pageInfo').textContent =
+        'Page ' + (currentPage + 1) + ' of ' + totalPages;
+    }
+
+    function goPage(delta) {
+      const totalPages = Math.ceil(displayList.length / PAGE_SIZE);
+      currentPage = Math.max(0, Math.min(totalPages - 1, currentPage + delta));
+      renderTable();
+      renderPagination();
+    }
+
+    // ── Detail view ──
+    function showDetail(w) {
+      const card = document.getElementById('detailCard');
+      card.classList.add('visible');
+
+      const amountEth = ethers.formatEther(w.amount);
+      document.getElementById('detailTxHash').innerHTML =
+        'TX: <span class="mono">' + shortenHash(w.txHash) + '</span>';
+      document.getElementById('detailAmount').innerHTML =
+        '<strong>' + parseFloat(amountEth).toFixed(4) + ' ETH</strong><br>' +
+        '<span class="mono" style="font-size:11px;">' + shortenAddr(w.sender) + ' &rarr; ' + shortenAddr(w.receiver) + '</span>';
+
+      const stage = w._stage;
+      const batch = w._batch;
+
+      // Stage 1: always done (we only see confirmed logs)
+      const tsInfo = w._timestamp
+        ? 'Block #' + w.blockNumber + ' &mdash; ' + formatTimestamp(w._timestamp) + ' (' + timeAgo(w._timestamp) + ')'
+        : 'Block #' + w.blockNumber;
+      setStage(1, 'done', tsInfo);
+      setStageLine(1, true);
+
+      // Stage 2
+      if (batch === null) {
+        setStage(2, 'active', 'Block not yet included in a batch');
+        setStageLine(2, false);
+      } else if (batch > lastCommitted) {
+        setStage(2, 'active',
+          'Batch #' + batch.toString() + ' &mdash; waiting for commit (last committed: #' + lastCommitted.toString() + ')');
+        setStageLine(2, false);
+      } else {
+        setStage(2, 'done', 'Batch #' + batch.toString() + ' committed');
+        setStageLine(2, true);
+      }
+
+      // Stage 3
+      if (stage < 2) {
+        setStage(3, 'locked', 'Waiting for batch commit');
+        setStageLine(3, false);
+      } else if (batch > lastVerified) {
+        setStage(3, 'active',
+          'Batch #' + batch.toString() + ' &mdash; waiting for ZK proof (last verified: #' + lastVerified.toString() + ')');
+        setStageLine(3, false);
+      } else {
+        setStage(3, 'done', 'Batch #' + batch.toString() + ' verified');
+        setStageLine(3, true);
+      }
+
+      // Stage 4
+      if (stage < 3) {
+        setStage(4, 'locked', 'Waiting for batch verification');
+      } else {
+        setStage(4, 'done', 'Ready to claim on L1 via CommonBridge.claimWithdrawal()');
+      }
+
+      // Links
+      document.getElementById('linkL2Tx').href = getL2Explorer() + '/tx/' + w.txHash;
+      const proposerAddr = CONFIG ? CONFIG.on_chain_proposer_address : '';
+      document.getElementById('linkL1Proposer').href = proposerAddr
+        ? getL1Explorer() + '/address/' + proposerAddr
+        : '#';
+    }
+
+    function setStage(n, state, detail) {
+      const dot = document.getElementById('stageDot' + n);
+      dot.className = 'stage-dot ' + state;
+      dot.textContent = state === 'done' ? '\u2713' : state === 'active' ? '\u25CF' : '\u25CB';
+      document.getElementById('stageDetail' + n).innerHTML = detail;
+    }
+
+    function setStageLine(n, done) {
+      const line = document.getElementById('stageLine' + n);
+      if (line) line.className = 'stage-line' + (done ? ' done' : '');
+    }
+
+    function closeDetail() {
+      selectedTxHash = null;
+      document.getElementById('detailCard').classList.remove('visible');
+      document.querySelectorAll('.withdrawals-table tr.clickable').forEach(tr => {
+        tr.classList.remove('selected');
+      });
+    }
+
+    // ── Auto-refresh ──
+    function startAutoRefresh() {
+      if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = setInterval(() => loadWithdrawals(), 10000);
+    }
+
+    // ── Start ──
+    init();
+  </script>
+</body>
+</html>
