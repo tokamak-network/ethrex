@@ -33,21 +33,12 @@ pub enum GuestProgramError {
 /// These limits protect the prover from unbounded resource consumption due to
 /// malicious or buggy inputs.  Each guest program can override the defaults to
 /// set program-specific constraints.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ResourceLimits {
     /// Maximum serialized input size in bytes.  `None` means unlimited.
     pub max_input_bytes: Option<usize>,
     /// Maximum wall-clock time allowed for proving.  `None` means unlimited.
     pub max_proving_duration: Option<std::time::Duration>,
-}
-
-impl Default for ResourceLimits {
-    fn default() -> Self {
-        Self {
-            max_input_bytes: None,
-            max_proving_duration: None,
-        }
-    }
 }
 
 /// Trait that abstracts a guest program running inside a zkVM.
