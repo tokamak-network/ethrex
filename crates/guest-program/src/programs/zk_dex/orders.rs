@@ -11,9 +11,7 @@ use crate::common::app_execution::{AppCircuitError, OperationResult};
 use crate::common::app_state::AppState;
 
 use super::notes::{NOTE_SPENT, NOTE_TRADING, NOTE_VALID};
-use super::storage::{
-    note_state_slot, order_field_slot, orders_length_slot, write_encrypted_note,
-};
+use super::storage::{note_state_slot, order_field_slot, orders_length_slot, write_encrypted_note};
 
 // ── Order struct field offsets ───────────────────────────────────
 
@@ -90,11 +88,7 @@ pub fn execute_make_order(
         order_field_slot(order_count, ORDER_TARGET_TOKEN),
         target_token,
     )?;
-    state.set_storage(
-        contract,
-        order_field_slot(order_count, ORDER_PRICE),
-        price,
-    )?;
+    state.set_storage(contract, order_field_slot(order_count, ORDER_PRICE), price)?;
     state.set_storage(
         contract,
         order_field_slot(order_count, ORDER_STATE),
@@ -269,9 +263,7 @@ pub fn execute_settle_order(
 /// Uses a simple RLP list decoder (no external dependency).
 fn decode_enc_datas(data: &[u8]) -> Result<Vec<Vec<u8>>, AppCircuitError> {
     if data.is_empty() {
-        return Err(AppCircuitError::InvalidParams(
-            "encDatas is empty".into(),
-        ));
+        return Err(AppCircuitError::InvalidParams("encDatas is empty".into()));
     }
 
     // RLP list prefix.
@@ -328,7 +320,10 @@ fn decode_rlp_list(data: &[u8]) -> Result<(&[u8], usize), AppCircuitError> {
         if data.len() < 1 + len_bytes + len {
             return Err(err());
         }
-        Ok((&data[1 + len_bytes..1 + len_bytes + len], 1 + len_bytes + len))
+        Ok((
+            &data[1 + len_bytes..1 + len_bytes + len],
+            1 + len_bytes + len,
+        ))
     }
 }
 
@@ -382,7 +377,7 @@ mod tests {
     use super::*;
     use crate::common::app_state::AppState;
     use crate::common::app_types::{AccountProof, StorageProof};
-    use crate::programs::zk_dex::storage::{encrypted_note_slots, ORDERS_SLOT};
+    use crate::programs::zk_dex::storage::{ORDERS_SLOT, encrypted_note_slots};
     use ethrex_common::H160;
 
     fn dex_address() -> Address {
@@ -390,11 +385,7 @@ mod tests {
     }
 
     /// Build a state with order slots and note slots pre-provisioned.
-    fn make_order_state(
-        order_count: u64,
-        note_hashes: &[H256],
-        max_order_index: u64,
-    ) -> AppState {
+    fn make_order_state(order_count: u64, note_hashes: &[H256], max_order_index: u64) -> AppState {
         let contract = dex_address();
         let account_proofs = vec![AccountProof {
             address: contract,
@@ -568,19 +559,27 @@ mod tests {
 
         // Verify pre-settle state: makerNote=Trading, parentNote=Trading, stakeNote=Trading.
         assert_eq!(
-            state.get_storage(contract, note_state_slot(maker_note)).unwrap(),
+            state
+                .get_storage(contract, note_state_slot(maker_note))
+                .unwrap(),
             NOTE_TRADING,
         );
         assert_eq!(
-            state.get_storage(contract, note_state_slot(parent_note)).unwrap(),
+            state
+                .get_storage(contract, note_state_slot(parent_note))
+                .unwrap(),
             NOTE_TRADING,
         );
         assert_eq!(
-            state.get_storage(contract, note_state_slot(stake_note)).unwrap(),
+            state
+                .get_storage(contract, note_state_slot(stake_note))
+                .unwrap(),
             NOTE_TRADING,
         );
         assert_eq!(
-            state.get_storage(contract, order_field_slot(U256::zero(), ORDER_STATE)).unwrap(),
+            state
+                .get_storage(contract, order_field_slot(U256::zero(), ORDER_STATE))
+                .unwrap(),
             ORDER_STATE_TAKEN,
         );
 
@@ -608,35 +607,49 @@ mod tests {
 
         // ── Verify new notes are Valid ──
         assert_eq!(
-            state.get_storage(contract, note_state_slot(reward_note)).unwrap(),
+            state
+                .get_storage(contract, note_state_slot(reward_note))
+                .unwrap(),
             NOTE_VALID,
         );
         assert_eq!(
-            state.get_storage(contract, note_state_slot(payment_note)).unwrap(),
+            state
+                .get_storage(contract, note_state_slot(payment_note))
+                .unwrap(),
             NOTE_VALID,
         );
         assert_eq!(
-            state.get_storage(contract, note_state_slot(change_note)).unwrap(),
+            state
+                .get_storage(contract, note_state_slot(change_note))
+                .unwrap(),
             NOTE_VALID,
         );
 
         // ── Verify old notes are Spent ──
         assert_eq!(
-            state.get_storage(contract, note_state_slot(maker_note)).unwrap(),
+            state
+                .get_storage(contract, note_state_slot(maker_note))
+                .unwrap(),
             NOTE_SPENT,
         );
         assert_eq!(
-            state.get_storage(contract, note_state_slot(parent_note)).unwrap(),
+            state
+                .get_storage(contract, note_state_slot(parent_note))
+                .unwrap(),
             NOTE_SPENT,
         );
         assert_eq!(
-            state.get_storage(contract, note_state_slot(stake_note)).unwrap(),
+            state
+                .get_storage(contract, note_state_slot(stake_note))
+                .unwrap(),
             NOTE_SPENT,
         );
 
         // ── Verify order state is Settled ──
         assert_eq!(
-            state.get_storage(contract, order_field_slot(U256::zero(), ORDER_STATE)).unwrap(),
+            state
+                .get_storage(contract, order_field_slot(U256::zero(), ORDER_STATE))
+                .unwrap(),
             ORDER_STATE_SETTLED,
         );
 

@@ -50,10 +50,8 @@ pub fn handle_withdrawal(
     }
 
     // 3. Messenger.lastMessageId += 1
-    let current_id = state.get_storage(
-        L2_TO_L1_MESSENGER_ADDRESS,
-        MESSENGER_LAST_MESSAGE_ID_SLOT,
-    )?;
+    let current_id =
+        state.get_storage(L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT)?;
     let new_id = current_id + U256::one();
     state.set_storage(
         L2_TO_L1_MESSENGER_ADDRESS,
@@ -73,11 +71,7 @@ pub fn handle_withdrawal(
 ///         emitted by L2ToL1Messenger (0xfffe)
 ///
 /// The `data_hash` in Log 2 is `keccak256(abi.encodePacked(ETH_TOKEN, ETH_TOKEN, receiverOnL1, value))`.
-pub fn generate_withdrawal_logs(
-    sender: Address,
-    tx: &Transaction,
-    message_id: U256,
-) -> Vec<Log> {
+pub fn generate_withdrawal_logs(sender: Address, tx: &Transaction, message_id: U256) -> Vec<Log> {
     let value = tx.value();
     let data = tx.data();
 
@@ -151,9 +145,9 @@ fn compute_withdrawal_data_hash(receiver: Address, value: U256) -> H256 {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use ethrex_common::types::transaction::EIP1559Transaction;
-    use ethrex_common::types::TxKind;
     use ethrex_common::H160;
+    use ethrex_common::types::TxKind;
+    use ethrex_common::types::transaction::EIP1559Transaction;
 
     use crate::common::app_state::AppState;
     use crate::common::app_types::{AccountProof, StorageProof};
@@ -194,7 +188,7 @@ mod tests {
             chain_id: 1,
             nonce: 0,
             max_priority_fee_per_gas: 2_000_000_000, // 2 gwei
-            max_fee_per_gas: 10_000_000_000,          // 10 gwei
+            max_fee_per_gas: 10_000_000_000,         // 10 gwei
             gas_limit: 200_000,
             to: TxKind::Call(COMMON_BRIDGE_L2_ADDRESS),
             value,
@@ -244,11 +238,15 @@ mod tests {
 
         let mut state = make_state(
             vec![
-                (sender, 0, five_eth * 2),           // 10 ETH
-                (BURN_ADDRESS, 0, U256::zero()),      // 0 ETH
+                (sender, 0, five_eth * 2),       // 10 ETH
+                (BURN_ADDRESS, 0, U256::zero()), // 0 ETH
                 (L2_TO_L1_MESSENGER_ADDRESS, 0, U256::zero()),
             ],
-            vec![(L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT, U256::zero())],
+            vec![(
+                L2_TO_L1_MESSENGER_ADDRESS,
+                MESSENGER_LAST_MESSAGE_ID_SLOT,
+                U256::zero(),
+            )],
         );
 
         let tx = make_withdrawal_tx(receiver, five_eth, sender);
@@ -261,7 +259,9 @@ mod tests {
         // messenger lastMessageId incremented from 0 to 1
         assert_eq!(msg_id, U256::one());
         assert_eq!(
-            state.get_storage(L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT).unwrap(),
+            state
+                .get_storage(L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT)
+                .unwrap(),
             U256::one()
         );
         assert_eq!(gas, WITHDRAWAL_GAS);
@@ -279,7 +279,11 @@ mod tests {
                 (BURN_ADDRESS, 0, U256::zero()),
                 (L2_TO_L1_MESSENGER_ADDRESS, 0, U256::zero()),
             ],
-            vec![(L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT, U256::from(5))],
+            vec![(
+                L2_TO_L1_MESSENGER_ADDRESS,
+                MESSENGER_LAST_MESSAGE_ID_SLOT,
+                U256::from(5),
+            )],
         );
 
         let tx = make_withdrawal_tx(receiver, one_eth, sender);
@@ -303,7 +307,11 @@ mod tests {
                 (BURN_ADDRESS, 0, U256::zero()),
                 (L2_TO_L1_MESSENGER_ADDRESS, 0, U256::zero()),
             ],
-            vec![(L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT, U256::zero())],
+            vec![(
+                L2_TO_L1_MESSENGER_ADDRESS,
+                MESSENGER_LAST_MESSAGE_ID_SLOT,
+                U256::zero(),
+            )],
         );
 
         let tx = make_withdrawal_tx(receiver, one_eth, sender);
@@ -340,7 +348,8 @@ mod tests {
         assert_eq!(log1.address, COMMON_BRIDGE_L2_ADDRESS);
 
         // topics[0] = keccak256("WithdrawalInitiated(address,address,uint256)")
-        let expected_selector = H256::from(keccak_hash(b"WithdrawalInitiated(address,address,uint256)"));
+        let expected_selector =
+            H256::from(keccak_hash(b"WithdrawalInitiated(address,address,uint256)"));
         assert_eq!(log1.topics[0], expected_selector);
         assert_eq!(log1.topics[0], *WITHDRAWAL_INITIATED_TOPIC);
 
@@ -369,8 +378,8 @@ mod tests {
         let sender = H160([0xAA; 20]);
         // Use the real address from the earlier analysis
         let receiver = H160([
-            0xf9, 0x3e, 0xe4, 0xcf, 0x8c, 0x6c, 0x40, 0xb3, 0x29, 0xb0,
-            0xc0, 0x62, 0x6f, 0x28, 0x33, 0x3c, 0x13, 0x2c, 0xf2, 0x41,
+            0xf9, 0x3e, 0xe4, 0xcf, 0x8c, 0x6c, 0x40, 0xb3, 0x29, 0xb0, 0xc0, 0x62, 0x6f, 0x28,
+            0x33, 0x3c, 0x13, 0x2c, 0xf2, 0x41,
         ]);
         let five_eth = U256::from(5_000_000_000_000_000_000u64);
         let message_id = U256::from(1);
@@ -396,8 +405,8 @@ mod tests {
         let mut packed = Vec::with_capacity(92);
         packed.extend_from_slice(ETH_TOKEN_ADDRESS.as_bytes()); // 20
         packed.extend_from_slice(ETH_TOKEN_ADDRESS.as_bytes()); // 20
-        packed.extend_from_slice(receiver.as_bytes());           // 20
-        packed.extend_from_slice(&five_eth.to_big_endian());    // 32
+        packed.extend_from_slice(receiver.as_bytes()); // 20
+        packed.extend_from_slice(&five_eth.to_big_endian()); // 32
         assert_eq!(packed.len(), 92, "abi.encodePacked should be 92 bytes");
         let expected_data_hash = H256::from(keccak_hash(&packed));
         assert_eq!(log2.topics[2], expected_data_hash);
@@ -423,8 +432,8 @@ mod tests {
 
         let sender = H160([0xAA; 20]);
         let receiver = H160([
-            0xf9, 0x3e, 0xe4, 0xcf, 0x8c, 0x6c, 0x40, 0xb3, 0x29, 0xb0,
-            0xc0, 0x62, 0x6f, 0x28, 0x33, 0x3c, 0x13, 0x2c, 0xf2, 0x41,
+            0xf9, 0x3e, 0xe4, 0xcf, 0x8c, 0x6c, 0x40, 0xb3, 0x29, 0xb0, 0xc0, 0x62, 0x6f, 0x28,
+            0x33, 0x3c, 0x13, 0x2c, 0xf2, 0x41,
         ]);
         let five_eth = U256::from(5_000_000_000_000_000_000u64);
         let message_id = U256::from(1);
@@ -473,8 +482,8 @@ mod tests {
         use crate::common::handlers::deposit::handle_privileged_tx;
 
         let real_recipient = H160([
-            0xf9, 0x3e, 0xe4, 0xcf, 0x8c, 0x6c, 0x40, 0xb3, 0x29, 0xb0,
-            0xc0, 0x62, 0x6f, 0x28, 0x33, 0x3c, 0x13, 0x2c, 0xf2, 0x41,
+            0xf9, 0x3e, 0xe4, 0xcf, 0x8c, 0x6c, 0x40, 0xb3, 0x29, 0xb0, 0xc0, 0x62, 0x6f, 0x28,
+            0x33, 0x3c, 0x13, 0x2c, 0xf2, 0x41,
         ]);
         let ten_eth = U256::from(10) * U256::from(1_000_000_000_000_000_000u64);
 
@@ -505,6 +514,9 @@ mod tests {
 
         // The real recipient should get 10 ETH, NOT the bridge contract
         assert_eq!(state.get_balance(real_recipient).unwrap(), ten_eth);
-        assert_eq!(state.get_balance(COMMON_BRIDGE_L2_ADDRESS).unwrap(), U256::zero());
+        assert_eq!(
+            state.get_balance(COMMON_BRIDGE_L2_ADDRESS).unwrap(),
+            U256::zero()
+        );
     }
 }

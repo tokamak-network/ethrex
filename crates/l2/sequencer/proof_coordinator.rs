@@ -210,9 +210,7 @@ impl ProofCoordinator {
             // These batches are auto-verified on L1 without a ZK proof, so the prover
             // should skip them rather than report a version mismatch.
             if commit_hash == self.git_commit_hash {
-                info!(
-                    "Batch {batch_to_prove} has no prover input (empty/genesis batch), skipping"
-                );
+                info!("Batch {batch_to_prove} has no prover input (empty/genesis batch), skipping");
                 send_response(stream, &ProofData::empty_batch_response()).await?;
             } else {
                 info!(

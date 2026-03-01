@@ -1030,7 +1030,6 @@ impl L1Committer {
             return Ok(None);
         }
 
-
         metrics!(if let (Ok(privileged_transaction_count), Ok(messages_count)) = (
                 l1_in_message_hashes.len().try_into(),
                 l1_out_message_hashes.len().try_into()
@@ -1543,8 +1542,7 @@ impl L1Committer {
             }
 
             let commit_time: u128 = self.commit_time_ms.into();
-            let timer_expired =
-                current_time - self.last_committed_batch_timestamp > commit_time;
+            let timer_expired = current_time - self.last_committed_batch_timestamp > commit_time;
             let has_withdrawal = self.has_pending_withdrawals().await.unwrap_or(false);
             if has_withdrawal {
                 info!("Pending withdrawal detected, triggering early batch commit");

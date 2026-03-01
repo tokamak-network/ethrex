@@ -56,12 +56,7 @@ pub fn note_state_change_log(contract: Address, note_hash: H256, state: U256) ->
 /// - `topics[0]` = event signature hash
 /// - `topics[1]` = `orderId` (indexed uint256)
 /// - `data` = `takerNoteToMaker(32) + parentNote(32)` (64 bytes)
-pub fn order_taken_log(
-    contract: Address,
-    order_id: U256,
-    taker_note: H256,
-    parent: H256,
-) -> Log {
+pub fn order_taken_log(contract: Address, order_id: U256, taker_note: H256, parent: H256) -> Log {
     let mut data = vec![0u8; 64];
     data[0..32].copy_from_slice(taker_note.as_bytes());
     data[32..64].copy_from_slice(parent.as_bytes());

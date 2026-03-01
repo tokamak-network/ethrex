@@ -133,8 +133,7 @@ fn analyze_zk_dex_transactions(
 
     use crate::common::handlers::constants::{
         BURN_ADDRESS, COMMON_BRIDGE_L2_ADDRESS, FEE_TOKEN_RATIO_ADDRESS,
-        FEE_TOKEN_REGISTRY_ADDRESS, L2_TO_L1_MESSENGER_ADDRESS,
-        MESSENGER_LAST_MESSAGE_ID_SLOT,
+        FEE_TOKEN_REGISTRY_ADDRESS, L2_TO_L1_MESSENGER_ADDRESS, MESSENGER_LAST_MESSAGE_ID_SLOT,
     };
 
     let mut accounts: BTreeSet<ethrex_common::Address> = BTreeSet::new();
@@ -162,8 +161,7 @@ fn analyze_zk_dex_transactions(
     }
 
     // Track makeOrder count for order index computation across the batch.
-    let initial_order_count =
-        read_dex_storage(&dex_storage_trie, storage::orders_length_slot());
+    let initial_order_count = read_dex_storage(&dex_storage_trie, storage::orders_length_slot());
     let mut make_order_offset: u64 = 0;
 
     // Selectors for all supported operations.
@@ -233,10 +231,8 @@ fn analyze_zk_dex_transactions(
 
                     if sel == &transfer_sel && data.len() >= 4 + 96 {
                         // transfer(address to, address token, uint256 amount)
-                        let transfer_to =
-                            ethrex_common::Address::from_slice(&data[4 + 12..4 + 32]);
-                        let token =
-                            ethrex_common::Address::from_slice(&data[4 + 32 + 12..4 + 64]);
+                        let transfer_to = ethrex_common::Address::from_slice(&data[4 + 12..4 + 32]);
+                        let token = ethrex_common::Address::from_slice(&data[4 + 32 + 12..4 + 64]);
                         storage_slots
                             .insert((dex_contract, circuit::balance_storage_slot(token, sender)));
                         storage_slots.insert((
@@ -280,14 +276,12 @@ fn analyze_zk_dex_transactions(
                         let to = ethrex_common::Address::from_slice(&data[4 + 12..4 + 32]);
                         let note_hash = H256::from_slice(&data[324..356]);
                         accounts.insert(to);
-                        storage_slots
-                            .insert((dex_contract, storage::note_state_slot(note_hash)));
+                        storage_slots.insert((dex_contract, storage::note_state_slot(note_hash)));
                     } else if sel == &convert_note_sel && data.len() >= 420 {
                         // convertNote: smartNote + newNote + encryptedNotes[newNote]
                         let smart_note = H256::from_slice(&data[292..324]);
                         let new_note = H256::from_slice(&data[356..388]);
-                        storage_slots
-                            .insert((dex_contract, storage::note_state_slot(smart_note)));
+                        storage_slots.insert((dex_contract, storage::note_state_slot(smart_note)));
                         add_note_slots(
                             &mut storage_slots,
                             dex_contract,
@@ -299,14 +293,11 @@ fn analyze_zk_dex_transactions(
                     } else if sel == &make_order_sel && data.len() >= 420 {
                         // makeOrder: orders.length + order fields + maker note
                         let maker_note = H256::from_slice(&data[356..388]);
-                        storage_slots
-                            .insert((dex_contract, storage::note_state_slot(maker_note)));
+                        storage_slots.insert((dex_contract, storage::note_state_slot(maker_note)));
                         // orders.length
-                        storage_slots
-                            .insert((dex_contract, storage::orders_length_slot()));
+                        storage_slots.insert((dex_contract, storage::orders_length_slot()));
                         // Compute exact order index from witness + batch offset.
-                        let order_index =
-                            initial_order_count + U256::from(make_order_offset);
+                        let order_index = initial_order_count + U256::from(make_order_offset);
                         for field in 0..7u64 {
                             storage_slots.insert((
                                 dex_contract,
@@ -319,8 +310,7 @@ fn analyze_zk_dex_transactions(
                         let order_id = U256::from_big_endian(&data[4..36]);
                         let parent_note = H256::from_slice(&data[324..356]);
                         let stake_note = H256::from_slice(&data[388..420]);
-                        storage_slots
-                            .insert((dex_contract, storage::note_state_slot(parent_note)));
+                        storage_slots.insert((dex_contract, storage::note_state_slot(parent_note)));
                         add_note_slots(
                             &mut storage_slots,
                             dex_contract,
@@ -329,11 +319,7 @@ fn analyze_zk_dex_transactions(
                             true,
                             484,
                         );
-                        add_order_field_slots(
-                            &mut storage_slots,
-                            dex_contract,
-                            order_id,
-                        );
+                        add_order_field_slots(&mut storage_slots, dex_contract, order_id);
                     } else if sel == &settle_order_sel && data.len() >= 772 {
                         // settleOrder: 3 new notes + 3 old notes (from order) + order state
                         let order_id = U256::from_big_endian(&data[4..36]);
@@ -343,10 +329,8 @@ fn analyze_zk_dex_transactions(
 
                         // New notes need state + encrypted data slots
                         for note_hash in [reward_note, payment_note, change_note] {
-                            storage_slots.insert((
-                                dex_contract,
-                                storage::note_state_slot(note_hash),
-                            ));
+                            storage_slots
+                                .insert((dex_contract, storage::note_state_slot(note_hash)));
                         }
                         // Encrypted notes for the 3 new notes.
                         // We estimate size from encDatas or use a conservative estimate.
@@ -360,11 +344,7 @@ fn analyze_zk_dex_transactions(
                         );
 
                         // Order fields (to read makerNote, parentNote, takerNoteToMaker)
-                        add_order_field_slots(
-                            &mut storage_slots,
-                            dex_contract,
-                            order_id,
-                        );
+                        add_order_field_slots(&mut storage_slots, dex_contract, order_id);
 
                         // Old notes: makerNote (input[1]) and takerStakeNote (input[3])
                         // are available as public inputs in calldata. The execution
@@ -372,31 +352,21 @@ fn analyze_zk_dex_transactions(
                         // slots need proofs for the incremental MPT update.
                         let maker_note_hash = H256::from_slice(&data[324..356]);
                         let taker_stake_hash = H256::from_slice(&data[388..420]);
-                        storage_slots.insert((
-                            dex_contract,
-                            storage::note_state_slot(maker_note_hash),
-                        ));
-                        storage_slots.insert((
-                            dex_contract,
-                            storage::note_state_slot(taker_stake_hash),
-                        ));
+                        storage_slots
+                            .insert((dex_contract, storage::note_state_slot(maker_note_hash)));
+                        storage_slots
+                            .insert((dex_contract, storage::note_state_slot(taker_stake_hash)));
 
                         // parentNote is only available in order storage.
                         // Look it up from the witness trie.
                         let parent_note_u256 = read_dex_storage(
                             &dex_storage_trie,
-                            storage::order_field_slot(
-                                order_id,
-                                orders::ORDER_PARENT_NOTE,
-                            ),
+                            storage::order_field_slot(order_id, orders::ORDER_PARENT_NOTE),
                         );
                         if !parent_note_u256.is_zero() {
-                            let parent_note =
-                                H256::from(parent_note_u256.to_big_endian());
-                            storage_slots.insert((
-                                dex_contract,
-                                storage::note_state_slot(parent_note),
-                            ));
+                            let parent_note = H256::from(parent_note_u256.to_big_endian());
+                            storage_slots
+                                .insert((dex_contract, storage::note_state_slot(parent_note)));
                         }
                     }
                 }
@@ -465,8 +435,8 @@ fn add_encrypted_note_slots(
     use ethrex_common::U256;
 
     let enc_len = if data.len() >= enc_offset_pos + 32 {
-        let offset = U256::from_big_endian(&data[enc_offset_pos..enc_offset_pos + 32]).low_u64()
-            as usize;
+        let offset =
+            U256::from_big_endian(&data[enc_offset_pos..enc_offset_pos + 32]).low_u64() as usize;
         let abs_pos = 4 + offset;
         if data.len() >= abs_pos + 32 {
             U256::from_big_endian(&data[abs_pos..abs_pos + 32]).low_u64() as usize
@@ -511,12 +481,10 @@ fn add_settle_encrypted_note_slots(
 
     // Estimate total encDatas size and divide by 3 for per-note estimate.
     let estimated_per_note = if data.len() >= 772 {
-        let offset =
-            U256::from_big_endian(&data[740..772]).low_u64() as usize;
+        let offset = U256::from_big_endian(&data[740..772]).low_u64() as usize;
         let abs_pos = 4 + offset;
         if data.len() >= abs_pos + 32 {
-            let total_len =
-                U256::from_big_endian(&data[abs_pos..abs_pos + 32]).low_u64() as usize;
+            let total_len = U256::from_big_endian(&data[abs_pos..abs_pos + 32]).low_u64() as usize;
             total_len / 3
         } else {
             256

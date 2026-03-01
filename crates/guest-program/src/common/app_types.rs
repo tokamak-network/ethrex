@@ -1,11 +1,11 @@
 use ethrex_common::rkyv_utils::{H160Wrapper, H256Wrapper, U256Wrapper, VecVecWrapper};
+use ethrex_common::types::Block;
 use ethrex_common::types::blobs_bundle;
 use ethrex_common::types::l2::fee_config::FeeConfig;
-use ethrex_common::types::Block;
 use ethrex_common::{Address, H256, U256};
 use rkyv::{Archive, Deserialize as RDeserialize, Serialize as RSerialize};
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, Bytes};
+use serde_with::{Bytes, serde_as};
 
 /// Input for app-specific circuits.
 ///

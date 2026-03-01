@@ -79,9 +79,9 @@ pub fn apply_gas_fee_distribution(
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use ethrex_common::types::TxKind;
     use ethrex_common::types::l2::fee_config::OperatorFeeConfig;
     use ethrex_common::types::transaction::EIP1559Transaction;
-    use ethrex_common::types::TxKind;
     use ethrex_common::{H160, H256};
 
     use crate::common::app_state::AppState;
@@ -119,7 +119,7 @@ mod tests {
             chain_id: 1,
             nonce: 0,
             max_priority_fee_per_gas: 2_000_000_000, // 2 gwei
-            max_fee_per_gas: 10_000_000_000,          // 10 gwei
+            max_fee_per_gas: 10_000_000_000,         // 10 gwei
             gas_limit: 200_000,
             to: TxKind::Call(COMMON_BRIDGE_L2_ADDRESS),
             value: U256::zero(),
@@ -136,10 +136,7 @@ mod tests {
         let coinbase = H160([0xCB; 20]);
         let initial_balance = U256::from(1_000_000_000_000_000_000u64); // 1 ETH
 
-        let mut state = make_state(vec![
-            (sender, initial_balance),
-            (coinbase, U256::zero()),
-        ]);
+        let mut state = make_state(vec![(sender, initial_balance), (coinbase, U256::zero())]);
 
         let tx = make_eip1559_tx(sender);
         let base_fee: u64 = 7_000_000_000; // 7 gwei
@@ -147,7 +144,12 @@ mod tests {
         let gas_used: u64 = 100_000;
 
         apply_gas_fee_distribution(
-            &mut state, sender, &tx, gas_used, &header, &FeeConfig::default(),
+            &mut state,
+            sender,
+            &tx,
+            gas_used,
+            &header,
+            &FeeConfig::default(),
         )
         .unwrap();
 
@@ -168,10 +170,7 @@ mod tests {
         let coinbase = H160([0xCB; 20]);
         let initial_balance = U256::from(1_000_000_000_000_000_000u64);
 
-        let mut state = make_state(vec![
-            (sender, initial_balance),
-            (coinbase, U256::zero()),
-        ]);
+        let mut state = make_state(vec![(sender, initial_balance), (coinbase, U256::zero())]);
 
         let tx = make_eip1559_tx(sender);
         let base_fee: u64 = 7_000_000_000;
@@ -179,7 +178,12 @@ mod tests {
         let gas_used: u64 = 100_000;
 
         apply_gas_fee_distribution(
-            &mut state, sender, &tx, gas_used, &header, &FeeConfig::default(),
+            &mut state,
+            sender,
+            &tx,
+            gas_used,
+            &header,
+            &FeeConfig::default(),
         )
         .unwrap();
 
@@ -215,10 +219,8 @@ mod tests {
             ..Default::default()
         };
 
-        apply_gas_fee_distribution(
-            &mut state, sender, &tx, gas_used, &header, &fee_config,
-        )
-        .unwrap();
+        apply_gas_fee_distribution(&mut state, sender, &tx, gas_used, &header, &fee_config)
+            .unwrap();
 
         // base_fee_vault gets base_fee * gas_used = 7 gwei * 100_000
         let expected_vault = U256::from(base_fee) * U256::from(gas_used);
@@ -257,10 +259,8 @@ mod tests {
             l1_fee_config: None,
         };
 
-        apply_gas_fee_distribution(
-            &mut state, sender, &tx, gas_used, &header, &fee_config,
-        )
-        .unwrap();
+        apply_gas_fee_distribution(&mut state, sender, &tx, gas_used, &header, &fee_config)
+            .unwrap();
 
         // effective_gas_price = min(10, 5+2) = 7 gwei
         // operator_fee = 1 gwei * 100_000
@@ -311,10 +311,8 @@ mod tests {
             l1_fee_config: None,
         };
 
-        apply_gas_fee_distribution(
-            &mut state, sender, &tx, gas_used, &header, &fee_config,
-        )
-        .unwrap();
+        apply_gas_fee_distribution(&mut state, sender, &tx, gas_used, &header, &fee_config)
+            .unwrap();
 
         let sender_debit = initial_balance - state.get_balance(sender).unwrap();
         let coinbase_credit = state.get_balance(coinbase).unwrap();

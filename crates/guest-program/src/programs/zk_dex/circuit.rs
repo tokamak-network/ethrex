@@ -20,8 +20,8 @@ use crate::common::app_state::AppState;
 
 use super::events;
 use super::notes::{
-    execute_convert_note, execute_liquidate, execute_mint, execute_spend, EMPTY_NOTE_HASH,
-    NOTE_INVALID, NOTE_SPENT, NOTE_TRADING, NOTE_VALID,
+    EMPTY_NOTE_HASH, NOTE_INVALID, NOTE_SPENT, NOTE_TRADING, NOTE_VALID, execute_convert_note,
+    execute_liquidate, execute_mint, execute_spend,
 };
 use super::orders::{execute_make_order, execute_settle_order, execute_take_order};
 
@@ -113,9 +113,7 @@ pub fn take_order_selector_bytes() -> [u8; 4] {
 }
 
 fn settle_order_selector() -> [u8; 4] {
-    selector_from(
-        b"settleOrder(uint256,uint256[2],uint256[2][2],uint256[2],uint256[14],bytes)",
-    )
+    selector_from(b"settleOrder(uint256,uint256[2],uint256[2][2],uint256[2],uint256[14],bytes)")
 }
 
 pub fn settle_order_selector_bytes() -> [u8; 4] {
@@ -570,7 +568,9 @@ fn generate_mint_logs(contract: Address, params: &[u8]) -> Vec<Log> {
         return vec![];
     }
     let note_hash = H256::from_slice(&params[0..32]);
-    vec![events::note_state_change_log(contract, note_hash, NOTE_VALID)]
+    vec![events::note_state_change_log(
+        contract, note_hash, NOTE_VALID,
+    )]
 }
 
 /// Spend logs: NoteStateChange for up to 4 notes (conditional on EMPTY_NOTE_HASH).
@@ -779,8 +779,8 @@ mod tests {
     use super::*;
     use crate::common::app_state::AppState;
     use crate::common::app_types::{AccountProof, StorageProof};
-    use ethrex_common::types::EIP1559Transaction;
     use ethrex_common::H160;
+    use ethrex_common::types::EIP1559Transaction;
 
     fn dex_address() -> Address {
         H160([0xDE; 20])
@@ -973,8 +973,7 @@ mod tests {
     fn execute_self_transfer() {
         let circuit = make_circuit();
         let token = token_address();
-        let mut state =
-            make_state_with_balances(token, vec![(user_a(), U256::from(500))]);
+        let mut state = make_state_with_balances(token, vec![(user_a(), U256::from(500))]);
 
         let calldata = encode_transfer_calldata(user_a(), token, U256::from(100));
         let tx = make_test_tx(dex_address(), calldata);

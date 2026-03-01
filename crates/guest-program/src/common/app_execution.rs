@@ -22,14 +22,13 @@
 use ethrex_common::types::{Log, Receipt, Transaction, TxKind};
 use ethrex_common::{Address, U256};
 
-use crate::l2::messages::{compute_message_digests, get_batch_messages};
 use crate::l2::ProgramOutput;
+use crate::l2::messages::{compute_message_digests, get_batch_messages};
 
 use super::app_state::{AppState, AppStateError};
 use super::app_types::AppProgramInput;
 use super::handlers::{
-    constants::COMMON_BRIDGE_L2_ADDRESS,
-    deposit, eth_transfer, gas_fee, system_call, withdrawal,
+    constants::COMMON_BRIDGE_L2_ADDRESS, deposit, eth_transfer, gas_fee, system_call, withdrawal,
 };
 use super::incremental_mpt;
 
@@ -86,12 +85,8 @@ pub trait AppCircuit {
     /// fixed pattern per operation type (e.g., swap always emits Transfer +
     /// Swap events). This must match the EVM-generated logs exactly for
     /// receipt root consistency.
-    fn generate_logs(
-        &self,
-        from: Address,
-        op: &AppOperation,
-        result: &OperationResult,
-    ) -> Vec<Log>;
+    fn generate_logs(&self, from: Address, op: &AppOperation, result: &OperationResult)
+    -> Vec<Log>;
 }
 
 /// An app-specific operation parsed from a transaction.
@@ -230,9 +225,7 @@ pub fn execute_app_circuit<C: AppCircuit>(
             };
 
             // ── Signature verification ── common
-            let sender = tx
-                .sender()
-                .map_err(|_| AppCircuitError::InvalidSignature)?;
+            let sender = tx.sender().map_err(|_| AppCircuitError::InvalidSignature)?;
 
             // ── Nonce verification and increment ── common
             let expected_nonce = state.get_nonce(sender)?;
@@ -250,12 +243,7 @@ pub fn execute_app_circuit<C: AppCircuit>(
 
             // ── ETH transfer (no calldata) ── common
             if tx.data().is_empty() {
-                eth_transfer::handle_eth_transfer(
-                    &mut state,
-                    sender,
-                    to_address,
-                    tx.value(),
-                )?;
+                eth_transfer::handle_eth_transfer(&mut state, sender, to_address, tx.value())?;
                 cumulative_gas += gas;
                 gas_fee::apply_gas_fee_distribution(
                     &mut state,
@@ -405,12 +393,12 @@ pub fn execute_app_circuit<C: AppCircuit>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ethrex_common::H160;
-    use crate::common::handlers::system_call::is_system_contract;
     use crate::common::handlers::constants::{
         COMMON_BRIDGE_L2_ADDRESS, FEE_TOKEN_RATIO_ADDRESS, FEE_TOKEN_REGISTRY_ADDRESS,
         L2_TO_L1_MESSENGER_ADDRESS,
     };
+    use crate::common::handlers::system_call::is_system_contract;
+    use ethrex_common::H160;
 
     #[test]
     fn is_system_contract_checks() {

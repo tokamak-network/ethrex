@@ -1579,10 +1579,7 @@ async fn initialize_contracts(
         // 1. Register official program in GuestProgramRegistry.
         info!(program_id, program_type_id, "Registering guest program");
         let register_nonce = eth_client
-            .get_nonce(
-                deployer_address,
-                BlockIdentifier::Tag(BlockTag::Pending),
-            )
+            .get_nonce(deployer_address, BlockIdentifier::Tag(BlockTag::Pending))
             .await?;
         let register_calldata = encode_calldata(
             GUEST_PROGRAM_REGISTRY_REGISTER_OFFICIAL_SIGNATURE,
@@ -1628,20 +1625,20 @@ async fn initialize_contracts(
                 continue;
             }
 
-            let timelock_address = contract_addresses.timelock_address.ok_or(
-                DeployerError::InternalError(
-                    "Timelock address required for VK registration".to_string(),
-                ),
-            )?;
+            let timelock_address =
+                contract_addresses
+                    .timelock_address
+                    .ok_or(DeployerError::InternalError(
+                        "Timelock address required for VK registration".to_string(),
+                    ))?;
 
-            let security_council_pk = opts.bridge_owner_pk.ok_or(
-                DeployerError::ConfigValueNotSet(
-                    "--bridge-owner-pk (needed as security council for VK registration)"
-                        .to_string(),
-                ),
-            )?;
-            let security_council_signer: Signer =
-                LocalSigner::new(security_council_pk).into();
+            let security_council_pk =
+                opts.bridge_owner_pk
+                    .ok_or(DeployerError::ConfigValueNotSet(
+                        "--bridge-owner-pk (needed as security council for VK registration)"
+                            .to_string(),
+                    ))?;
+            let security_council_signer: Signer = LocalSigner::new(security_council_pk).into();
 
             const SP1_VERIFIER_ID: u8 = 1;
             let vk_calldata = encode_calldata(
@@ -1675,12 +1672,8 @@ async fn initialize_contracts(
                 },
             )
             .await?;
-            let vk_tx_hash = send_generic_transaction(
-                eth_client,
-                vk_tx,
-                &security_council_signer,
-            )
-            .await?;
+            let vk_tx_hash =
+                send_generic_transaction(eth_client, vk_tx, &security_council_signer).await?;
             info!(
                 tx_hash = %format!("{vk_tx_hash:#x}"),
                 program_id,
@@ -1706,10 +1699,7 @@ fn resolve_deployer_program_type_id(program_id: &str) -> u8 {
 }
 
 /// Reads the SP1 verification key for a guest program from its build output path.
-fn get_vk_for_program(
-    program_id: &str,
-    opts: &DeployerOptions,
-) -> Result<Bytes, DeployerError> {
+fn get_vk_for_program(program_id: &str, opts: &DeployerOptions) -> Result<Bytes, DeployerError> {
     match program_id {
         "zk-dex" => {
             if let Some(ref path) = opts.zk_dex_sp1_vk_path {
@@ -1728,8 +1718,7 @@ fn get_vk_for_program(
                     Err(e) => {
                         warn!(
                             program_id,
-                            path,
-                            "VK file not found, build with GUEST_PROGRAMS=zk-dex: {e}"
+                            path, "VK file not found, build with GUEST_PROGRAMS=zk-dex: {e}"
                         );
                         Ok(Bytes::new())
                     }
