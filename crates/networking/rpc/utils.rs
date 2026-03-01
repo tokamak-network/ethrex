@@ -203,6 +203,8 @@ pub enum RpcNamespace {
     Net,
     /// Transaction pool inspection methods (exposed as `txpool_*`).
     Mempool,
+    /// Sentinel hack-detection methods (exposed as `sentinel_*`).
+    Sentinel,
 }
 
 /// JSON-RPC request identifier.
@@ -271,6 +273,7 @@ pub fn resolve_namespace(maybe_namespace: &str, method: String) -> Result<RpcNam
         "net" => Ok(RpcNamespace::Net),
         // TODO: The namespace is set to match geth's namespace for compatibility, consider changing it in the future
         "txpool" => Ok(RpcNamespace::Mempool),
+        "sentinel" => Ok(RpcNamespace::Sentinel),
         _ => Err(RpcErr::MethodNotFound(method)),
     }
 }
