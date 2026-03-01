@@ -128,6 +128,7 @@ contract OnChainProposer is
     /// @dev 3D mapping: commitHash → programTypeId → verifierId → vk.
     /// programTypeId identifies the guest program (1=EVM-L2, etc.).
     /// verifierId identifies the zkVM backend (1=SP1, 2=RISC0).
+    /// @custom:oz-upgrades-unsafe-allow state-variable-type-change
     mapping(bytes32 commitHash => mapping(uint8 programTypeId => mapping(uint8 verifierId => bytes32 vk)))
         public verificationKeys;
 

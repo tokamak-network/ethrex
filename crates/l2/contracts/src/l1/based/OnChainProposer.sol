@@ -111,6 +111,7 @@ contract OnChainProposer is
 
     /// @notice Verification keys keyed by git commit hash, program type, and verifier type.
     /// @dev 3D mapping: commitHash → programTypeId → verifierId → vk.
+    /// @custom:oz-upgrades-unsafe-allow state-variable-type-change
     mapping(bytes32 commitHash => mapping(uint8 programTypeId => mapping(uint8 verifierId => bytes32 vk)))
         public verificationKeys;
 
