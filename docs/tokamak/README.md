@@ -21,13 +21,19 @@ ethrex(LambdaClass, Apache 2.0) fork. L2 native integration via `--tokamak-l2` f
    Time-Travel Debugger (show exactly why)
            |
            +---> feeds back into JIT optimization
+           |
+   Autopsy Lab + Sentinel (detect + analyze attacks)
+           |
+           +---> feeds back into debugger analysis
 ```
 
-| # | Feature | Score | Doc |
-|---|---------|-------|-----|
-| 1 | [Time-Travel Debugger](./features/01-time-travel-debugger.md) | 7.5 | Interactive opcode-level tx replay |
-| 2 | [Continuous Benchmarking](./features/02-continuous-benchmarking.md) | 7.5 | Auto benchmark + differential testing |
-| 3 | [JIT-Compiled EVM](./features/03-jit-compiled-evm.md) | 7.0 | Cranelift-based JIT, target 3-5x Geth |
+| # | Feature | Status | Doc |
+|---|---------|--------|-----|
+| 1 | [Time-Travel Debugger](./features/01-time-travel-debugger.md) | Complete | Interactive opcode-level tx replay |
+| 2 | [Continuous Benchmarking](./features/02-continuous-benchmarking.md) | Complete | Auto benchmark + differential testing |
+| 3 | [JIT-Compiled EVM](./features/03-jit-compiled-evm.md) | Complete | LLVM-based JIT with arena memory, LRU cache |
+| 4 | Smart Contract Autopsy Lab | Complete | Post-hack forensic analysis (attack classification + fund tracing) |
+| 5 | Sentinel Real-Time Detection | Complete | 2-stage pipeline, adaptive ML, mempool monitoring, auto-pause |
 
 ## Competitive Positioning
 
@@ -37,6 +43,8 @@ ethrex(LambdaClass, Apache 2.0) fork. L2 native integration via `--tokamak-l2` f
 | Auto Benchmark | No | No | No | **Every commit** |
 | Differential Testing | No | No | No | **Built-in** |
 | Time-Travel Debug | Raw trace | Raw trace | Raw trace | **Interactive** |
+| Attack Detection | No | No | No | **Real-time Sentinel** |
+| Post-Hack Forensics | No | No | No | **Autopsy Lab** |
 | Proves its own speed | No | No | No | **Yes** |
 
 ## Documents
