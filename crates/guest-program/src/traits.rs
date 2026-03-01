@@ -454,10 +454,8 @@ mod tests {
     /// it returns Err on arbitrary bytes (which are not valid rkyv ProgramInput).
     #[test]
     fn serialize_input_never_panics_on_arbitrary_bytes() {
-        let passthrough_programs: Vec<Box<dyn GuestProgram>> = vec![
-            Box::new(EvmL2GuestProgram),
-            Box::new(TokammonGuestProgram),
-        ];
+        let passthrough_programs: Vec<Box<dyn GuestProgram>> =
+            vec![Box::new(EvmL2GuestProgram), Box::new(TokammonGuestProgram)];
 
         // Test with various edge-case inputs.
         let all_bytes: Vec<u8> = (0..=255).collect();

@@ -22,9 +22,9 @@
 use ethrex_common::types::{Log, Receipt, Transaction, TxKind};
 use ethrex_common::{Address, H160, U256};
 
+use crate::l2::ProgramOutput;
 use crate::l2::blobs::verify_blob;
 use crate::l2::messages::{compute_message_digests, get_batch_messages};
-use crate::l2::ProgramOutput;
 
 use super::app_state::{AppState, AppStateError};
 use super::app_types::AppProgramInput;
@@ -34,26 +34,26 @@ use super::incremental_mpt;
 
 /// CommonBridgeL2: 0x000000000000000000000000000000000000ffff
 pub const COMMON_BRIDGE_L2_ADDRESS: Address = H160([
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0xff, 0xff,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xff, 0xff,
 ]);
 
 /// L2-to-L1 Messenger: 0x000000000000000000000000000000000000fffe
 pub const L2_TO_L1_MESSENGER_ADDRESS: Address = H160([
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0xff, 0xfe,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xff, 0xfe,
 ]);
 
 /// Fee Token Registry: 0x000000000000000000000000000000000000fffc
 pub const FEE_TOKEN_REGISTRY_ADDRESS: Address = H160([
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0xff, 0xfc,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xff, 0xfc,
 ]);
 
 /// Fee Token Ratio: 0x000000000000000000000000000000000000fffb
 pub const FEE_TOKEN_RATIO_ADDRESS: Address = H160([
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0xff, 0xfb,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xff, 0xfb,
 ]);
 
 /// Fixed gas cost for a simple ETH transfer (no calldata).
@@ -106,12 +106,8 @@ pub trait AppCircuit {
     /// fixed pattern per operation type (e.g., swap always emits Transfer +
     /// Swap events). This must match the EVM-generated logs exactly for
     /// receipt root consistency.
-    fn generate_logs(
-        &self,
-        from: Address,
-        op: &AppOperation,
-        result: &OperationResult,
-    ) -> Vec<Log>;
+    fn generate_logs(&self, from: Address, op: &AppOperation, result: &OperationResult)
+    -> Vec<Log>;
 }
 
 /// An app-specific operation parsed from a transaction.
@@ -201,9 +197,7 @@ pub fn execute_app_circuit<C: AppCircuit>(
             }
 
             // ── Signature verification ── common
-            let sender = tx
-                .sender()
-                .map_err(|_| AppCircuitError::InvalidSignature)?;
+            let sender = tx.sender().map_err(|_| AppCircuitError::InvalidSignature)?;
 
             // ── Nonce verification and increment ── common
             let expected_nonce = state.get_nonce(sender)?;
@@ -337,17 +331,12 @@ pub fn execute_app_circuit<C: AppCircuit>(
 ///
 /// Privileged transactions are L1→L2 deposits. The sender (bridge contract)
 /// can mint ETH, so we simply credit the recipient's balance.
-fn handle_privileged_tx(
-    state: &mut AppState,
-    tx: &Transaction,
-) -> Result<(), AppCircuitError> {
+fn handle_privileged_tx(state: &mut AppState, tx: &Transaction) -> Result<(), AppCircuitError> {
     let value = tx.value();
-    if !value.is_zero() {
-        if let TxKind::Call(to) = tx.to() {
-            // Credit the recipient. For deposits via bridge, the balance
-            // is minted (not transferred from sender).
-            state.credit_balance(to, value)?;
-        }
+    if !value.is_zero() && let TxKind::Call(to) = tx.to() {
+        // Credit the recipient. For deposits via bridge, the balance
+        // is minted (not transferred from sender).
+        state.credit_balance(to, value)?;
     }
     Ok(())
 }

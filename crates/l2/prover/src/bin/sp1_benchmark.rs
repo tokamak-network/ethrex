@@ -37,14 +37,14 @@ use ethrex_common::types::{
 use ethrex_common::{Address, H160, H256, U256};
 use ethrex_crypto::keccak::keccak_hash;
 use ethrex_guest_program::{
+    ZKVM_SP1_TOKAMON_ELF, ZKVM_SP1_ZK_DEX_ELF,
     programs::tokamon::types::{ActionType, GameAction, TokammonProgramInput},
     programs::zk_dex::circuit,
-    ZKVM_SP1_TOKAMON_ELF, ZKVM_SP1_ZK_DEX_ELF,
 };
 use ethrex_rlp::encode::{PayloadRLPEncode as _, RLPEncode as _};
-use ethrex_trie::{Trie, EMPTY_TRIE_HASH};
+use ethrex_trie::{EMPTY_TRIE_HASH, Trie};
 use rkyv::rancor::Error as RkyvError;
-use secp256k1::{Message, SecretKey, SECP256K1};
+use secp256k1::{Message, SECP256K1, SecretKey};
 #[cfg(not(feature = "gpu"))]
 use sp1_sdk::CpuProver;
 #[cfg(feature = "gpu")]
@@ -235,7 +235,8 @@ fn generate_zk_dex_input(transfer_count: u32) -> anyhow::Result<Vec<u8>> {
 
     // Extract storage proofs for each sender/receiver balance slot.
     let mut storage_proofs: Vec<StorageProof> = Vec::new();
-    let mut seen_slots: std::collections::BTreeSet<(Address, H256)> = std::collections::BTreeSet::new();
+    let mut seen_slots: std::collections::BTreeSet<(Address, H256)> =
+        std::collections::BTreeSet::new();
 
     for i in 0..transfer_count {
         let idx = usize::try_from(i).context("index overflow")?;
@@ -393,7 +394,9 @@ fn parse_proof_mode(s: &str) -> anyhow::Result<SP1ProofMode> {
     match s {
         "compressed" => Ok(SP1ProofMode::Compressed),
         "groth16" => Ok(SP1ProofMode::Groth16),
-        other => anyhow::bail!("Unsupported proof format: '{other}'. Use 'compressed' or 'groth16'."),
+        other => {
+            anyhow::bail!("Unsupported proof format: '{other}'. Use 'compressed' or 'groth16'.")
+        }
     }
 }
 
@@ -443,9 +446,7 @@ fn main() -> anyhow::Result<()> {
             }
             ZKVM_SP1_TOKAMON_ELF
         }
-        other => anyhow::bail!(
-            "Unsupported program: '{other}'. Supported: zk-dex, tokamon"
-        ),
+        other => anyhow::bail!("Unsupported program: '{other}'. Supported: zk-dex, tokamon"),
     };
     println!("ELF size: {} bytes", elf.len());
 
@@ -522,7 +523,10 @@ fn main() -> anyhow::Result<()> {
         client
             .verify(&proof, &vk)
             .context("SP1 verification failed")?;
-        println!("Verification time: {}\n", format_duration(verify_start.elapsed()));
+        println!(
+            "Verification time: {}\n",
+            format_duration(verify_start.elapsed())
+        );
     }
 
     // Summary.
@@ -532,10 +536,7 @@ fn main() -> anyhow::Result<()> {
     println!("Proof format:      {}", args.format);
     println!("ELF size:          {} bytes", elf.len());
     println!("Input size:        {} bytes", serialized.len());
-    println!(
-        "Instruction count: {}",
-        report.total_instruction_count()
-    );
+    println!("Instruction count: {}", report.total_instruction_count());
     println!("Execution time:    {}", format_duration(exec_duration));
     if let Some(d) = prove_duration {
         println!("Proving time:      {}", format_duration(d));

@@ -114,6 +114,13 @@ impl GuestProgram for ZkDexGuestProgram {
     }
 }
 
+/// Accounts and storage slots required for proof generation.
+#[cfg(feature = "l2")]
+type ProofRequirements = (
+    Vec<ethrex_common::Address>,
+    Vec<(ethrex_common::Address, ethrex_common::H256)>,
+);
+
 /// Analyze zk-dex batch transactions to determine which accounts and storage
 /// slots are needed for proof generation.
 ///
@@ -128,13 +135,7 @@ impl GuestProgram for ZkDexGuestProgram {
 fn analyze_zk_dex_transactions(
     blocks: &[ethrex_common::types::Block],
     dex_contract: ethrex_common::Address,
-) -> Result<
-    (
-        Vec<ethrex_common::Address>,
-        Vec<(ethrex_common::Address, ethrex_common::H256)>,
-    ),
-    String,
-> {
+) -> Result<ProofRequirements, String> {
     use std::collections::BTreeSet;
 
     use ethrex_common::types::TxKind;
@@ -192,10 +193,8 @@ fn analyze_zk_dex_transactions(
                     let data = tx.data();
                     if data.len() >= 4 + 96 && data[..4] == transfer_sel {
                         // transfer(address to, address token, uint256 amount)
-                        let transfer_to =
-                            ethrex_common::Address::from_slice(&data[4 + 12..4 + 32]);
-                        let token =
-                            ethrex_common::Address::from_slice(&data[4 + 32 + 12..4 + 64]);
+                        let transfer_to = ethrex_common::Address::from_slice(&data[4 + 12..4 + 32]);
+                        let token = ethrex_common::Address::from_slice(&data[4 + 32 + 12..4 + 64]);
 
                         // Need balance slots for sender and recipient.
                         let sender_slot = circuit::balance_storage_slot(token, sender);

@@ -12,8 +12,8 @@
 
 use std::collections::BTreeSet;
 
-use ethrex_common::types::block_execution_witness::ExecutionWitness;
 use ethrex_common::types::AccountState;
+use ethrex_common::types::block_execution_witness::ExecutionWitness;
 use ethrex_common::{Address, H256, U256};
 use ethrex_crypto::keccak::keccak_hash;
 use ethrex_rlp::decode::RLPDecode;
@@ -186,7 +186,7 @@ mod tests {
     use ethrex_common::types::{AccountState, ChainConfig};
     use ethrex_common::{H160, H256, U256};
     use ethrex_rlp::encode::RLPEncode as _;
-    use ethrex_trie::{Node, Trie, EMPTY_TRIE_HASH};
+    use ethrex_trie::{EMPTY_TRIE_HASH, Node, Trie};
 
     fn test_address(byte: u8) -> Address {
         H160([byte; 20])
@@ -256,7 +256,11 @@ mod tests {
 
         let input = make_program_input(witness);
         let result = convert_to_app_input(input, &[addr], &[]);
-        assert!(result.is_ok(), "conversion should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "conversion should succeed: {:?}",
+            result.err()
+        );
 
         let app_input = result.unwrap();
         assert_eq!(app_input.account_proofs.len(), 1);
@@ -370,7 +374,11 @@ mod tests {
 
         let input = make_program_input(witness);
         let result = convert_to_app_input(input, &[contract], &[(contract, slot)]);
-        assert!(result.is_ok(), "conversion with storage should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "conversion with storage should succeed: {:?}",
+            result.err()
+        );
 
         let app_input = result.unwrap();
 

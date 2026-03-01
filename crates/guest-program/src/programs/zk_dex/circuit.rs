@@ -113,7 +113,12 @@ impl AppCircuit for DexCircuit {
         }
     }
 
-    fn generate_logs(&self, from: Address, op: &AppOperation, result: &OperationResult) -> Vec<Log> {
+    fn generate_logs(
+        &self,
+        from: Address,
+        op: &AppOperation,
+        result: &OperationResult,
+    ) -> Vec<Log> {
         if !result.success {
             return vec![];
         }
@@ -212,14 +217,14 @@ pub fn balance_storage_slot(token: Address, user: Address) -> H256 {
     inner_preimage[12..32].copy_from_slice(token.as_bytes()); // token left-padded to 32
     // slot 0 is already zero in bytes 32..64
 
-    let inner_hash = keccak_hash(&inner_preimage);
+    let inner_hash = keccak_hash(inner_preimage);
 
     // Outer: keccak256(abi.encode(user, inner_hash))
     let mut outer_preimage = [0u8; 64];
     outer_preimage[12..32].copy_from_slice(user.as_bytes()); // user left-padded to 32
     outer_preimage[32..64].copy_from_slice(&inner_hash);
 
-    H256::from(keccak_hash(&outer_preimage))
+    H256::from(keccak_hash(outer_preimage))
 }
 
 // ── ABI helpers ──────────────────────────────────────────────────
@@ -265,8 +270,8 @@ mod tests {
     use super::*;
     use crate::common::app_state::AppState;
     use crate::common::app_types::{AccountProof, StorageProof};
-    use ethrex_common::types::EIP1559Transaction;
     use ethrex_common::H160;
+    use ethrex_common::types::EIP1559Transaction;
 
     fn dex_address() -> Address {
         H160([0xDE; 20])
@@ -301,10 +306,7 @@ mod tests {
     }
 
     /// Build an AppState with the DEX contract account and given storage slots.
-    fn make_state_with_balances(
-        token: Address,
-        balances: Vec<(Address, U256)>,
-    ) -> AppState {
+    fn make_state_with_balances(token: Address, balances: Vec<(Address, U256)>) -> AppState {
         let contract = dex_address();
 
         let account_proofs = vec![AccountProof {
@@ -473,10 +475,7 @@ mod tests {
     fn execute_self_transfer() {
         let circuit = make_circuit();
         let token = token_address();
-        let mut state = make_state_with_balances(
-            token,
-            vec![(user_a(), U256::from(500))],
-        );
+        let mut state = make_state_with_balances(token, vec![(user_a(), U256::from(500))]);
 
         let calldata = encode_transfer_calldata(user_a(), token, U256::from(100));
         let tx = make_test_tx(dex_address(), calldata);
