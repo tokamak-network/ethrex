@@ -390,7 +390,7 @@ contract OnChainProposer is
         if (GUEST_PROGRAM_REGISTRY != address(0)) {
             require(
                 IGuestProgramRegistry(GUEST_PROGRAM_REGISTRY).isProgramActive(effectiveProgramTypeId),
-                "014" // OnChainProposer: program type not registered or inactive
+                "OnChainProposer: program not active"
             );
         }
         if (
@@ -409,7 +409,7 @@ contract OnChainProposer is
         if (effectiveProgramTypeId > 1) {
             require(
                 publicValuesHash != bytes32(0),
-                "015" // OnChainProposer: custom program requires publicValuesHash
+                "OnChainProposer: custom program requires publicValuesHash"
             );
         }
 
@@ -509,11 +509,11 @@ contract OnChainProposer is
             // Custom programs: verify public values hash matches commitment
             require(
                 customPublicValues.length > 0,
-                "016" // OnChainProposer: custom program requires customPublicValues
+                "OnChainProposer: custom program requires customPublicValues"
             );
             require(
                 keccak256(customPublicValues) == batchCommitments[batchNumber].publicValuesHash,
-                "017" // OnChainProposer: customPublicValues hash mismatch
+                "OnChainProposer: customPublicValues hash mismatch"
             );
             publicInputs = customPublicValues;
         }
