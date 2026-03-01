@@ -156,7 +156,8 @@ contract OnChainProposer is
         bytes32 commitHash,
         bytes32 genesisStateRoot,
         uint256 chainId,
-        address bridge
+        address bridge,
+        address guestProgramRegistry
     ) public initializer {
         VALIDIUM = _validium;
 
@@ -238,6 +239,8 @@ contract OnChainProposer is
             "000" // OnChainProposer: bridge is the contract address
         );
         BRIDGE = bridge;
+
+        GUEST_PROGRAM_REGISTRY = guestProgramRegistry;
 
         OwnableUpgradeable.__Ownable_init(timelock_owner);
     }

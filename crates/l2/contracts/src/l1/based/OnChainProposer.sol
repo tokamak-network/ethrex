@@ -149,7 +149,8 @@ contract OnChainProposer is
         bytes32 genesisStateRoot,
         address sequencer_registry,
         uint256 chainId,
-        address bridge
+        address bridge,
+        address guestProgramRegistry
     ) public initializer {
         VALIDIUM = _validium;
 
@@ -224,6 +225,8 @@ contract OnChainProposer is
             "OnChainProposer: bridge is the contract address"
         );
         BRIDGE = bridge;
+
+        GUEST_PROGRAM_REGISTRY = guestProgramRegistry;
 
         emit VerificationKeyUpgraded("SP1", commitHash, sp1Vk);
         emit VerificationKeyUpgraded("RISC0", commitHash, risc0Vk);
