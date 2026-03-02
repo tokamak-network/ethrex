@@ -83,6 +83,30 @@ impl KeyValueReader for PebbleReader {
             None => Ok(None),
         }
     }
+
+    fn iter_prefix(&self, prefix: &[u8]) -> Result<Box<dyn Iterator<Item = Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>>>>, Box<dyn std::error::Error>> {
+        use rocksdb::IteratorMode;
+
+        let iter = self.db.iterator(IteratorMode::From(prefix, rocksdb::Direction::Forward));
+
+        let prefix_vec = prefix.to_vec();
+        let results: Vec<_> = iter
+            .filter(|result| {
+                if let Ok((key, _)) = result {
+                    key.starts_with(&prefix_vec)
+                } else {
+                    false
+                }
+            })
+            .map(|result| {
+                result
+                    .map(|(key, value)| (key.to_vec(), value.to_vec()))
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            })
+            .collect();
+
+        Ok(Box::new(results.into_iter()))
+    }
 }
 
 #[cfg(test)]

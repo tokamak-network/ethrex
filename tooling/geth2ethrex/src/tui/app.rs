@@ -173,6 +173,100 @@ impl MigrationApp {
                 self.push_log(msg.clone());
                 self.final_message = Some(msg);
             }
+
+            ProgressEvent::StatePhaseStarted { total_accounts } => {
+                self.push_log(format!(
+                    "[state] 상태 마이그레이션 시작 ({total_accounts} 계정)"
+                ));
+            }
+
+            ProgressEvent::AccountBatchCompleted {
+                processed,
+                total,
+                elapsed,
+            } => {
+                self.elapsed = elapsed;
+                let pct = if total > 0 {
+                    (processed as f64 * 100.0) / total as f64
+                } else {
+                    0.0
+                };
+                self.push_log(format!(
+                    "[state] 계정 배치: {processed}/{total} ({pct:.1}%)"
+                ));
+            }
+
+            ProgressEvent::StatePhaseCompleted {
+                accounts,
+                storage_slots,
+                code_entries,
+                accounts_without_preimage: _,
+                slots_without_preimage: _,
+                elapsed,
+            } => {
+                self.elapsed = elapsed;
+                self.push_log(format!(
+                    "[state] 완료: {accounts} 계정, {storage_slots} 슬롯, {code_entries} 코드"
+                ));
+            }
+
+            ProgressEvent::VerificationStarted {
+                start_block: _,
+                end_block: _,
+                total_blocks,
+                state_trie_check: _,
+            } => {
+                self.push_log(format!(
+                    "[verify] 검증 시작: {total_blocks} 블록"
+                ));
+            }
+
+            ProgressEvent::VerificationProgress {
+                checked,
+                total,
+                mismatches,
+                elapsed,
+            } => {
+                self.elapsed = elapsed;
+                let pct = if total > 0 {
+                    (checked as f64 * 100.0) / total as f64
+                } else {
+                    0.0
+                };
+                if checked % 100 == 0 {
+                    self.push_log(format!(
+                        "[verify] {checked}/{total} ({pct:.1}%), 불일치: {mismatches}"
+                    ));
+                }
+            }
+
+            ProgressEvent::VerificationMismatch {
+                block_number,
+                reason,
+            } => {
+                self.push_log(format!(
+                    "[verify] 불일치 #{block_number}: {reason}"
+                ));
+            }
+
+            ProgressEvent::VerificationCompleted {
+                checked,
+                mismatches,
+                elapsed,
+            } => {
+                self.elapsed = elapsed;
+                let msg = if mismatches == 0 {
+                    format!("[verify] 완료: {checked} 블록 검증 (일치함)")
+                } else {
+                    format!(
+                        "[verify] 완료: {checked} 블록 중 {mismatches}개 불일치"
+                    )
+                };
+                self.push_log(msg.clone());
+                if self.final_message.is_none() {
+                    self.final_message = Some(msg);
+                }
+            }
         }
     }
 

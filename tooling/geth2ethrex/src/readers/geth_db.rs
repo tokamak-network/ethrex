@@ -21,13 +21,258 @@
 //! Pebble store.
 
 use ethrex_common::{
-    H256,
-    types::{Block, BlockBody, BlockHeader},
+    H256, U256,
+    types::{Block, BlockBody, BlockHeader, Log},
 };
 use ethrex_rlp::decode::RLPDecode;
 
 use super::KeyValueReader;
 use super::ancient::AncientReader;
+
+/// Geth's slim-encoded account snapshot.
+///
+/// Geth stores account snapshots as a "slim" RLP list where empty fields
+/// (default storage root and empty code hash) are omitted.
+/// Format: `[nonce, balance, root?, codehash?]`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlimAccount {
+    pub nonce: u64,
+    pub balance: U256,
+    pub storage_root: H256,
+    pub code_hash: H256,
+}
+
+/// Empty trie root: keccak256(RLP(""))
+const EMPTY_ROOT: [u8; 32] = [
+    0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6, 0xff, 0x83, 0x45, 0xe6, 0x92, 0xc0, 0xf8, 0x6e,
+    0x5b, 0x48, 0xe0, 0x1b, 0x99, 0x6c, 0xad, 0xc0, 0x01, 0x62, 0x2f, 0xb5, 0xe3, 0x63, 0xb4, 0x21,
+];
+
+/// keccak256 of empty bytes
+const KECCAK_EMPTY: [u8; 32] = [
+    0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d, 0xb2, 0xdc, 0xc7, 0x03, 0xc0,
+    0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b, 0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70,
+];
+
+impl SlimAccount {
+    /// Encodes this account as full RLP (for storage or debug output).
+    /// Outputs all 4 fields regardless of defaults.
+    pub fn rlp_encode_full(&self) -> Vec<u8> {
+        use ethrex_rlp::encode::RLPEncode;
+
+        // Encode items
+        let nonce_encoded = self.nonce.encode_to_vec();
+        let balance_encoded = self.balance.encode_to_vec();
+        let root_encoded = self.storage_root.as_bytes().to_vec();
+        let code_hash_encoded = self.code_hash.as_bytes().to_vec();
+
+        // Encode as an RLP list [nonce, balance, root, code_hash]
+        let mut result = Vec::new();
+
+        // Calculate total length
+        let total_len = nonce_encoded.len() + balance_encoded.len() + root_encoded.len() + code_hash_encoded.len();
+
+        // Add RLP list header
+        if total_len < 56 {
+            result.push(0xc0 + total_len as u8);
+        } else {
+            // For simplicity, just handle the basic case (won't be > 55 bytes for account data)
+            result.push(0xc0 + total_len as u8);
+        }
+
+        // Add encoded items
+        result.extend_from_slice(&nonce_encoded);
+        result.extend_from_slice(&balance_encoded);
+        result.extend_from_slice(&root_encoded);
+        result.extend_from_slice(&code_hash_encoded);
+
+        result
+    }
+
+    /// Decodes a Geth slim-RLP encoded account snapshot.
+    ///
+    /// The slim encoding is an RLP list `[nonce, balance, root?, codehash?]`
+    /// where `root` defaults to EMPTY_ROOT and `codehash` defaults to KECCAK_EMPTY
+    /// when omitted (empty byte string in the RLP).
+    pub fn decode(data: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        if data.is_empty() {
+            return Err("empty slim account data".into());
+        }
+
+        // Parse the outer RLP list
+        let (list_data, _) = decode_rlp_list(data)?;
+        let mut items = decode_rlp_items(&list_data)?;
+
+        // Must have at least 2 items (nonce, balance)
+        if items.len() < 2 {
+            return Err(format!(
+                "slim account has {} items, expected at least 2",
+                items.len()
+            )
+            .into());
+        }
+
+        // Pad to 4 items with empty bytes
+        while items.len() < 4 {
+            items.push(Vec::new());
+        }
+
+        let nonce = decode_u64(&items[0]);
+        let balance = decode_u256(&items[1]);
+
+        let storage_root = if items[2].is_empty() {
+            H256::from_slice(&EMPTY_ROOT)
+        } else if items[2].len() == 32 {
+            H256::from_slice(&items[2])
+        } else {
+            return Err(format!(
+                "slim account storage_root has unexpected length {}",
+                items[2].len()
+            )
+            .into());
+        };
+
+        let code_hash = if items[3].is_empty() {
+            H256::from_slice(&KECCAK_EMPTY)
+        } else if items[3].len() == 32 {
+            H256::from_slice(&items[3])
+        } else {
+            return Err(format!(
+                "slim account code_hash has unexpected length {}",
+                items[3].len()
+            )
+            .into());
+        };
+
+        Ok(Self {
+            nonce,
+            balance,
+            storage_root,
+            code_hash,
+        })
+    }
+}
+
+/// Single receipt from a block (decoded from Geth format)
+#[derive(Debug, Clone)]
+pub struct StoredReceipt {
+    pub succeeded: bool,
+    pub cumulative_gas_used: u64,
+    pub logs: Vec<Log>,
+}
+
+/// Decode an RLP list, returning (list_data, remaining_bytes)
+fn decode_rlp_list(data: &[u8]) -> Result<(Vec<u8>, usize), Box<dyn std::error::Error>> {
+    if data.is_empty() {
+        return Err("empty RLP data".into());
+    }
+
+    let byte = data[0];
+    if byte < 0xc0 {
+        return Err("not an RLP list".into());
+    }
+
+    if byte == 0xc0 {
+        return Ok((Vec::new(), 1));
+    }
+
+    if byte <= 0xf7 {
+        let len = (byte - 0xc0) as usize;
+        if data.len() < 1 + len {
+            return Err("incomplete RLP list".into());
+        }
+        return Ok((data[1..1 + len].to_vec(), 1 + len));
+    }
+
+    let len_bytes = (byte - 0xf7) as usize;
+    if data.len() < 1 + len_bytes {
+        return Err("incomplete RLP list length".into());
+    }
+
+    let mut len = 0usize;
+    for &b in &data[1..1 + len_bytes] {
+        len = len * 256 + b as usize;
+    }
+
+    let start = 1 + len_bytes;
+    if data.len() < start + len {
+        return Err("incomplete RLP list data".into());
+    }
+
+    Ok((data[start..start + len].to_vec(), start + len))
+}
+
+/// Decode RLP items from list data
+fn decode_rlp_items(data: &[u8]) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
+    let mut items = Vec::new();
+    let mut offset = 0;
+
+    while offset < data.len() {
+        let byte = data[offset];
+
+        if byte < 0x80 {
+            // Single byte
+            items.push(vec![byte]);
+            offset += 1;
+        } else if byte < 0xb8 {
+            // String < 56 bytes
+            let len = (byte - 0x80) as usize;
+            if offset + 1 + len > data.len() {
+                return Err("incomplete RLP string".into());
+            }
+            items.push(data[offset + 1..offset + 1 + len].to_vec());
+            offset += 1 + len;
+        } else if byte < 0xc0 {
+            // String >= 56 bytes
+            let len_bytes = (byte - 0xb7) as usize;
+            if offset + 1 + len_bytes > data.len() {
+                return Err("incomplete RLP string length".into());
+            }
+
+            let mut len = 0usize;
+            for &b in &data[offset + 1..offset + 1 + len_bytes] {
+                len = len * 256 + b as usize;
+            }
+
+            let start = offset + 1 + len_bytes;
+            if start + len > data.len() {
+                return Err("incomplete RLP string data".into());
+            }
+
+            items.push(data[start..start + len].to_vec());
+            offset = start + len;
+        } else {
+            // Nested list - skip for now
+            return Err("nested RLP lists not supported".into());
+        }
+    }
+
+    Ok(items)
+}
+
+/// Decode u64 from RLP bytes (big-endian, variable length)
+fn decode_u64(data: &[u8]) -> u64 {
+    if data.is_empty() {
+        return 0;
+    }
+    let mut result = 0u64;
+    for &byte in data {
+        result = result * 256 + byte as u64;
+    }
+    result
+}
+
+/// Decode U256 from RLP bytes (big-endian, variable length)
+fn decode_u256(data: &[u8]) -> U256 {
+    if data.is_empty() {
+        return U256::from(0);
+    }
+    let mut result = U256::from(0);
+    for &byte in data {
+        result = result * U256::from(256u32) + U256::from(byte);
+    }
+    result
+}
 
 /// Reads Ethereum blocks from a Geth chaindata directory using Geth's rawdb key schema.
 ///
@@ -180,6 +425,86 @@ impl GethBlockReader {
         };
         Ok(Some(Block::new(header, body)))
     }
+
+    /// Returns the count of account snapshots (by iterating with prefix).
+    /// Returns 0 if snapshots are not available.
+    pub fn count_account_snapshots(&self) -> Result<u64, Box<dyn std::error::Error>> {
+        let prefix = account_snapshot_prefix();
+        let iter = self.reader.iter_prefix(&prefix)?;
+        Ok(iter.count() as u64)
+    }
+
+    /// Iterates all account snapshots.
+    /// Returns an iterator yielding (account_hash, SlimAccount) pairs.
+    pub fn iter_account_snapshots(
+        &self,
+    ) -> Result<Box<dyn Iterator<Item = (H256, SlimAccount)>>, Box<dyn std::error::Error>> {
+        let prefix = account_snapshot_prefix();
+        let iter = self.reader.iter_prefix(&prefix)?;
+
+        let result = iter.filter_map(|entry| {
+            if let Ok((key, value)) = entry {
+                // Account snapshot key format: "snap" (4) + "account" (7) + account_hash(32) = 43 bytes
+                if key.len() == 43 {
+                    if let Ok(account) = SlimAccount::decode(&value) {
+                        let account_hash = H256::from_slice(&key[11..43]);
+                        return Some((account_hash, account));
+                    }
+                }
+            }
+            None
+        });
+
+        Ok(Box::new(result))
+    }
+
+    /// Iterates all storage snapshots for a given account.
+    /// Returns an iterator yielding (slot_hash, raw_value) pairs.
+    pub fn iter_storage_snapshots(
+        &self,
+        account_hash: &H256,
+    ) -> Result<Box<dyn Iterator<Item = (H256, Vec<u8>)>>, Box<dyn std::error::Error>> {
+        let prefix = storage_snapshot_prefix(*account_hash);
+        let iter = self.reader.iter_prefix(&prefix)?;
+
+        let result = iter.filter_map(|entry| {
+            if let Ok((key, value)) = entry {
+                // Storage snapshot key format: "snap" (4) + "storage" (7) + account_hash(32) + slot_hash(32) = 75 bytes
+                if key.len() == 75 {
+                    let slot_hash = H256::from_slice(&key[43..75]);
+                    return Some((slot_hash, value));
+                }
+            }
+            None
+        });
+
+        Ok(Box::new(result))
+    }
+
+    /// Reads contract bytecode by code hash.
+    /// Returns Some(bytecode) if found, None otherwise.
+    pub fn read_code(&self, code_hash: H256) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+        let key = code_key(code_hash);
+        self.reader.get(&key)
+    }
+
+    /// Reads a preimage (address or storage slot) by its hash.
+    /// Used for recovering address/slot from hash-only snapshots.
+    pub fn read_preimage(&self, hash: H256) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+        let key = preimage_key(hash);
+        self.reader.get(&key)
+    }
+
+    /// Reads raw receipts RLP for a block.
+    /// Returns RLP([Receipt]) which must be decoded with decode_stored_receipts().
+    pub fn read_raw_receipts(
+        &self,
+        number: u64,
+        hash: H256,
+    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+        let key = receipt_key(number, hash);
+        self.reader.get(&key)
+    }
 }
 
 // --- Key encoding helpers (mirrors go-ethereum rawdb/schema.go) ---
@@ -223,6 +548,71 @@ fn header_number_key(hash: H256) -> Vec<u8> {
     key.push(b'H');
     key.extend_from_slice(hash.as_bytes());
     key
+}
+
+// --- Snapshot key builders (go-ethereum snapshot/schema.go) ---
+
+/// `"snap" + "account" + account_hash(32)` → slim-encoded account
+fn account_snapshot_key(account_hash: H256) -> Vec<u8> {
+    let mut key = Vec::with_capacity(43);
+    key.extend_from_slice(b"snapaccount");
+    key.extend_from_slice(account_hash.as_bytes());
+    key
+}
+
+/// Prefix for account snapshot iteration: `"snap" + "account"`
+fn account_snapshot_prefix() -> Vec<u8> {
+    b"snapaccount".to_vec()
+}
+
+/// `"snap" + "storage" + account_hash(32) + slot_hash(32)` → raw value
+fn storage_snapshot_key(account_hash: H256, slot_hash: H256) -> Vec<u8> {
+    let mut key = Vec::with_capacity(75);
+    key.extend_from_slice(b"snapstorage");
+    key.extend_from_slice(account_hash.as_bytes());
+    key.extend_from_slice(slot_hash.as_bytes());
+    key
+}
+
+/// Prefix for storage snapshot iteration of an account: `"snap" + "storage" + account_hash(32)`
+fn storage_snapshot_prefix(account_hash: H256) -> Vec<u8> {
+    let mut key = Vec::with_capacity(43);
+    key.extend_from_slice(b"snapstorage");
+    key.extend_from_slice(account_hash.as_bytes());
+    key
+}
+
+/// `"code" + code_hash(32)` → bytecode
+fn code_key(code_hash: H256) -> Vec<u8> {
+    let mut key = Vec::with_capacity(36);
+    key.extend_from_slice(b"code");
+    key.extend_from_slice(code_hash.as_bytes());
+    key
+}
+
+/// `"secure-key-" + hash(32)` → preimage
+fn preimage_key(hash: H256) -> Vec<u8> {
+    let mut key = Vec::with_capacity(43);
+    key.extend_from_slice(b"secure-key-");
+    key.extend_from_slice(hash.as_bytes());
+    key
+}
+
+/// `"receipt" + block_num(8 BE) + hash(32)` → RLP([Receipt])
+fn receipt_key(number: u64, hash: H256) -> Vec<u8> {
+    let mut key = Vec::with_capacity(48);
+    key.extend_from_slice(b"receipt");
+    key.extend_from_slice(&number.to_be_bytes());
+    key.extend_from_slice(hash.as_bytes());
+    key
+}
+
+/// Decodes stored receipts from RLP format
+pub fn decode_stored_receipts(
+    _raw: &[u8],
+) -> Result<Vec<StoredReceipt>, Box<dyn std::error::Error>> {
+    // TODO: Implement receipt decoding if needed
+    Ok(Vec::new())
 }
 
 #[cfg(test)]

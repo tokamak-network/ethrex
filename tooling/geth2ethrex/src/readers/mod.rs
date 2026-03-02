@@ -24,6 +24,12 @@ pub trait KeyValueReader {
     fn contains(&self, key: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
         Ok(self.get(key)?.is_some())
     }
+
+    /// Iterates over all keys with the given prefix
+    ///
+    /// # Returns
+    /// An iterator yielding `(key, value)` pairs for all keys matching the prefix
+    fn iter_prefix(&self, prefix: &[u8]) -> Result<Box<dyn Iterator<Item = Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>>>>, Box<dyn std::error::Error>>;
 }
 
 /// Opens a Geth database reader based on the detected type
