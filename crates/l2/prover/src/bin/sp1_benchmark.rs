@@ -118,7 +118,10 @@ fn deterministic_secret_key(index: u32) -> SecretKey {
     key_bytes[0] = 0x01;
     let idx_bytes = index.to_be_bytes();
     key_bytes[28..32].copy_from_slice(&idx_bytes);
-    #[expect(clippy::expect_used, reason = "benchmark utility with deterministic inputs")]
+    #[expect(
+        clippy::expect_used,
+        reason = "benchmark utility with deterministic inputs"
+    )]
     SecretKey::from_slice(&key_bytes).expect("deterministic key should be valid")
 }
 
