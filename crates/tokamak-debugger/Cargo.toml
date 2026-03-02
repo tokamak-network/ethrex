@@ -29,6 +29,9 @@ sentinel = [
     "dep:ethrex-vm",
     "dep:serde_json",
     "dep:toml",
+    "dep:axum",
+    "dep:tower-http",
+    "dep:tokio",
 ]
 
 [dependencies]
@@ -55,6 +58,11 @@ serde_json = { workspace = true, optional = true }
 # Sentinel config (optional)
 toml = { version = "0.8", optional = true }
 
+# Sentinel dashboard server (optional)
+axum = { workspace = true, features = ["ws"], optional = true }
+tower-http = { workspace = true, features = ["cors"], optional = true }
+tokio = { workspace = true, features = ["full"], optional = true }
+
 [dev-dependencies]
 ethrex-storage.workspace = true
 ethrex-blockchain.workspace = true
@@ -70,6 +78,14 @@ required-features = ["cli"]
 [[example]]
 name = "reentrancy_demo"
 required-features = ["sentinel", "autopsy"]
+
+[[example]]
+name = "sentinel_realtime_demo"
+required-features = ["sentinel"]
+
+[[example]]
+name = "sentinel_dashboard_demo"
+required-features = ["sentinel"]
 
 [lints]
 workspace = true

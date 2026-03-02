@@ -13211,6 +13211,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 name = "tokamak-debugger"
 version = "9.0.0"
 dependencies = [
+ "axum 0.8.8",
  "bytes",
  "clap",
  "ethrex-blockchain",
@@ -13226,7 +13227,9 @@ dependencies = [
  "serde_json",
  "sha3",
  "thiserror 2.0.18",
+ "tokio",
  "toml",
+ "tower-http 0.6.8",
 ]
 
 [[package]]
