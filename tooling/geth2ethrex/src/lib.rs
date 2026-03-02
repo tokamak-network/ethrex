@@ -5,4 +5,6 @@
 
 pub mod detect;
 pub mod readers;
+#[cfg(feature = "tui")]
+pub mod tui;
 pub mod utils;

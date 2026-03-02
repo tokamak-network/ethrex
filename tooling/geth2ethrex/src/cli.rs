@@ -121,7 +121,7 @@ struct MigrationPlan {
 
 impl MigrationPlan {
     fn block_count(&self) -> u64 {
-        self.end_block - self.start_block + 1
+        self.end_block.saturating_sub(self.start_block) + 1
     }
 }
 
@@ -448,7 +448,8 @@ fn read_resume_block_from_checkpoint(
     }
 
     if let Some(checkpoint_genesis_hash) = checkpoint.genesis_sha256.as_deref() {
-        let expected_genesis_hash = sha256_hex_for_file(&canonicalize_path(expected_genesis_path)?)?;
+        let expected_genesis_hash =
+            sha256_hex_for_file(&canonicalize_path(expected_genesis_path)?)?;
         if checkpoint_genesis_hash != expected_genesis_hash {
             return Err(eyre::eyre!(
                 "Checkpoint genesis_sha256 mismatch in {path:?}: expected {:?}, got {:?}",
@@ -636,6 +637,9 @@ impl Subcommand {
                 continue_on_error,
                 report_file,
             } => {
+                // TUI is on by default when compiled with the `tui` feature,
+                // unless JSON output is requested.
+                let use_tui = cfg!(feature = "tui") && !json;
                 migrate_geth_to_rocksdb(
                     geth_chaindata,
                     target_storage,
@@ -646,6 +650,7 @@ impl Subcommand {
                     Duration::from_millis(*retry_base_delay_ms),
                     *continue_on_error,
                     report_file.as_deref(),
+                    use_tui,
                 )
                 .await
             }
@@ -995,10 +1000,10 @@ async fn migrate_geth_to_rocksdb(
     retry_base_delay: Duration,
     continue_on_error: bool,
     report_file: Option<&Path>,
+    tui: bool,
 ) -> Result<()> {
     use crate::detect::{GethDbType, detect_geth_db_type};
-    use crate::readers::geth_db::GethBlockReader;
-    use crate::readers::open_geth_reader;
+    use crate::readers::open_geth_block_reader;
 
     const BATCH_SIZE: u64 = 1_000;
 
@@ -1006,8 +1011,8 @@ async fn migrate_geth_to_rocksdb(
     let mut retries_performed = 0u32;
 
     // Phase 1: Detect and open Geth reader
-    let db_type = detect_geth_db_type(geth_chaindata)
-        .wrap_err("Failed to detect Geth database type")?;
+    let db_type =
+        detect_geth_db_type(geth_chaindata).wrap_err("Failed to detect Geth database type")?;
 
     if json {
         eprintln!(
@@ -1021,9 +1026,8 @@ async fn migrate_geth_to_rocksdb(
         );
     }
 
-    let kv_reader = open_geth_reader(geth_chaindata)
+    let geth_reader = open_geth_block_reader(geth_chaindata)
         .map_err(|e| eyre::eyre!("Failed to open Geth chaindata reader: {}", e))?;
-    let geth_reader = GethBlockReader::new(kv_reader);
 
     // Phase 2: Read Geth head block number
     let head_hash = retry_sync(
@@ -1067,9 +1071,7 @@ async fn migrate_geth_to_rocksdb(
                 genesis,
             )
             .await
-            .wrap_err_with(|| {
-                format!("Cannot create/open rocksdb store at {target_storage:?}")
-            })
+            .wrap_err_with(|| format!("Cannot create/open rocksdb store at {target_storage:?}"))
         },
         retry_attempts,
         retry_base_delay,
@@ -1129,186 +1131,323 @@ async fn migrate_geth_to_rocksdb(
         return Ok(());
     }
 
-    emit_report(
-        &MigrationReport {
-            schema_version: REPORT_SCHEMA_VERSION,
-            status: "in_progress",
-            phase: "execution",
-            source_head: last_source_block,
-            target_head: last_known_block,
-            plan: Some(plan),
-            dry_run: false,
-            imported_blocks: 0,
-            skipped_blocks: 0,
-            elapsed_ms: elapsed_ms(started_at),
-            retry_attempts,
-            retries_performed,
-        },
-        json,
-        report_file,
-    )?;
-
     // Phase 5: Block-by-block migration in batches
-    let mut added_blocks: Vec<(u64, ethrex_common::H256)> = Vec::new();
-    let mut skipped_blocks = 0u64;
+    // Optionally start TUI dashboard
+    #[cfg(feature = "tui")]
+    let (mut tui_tx, mut tui_handle): (
+        Option<tokio::sync::mpsc::Sender<crate::tui::event::ProgressEvent>>,
+        Option<tokio::task::JoinHandle<()>>,
+    ) = if tui {
+        let (tx, rx) = tokio::sync::mpsc::channel::<crate::tui::event::ProgressEvent>(256);
+        let handle = tokio::spawn(crate::tui::run_tui(rx));
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
 
-    let mut batch_start = plan.start_block;
-    while batch_start <= plan.end_block {
-        let batch_end = (batch_start + BATCH_SIZE - 1).min(plan.end_block);
-        let mut batch: Vec<ethrex_common::types::Block> = Vec::new();
-        let mut batch_canonical: Vec<(u64, ethrex_common::H256)> = Vec::new();
-
-        for block_number in batch_start..=batch_end {
-            // Read canonical hash for this block number
-            let canonical_hash_result = retry_sync(
-                || {
-                    geth_reader
-                        .read_canonical_hash(block_number)
-                        .map_err(|e| {
-                            eyre::eyre!(
-                                "Cannot read canonical hash for block #{block_number}: {e}"
-                            )
-                        })?
-                        .ok_or_else(|| {
-                            eyre::eyre!("No canonical block found at #{block_number}")
-                        })
-                },
-                retry_attempts,
-                retry_base_delay,
-            );
-
-            let (block_hash, attempts) = match canonical_hash_result {
-                Ok(value) => value,
-                Err(error) if continue_on_error => {
-                    skipped_blocks += 1;
-                    eprintln!(
-                        "Warning: skipping block #{block_number} (no canonical hash): {error:#}"
-                    );
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            retries_performed += attempts.saturating_sub(1);
-
-            // Read full block (header + body)
-            let block_result = retry_sync(
-                || {
-                    geth_reader
-                        .read_block(block_number, block_hash)
-                        .map_err(|e| {
-                            eyre::eyre!(
-                                "Cannot read block #{block_number} ({block_hash:?}): {e}"
-                            )
-                        })?
-                        .ok_or_else(|| {
-                            eyre::eyre!(
-                                "Block #{block_number} ({block_hash:?}) missing header or body"
-                            )
-                        })
-                },
-                retry_attempts,
-                retry_base_delay,
-            );
-
-            let (block, attempts) = match block_result {
-                Ok(value) => value,
-                Err(error) if continue_on_error => {
-                    skipped_blocks += 1;
-                    eprintln!(
-                        "Warning: skipping block #{block_number} after read failure: {error:#}"
-                    );
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            retries_performed += attempts.saturating_sub(1);
-
-            batch_canonical.push((block_number, block_hash));
-            batch.push(block);
+    #[cfg(not(feature = "tui"))]
+    {
+        if tui {
+            eprintln!("--tui 플래그를 사용하려면 --features tui 로 빌드하세요.");
         }
-
-        if batch.is_empty() {
-            batch_start = batch_end + 1;
-            continue;
-        }
-
-        // Write batch to RocksDB
-        let (_, attempts) = retry_async(
-            || async {
-                new_store
-                    .add_blocks(batch.clone())
-                    .await
-                    .wrap_err_with(|| {
-                        format!("Cannot write block batch #{batch_start}..=#{batch_end} to rocksdb")
-                    })
-            },
-            retry_attempts,
-            retry_base_delay,
-        )
-        .await?;
-        retries_performed += attempts.saturating_sub(1);
-
-        // Update canonical chain for this batch
-        let (last_num, last_hash) = *batch_canonical
-            .last()
-            .ok_or_else(|| eyre::eyre!("Empty canonical batch"))?;
-
-        let (_, attempts) = retry_async(
-            || async {
-                new_store
-                    .forkchoice_update(
-                        batch_canonical.clone(),
-                        last_num,
-                        last_hash,
-                        None,
-                        None,
-                    )
-                    .await
-                    .wrap_err("Cannot apply forkchoice update for batch")
-            },
-            retry_attempts,
-            retry_base_delay,
-        )
-        .await?;
-        retries_performed += attempts.saturating_sub(1);
-
-        added_blocks.extend(batch_canonical);
-        batch_start = batch_end + 1;
     }
 
-    if added_blocks.is_empty() {
+    if !tui {
+        emit_report(
+            &MigrationReport {
+                schema_version: REPORT_SCHEMA_VERSION,
+                status: "in_progress",
+                phase: "execution",
+                source_head: last_source_block,
+                target_head: last_known_block,
+                plan: Some(plan),
+                dry_run: false,
+                imported_blocks: 0,
+                skipped_blocks: 0,
+                elapsed_ms: elapsed_ms(started_at),
+                retry_attempts,
+                retries_performed,
+            },
+            json,
+            report_file,
+        )?;
+    }
+
+    #[cfg(feature = "tui")]
+    if let Some(tx) = &tui_tx {
+        let db_type_str = match db_type {
+            crate::detect::GethDbType::Pebble => "Pebble",
+            crate::detect::GethDbType::LevelDB => "LevelDB",
+            crate::detect::GethDbType::Unknown => "Unknown",
+        };
+        let _ = tx
+            .send(crate::tui::event::ProgressEvent::Init {
+                source_path: geth_chaindata.display().to_string(),
+                target_path: target_storage.display().to_string(),
+                db_type: db_type_str.to_string(),
+                start_block: plan.start_block,
+                end_block: plan.end_block,
+            })
+            .await;
+    }
+
+    // Track migration progress without accumulating all block references.
+    // Only keep the last head and aggregate counts to avoid O(N) memory.
+    let mut total_imported: u64 = 0;
+    let mut last_head: Option<(u64, ethrex_common::H256)> = None;
+    let mut skipped_blocks = 0u64;
+
+    // Run the batch migration loop, capturing any error for TUI cleanup.
+    let migration_result: Result<()> = async {
+        let mut batch_start = plan.start_block;
+        while batch_start <= plan.end_block {
+            let batch_end = (batch_start + BATCH_SIZE - 1).min(plan.end_block);
+            let mut batch: Vec<ethrex_common::types::Block> = Vec::new();
+            let mut batch_canonical: Vec<(u64, ethrex_common::H256)> = Vec::new();
+
+            for block_number in batch_start..=batch_end {
+                // Read canonical hash for this block number
+                let canonical_hash_result = retry_sync(
+                    || {
+                        geth_reader
+                            .read_canonical_hash(block_number)
+                            .map_err(|e| {
+                                eyre::eyre!(
+                                    "Cannot read canonical hash for block #{block_number}: {e}"
+                                )
+                            })?
+                            .ok_or_else(|| {
+                                eyre::eyre!("No canonical block found at #{block_number}")
+                            })
+                    },
+                    retry_attempts,
+                    retry_base_delay,
+                );
+
+                let (block_hash, attempts) = match canonical_hash_result {
+                    Ok(value) => value,
+                    Err(error) if continue_on_error => {
+                        skipped_blocks += 1;
+                        let reason = format!("canonical hash 없음: {error:#}");
+                        if !tui {
+                            eprintln!(
+                                "Warning: skipping block #{block_number} (no canonical hash): {error:#}"
+                            );
+                        }
+                        #[cfg(feature = "tui")]
+                        if let Some(tx) = &tui_tx {
+                            let _ = tx
+                                .send(crate::tui::event::ProgressEvent::BlockSkipped {
+                                    block_number,
+                                    reason,
+                                })
+                                .await;
+                        }
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                retries_performed += attempts.saturating_sub(1);
+
+                // Read full block (header + body)
+                let block_result = retry_sync(
+                    || {
+                        geth_reader
+                            .read_block(block_number, block_hash)
+                            .map_err(|e| {
+                                eyre::eyre!(
+                                    "Cannot read block #{block_number} ({block_hash:?}): {e}"
+                                )
+                            })?
+                            .ok_or_else(|| {
+                                eyre::eyre!(
+                                    "Block #{block_number} ({block_hash:?}) missing header or body"
+                                )
+                            })
+                    },
+                    retry_attempts,
+                    retry_base_delay,
+                );
+
+                let (block, attempts) = match block_result {
+                    Ok(value) => value,
+                    Err(error) if continue_on_error => {
+                        skipped_blocks += 1;
+                        let reason = format!("블록 읽기 실패: {error:#}");
+                        if !tui {
+                            eprintln!(
+                                "Warning: skipping block #{block_number} after read failure: {error:#}"
+                            );
+                        }
+                        #[cfg(feature = "tui")]
+                        if let Some(tx) = &tui_tx {
+                            let _ = tx
+                                .send(crate::tui::event::ProgressEvent::BlockSkipped {
+                                    block_number,
+                                    reason,
+                                })
+                                .await;
+                        }
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                retries_performed += attempts.saturating_sub(1);
+
+                batch_canonical.push((block_number, block_hash));
+                batch.push(block);
+            }
+
+            if batch.is_empty() {
+                batch_start = batch_end + 1;
+                continue;
+            }
+
+            // Write batch to RocksDB
+            let (_, attempts) = retry_async(
+                || async {
+                    new_store.add_blocks(batch.clone()).await.wrap_err_with(|| {
+                        format!(
+                            "Cannot write block batch #{batch_start}..=#{batch_end} to rocksdb"
+                        )
+                    })
+                },
+                retry_attempts,
+                retry_base_delay,
+            )
+            .await?;
+            retries_performed += attempts.saturating_sub(1);
+
+            // Update canonical chain for this batch
+            let (last_num, last_hash) = *batch_canonical
+                .last()
+                .ok_or_else(|| eyre::eyre!("Empty canonical batch"))?;
+
+            let (_, attempts) = retry_async(
+                || async {
+                    new_store
+                        .forkchoice_update(
+                            batch_canonical.clone(),
+                            last_num,
+                            last_hash,
+                            None,
+                            None,
+                        )
+                        .await
+                        .wrap_err("Cannot apply forkchoice update for batch")
+                },
+                retry_attempts,
+                retry_base_delay,
+            )
+            .await?;
+            retries_performed += attempts.saturating_sub(1);
+
+            let blocks_in_batch = batch_canonical.len() as u64;
+            total_imported += blocks_in_batch;
+            last_head = batch_canonical.last().copied();
+
+            let batch_number = (batch_start - plan.start_block) / BATCH_SIZE + 1;
+            let total_batches = plan.block_count().div_ceil(BATCH_SIZE);
+
+            #[cfg(feature = "tui")]
+            if let Some(tx) = &tui_tx {
+                let _ = tx
+                    .send(crate::tui::event::ProgressEvent::BatchCompleted {
+                        batch_number,
+                        total_batches,
+                        current_block: batch_end,
+                        blocks_in_batch,
+                        elapsed: started_at.elapsed(),
+                    })
+                    .await;
+            }
+
+            batch_start = batch_end + 1;
+        }
+
+        Ok(())
+    }
+    .await;
+
+    // Always cleanup TUI before propagating errors — ensures terminal is restored.
+    #[cfg(feature = "tui")]
+    {
+        if let Some(tx) = tui_tx.take() {
+            match &migration_result {
+                Ok(()) if total_imported > 0 => {
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Completed {
+                            imported_blocks: total_imported,
+                            skipped_blocks,
+                            elapsed: started_at.elapsed(),
+                            retries_performed,
+                        })
+                        .await;
+                }
+                Ok(()) => {
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Error {
+                            message: format!(
+                                "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
+                                plan.start_block, plan.end_block
+                            ),
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Error {
+                            message: format!("{e:#}"),
+                        })
+                        .await;
+                }
+            }
+            // Drop tx — TUI will detect channel close and wait for 'q'.
+            drop(tx);
+        }
+        if let Some(handle) = tui_handle.take() {
+            if let Err(join_error) = handle.await {
+                eprintln!("TUI task join failed: {join_error}");
+            }
+        }
+    }
+
+    // Propagate migration errors after TUI is cleaned up
+    migration_result?;
+
+    if total_imported == 0 {
         return Err(eyre::eyre!(
             "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
-            plan.start_block,
-            plan.end_block
+            plan.start_block, plan.end_block
         ));
     }
 
-    let (head_block_number, _head_block_hash) = *added_blocks
-        .last()
+    let (head_block_number, _head_block_hash) = last_head
         .ok_or_else(|| eyre::eyre!("Cannot determine migrated chain head"))?;
 
-    if skipped_blocks > 0 {
+    if skipped_blocks > 0 && !tui {
         eprintln!(
             "Warning: migration completed with {skipped_blocks} skipped block(s) due to --continue-on-error"
         );
     }
 
-    let report = MigrationReport {
-        schema_version: REPORT_SCHEMA_VERSION,
-        status: "completed",
-        phase: "execution",
-        source_head: last_source_block,
-        target_head: head_block_number,
-        plan: Some(plan),
-        dry_run: false,
-        imported_blocks: added_blocks.len() as u64,
-        skipped_blocks,
-        elapsed_ms: elapsed_ms(started_at),
-        retry_attempts,
-        retries_performed,
-    };
-    emit_report(&report, json, report_file)?;
+    if !tui {
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "completed",
+            phase: "execution",
+            source_head: last_source_block,
+            target_head: head_block_number,
+            plan: Some(plan),
+            dry_run: false,
+            imported_blocks: total_imported,
+            skipped_blocks,
+            elapsed_ms: elapsed_ms(started_at),
+            retry_attempts,
+            retries_performed,
+        };
+        emit_report(&report, json, report_file)?;
+    }
 
     Ok(())
 }
@@ -1343,12 +1482,17 @@ mod tests {
         std::env::temp_dir().join(format!("migrations-cli-unit-{suffix}-{nanos}"))
     }
 
-
-    fn expected_paths_for_checkpoint(checkpoint_path: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    fn expected_paths_for_checkpoint(
+        checkpoint_path: &std::path::Path,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
         let root = checkpoint_path
             .parent()
             .and_then(|parent| parent.parent())
-            .unwrap_or_else(|| checkpoint_path.parent().unwrap_or_else(|| std::path::Path::new(".")));
+            .unwrap_or_else(|| {
+                checkpoint_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+            });
 
         fs::create_dir_all(root).expect("checkpoint root should be creatable");
 
@@ -1563,12 +1707,9 @@ mod tests {
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
         let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-        let resume_block = read_resume_block_from_checkpoint(
-            &checkpoint_path,
-            &genesis_path,
-            &source_store_path,
-        )
-        .expect("resume block should be readable");
+        let resume_block =
+            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
+                .expect("resume block should be readable");
         assert_eq!(resume_block, 99);
 
         if let Some(parent) = checkpoint_path.parent() {
@@ -1598,12 +1739,9 @@ mod tests {
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
         let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-        let error = read_resume_block_from_checkpoint(
-            &checkpoint_path,
-            &genesis_path,
-            &source_store_path,
-        )
-        .expect_err("schema mismatch should fail");
+        let error =
+            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
+                .expect_err("schema mismatch should fail");
         assert!(
             error
                 .to_string()
@@ -1637,12 +1775,9 @@ mod tests {
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
         let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-        let error = read_resume_block_from_checkpoint(
-            &checkpoint_path,
-            &genesis_path,
-            &source_store_path,
-        )
-        .expect_err("overflow should fail");
+        let error =
+            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
+                .expect_err("overflow should fail");
         assert!(error.to_string().contains("target_head overflow"));
 
         if let Some(parent) = checkpoint_path.parent() {
@@ -1672,12 +1807,9 @@ mod tests {
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
         let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-        let error = read_resume_block_from_checkpoint(
-            &checkpoint_path,
-            &genesis_path,
-            &source_store_path,
-        )
-        .expect_err("target_head above source_head should fail");
+        let error =
+            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
+                .expect_err("target_head above source_head should fail");
         assert!(error.to_string().contains("cannot exceed source_head"));
 
         if let Some(parent) = checkpoint_path.parent() {
@@ -1709,12 +1841,9 @@ mod tests {
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
         let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-        let error = read_resume_block_from_checkpoint(
-            &checkpoint_path,
-            &genesis_path,
-            &source_store_path,
-        )
-        .expect_err("genesis mismatch should fail");
+        let error =
+            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
+                .expect_err("genesis mismatch should fail");
         assert!(error.to_string().contains("genesis_path mismatch"));
 
         if let Some(parent) = checkpoint_path.parent() {
@@ -1750,12 +1879,9 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
-        let error = read_resume_block_from_checkpoint(
-            &checkpoint_path,
-            &genesis_path,
-            &source_store_path,
-        )
-        .expect_err("source store mismatch should fail");
+        let error =
+            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
+                .expect_err("source store mismatch should fail");
         assert!(error.to_string().contains("source_store_path mismatch"));
 
         if let Some(parent) = checkpoint_path.parent() {
@@ -1793,12 +1919,9 @@ mod tests {
         }
         fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
 
-        let error = read_resume_block_from_checkpoint(
-            &checkpoint_path,
-            &genesis_path,
-            &source_store_path,
-        )
-        .expect_err("genesis hash mismatch should fail");
+        let error =
+            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
+                .expect_err("genesis hash mismatch should fail");
         assert!(error.to_string().contains("genesis_sha256 mismatch"));
 
         let _ = fs::remove_file(&genesis_path);
@@ -1850,7 +1973,11 @@ mod tests {
         assert_eq!(payload["schema_version"], 1);
         assert_eq!(
             payload["genesis_path"],
-genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
+            genesis_path
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
         );
         assert_eq!(
             payload["genesis_sha256"],
@@ -1875,7 +2002,6 @@ genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
             let _ = fs::remove_dir_all(root);
         }
     }
-
 
     #[cfg(unix)]
     #[test]
@@ -1947,12 +2073,9 @@ genesis_path.canonicalize().unwrap().to_string_lossy().to_string()
         );
 
         // Ensure resume works regardless of expected path representation.
-        let resume_block = read_resume_block_from_checkpoint(
-            &checkpoint_path,
-            &real_genesis,
-            &linked_store,
-        )
-        .expect("resume should succeed with canonicalized provenance");
+        let resume_block =
+            read_resume_block_from_checkpoint(&checkpoint_path, &real_genesis, &linked_store)
+                .expect("resume should succeed with canonicalized provenance");
         assert_eq!(resume_block, 99);
 
         if let Some(parent) = checkpoint_path.parent() {

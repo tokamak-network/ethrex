@@ -1,6 +1,8 @@
 mod cli;
 mod detect;
 mod readers;
+#[cfg(feature = "tui")]
+mod tui;
 mod utils;
 
 use crate::cli::{CLI, emit_error_report};

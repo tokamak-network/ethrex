@@ -3,6 +3,7 @@
 //! This module provides abstraction over different key-value stores
 //! (LevelDB, Pebble) to enable reading Geth chaindata.
 
+pub mod ancient;
 pub mod geth_db;
 pub mod pebble;
 
@@ -19,6 +20,7 @@ pub trait KeyValueReader {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>>;
 
     /// Checks if a key exists in the database
+    #[allow(dead_code)]
     fn contains(&self, key: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
         Ok(self.get(key)?.is_some())
     }
@@ -50,7 +52,7 @@ pub trait KeyValueReader {
 pub fn open_geth_reader(
     chaindata_path: &Path,
 ) -> Result<Box<dyn KeyValueReader>, Box<dyn std::error::Error>> {
-    use crate::detect::{detect_geth_db_type, GethDbType};
+    use crate::detect::{GethDbType, detect_geth_db_type};
 
     let db_type = detect_geth_db_type(chaindata_path)?;
 
@@ -69,4 +71,17 @@ pub fn open_geth_reader(
         )
         .into()),
     }
+}
+
+/// Opens a [`geth_db::GethBlockReader`] backed by both the hot key-value store
+/// and the ancient (freezer) DB found under `{chaindata}/ancient/chain/`.
+pub fn open_geth_block_reader(
+    chaindata_path: &Path,
+) -> Result<geth_db::GethBlockReader, Box<dyn std::error::Error>> {
+    let kv_reader = open_geth_reader(chaindata_path)?;
+
+    let ancient_dir = chaindata_path.join("ancient").join("chain");
+    let ancient = ancient::AncientReader::open(&ancient_dir)?;
+
+    Ok(geth_db::GethBlockReader::new(kv_reader, ancient))
 }

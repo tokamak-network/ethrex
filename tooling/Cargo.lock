@@ -4288,6 +4288,7 @@ name = "geth2ethrex"
 version = "4.0.0"
 dependencies = [
  "clap 4.5.54",
+ "crossterm 0.29.0",
  "ethrex-blockchain",
  "ethrex-common 1.0.0",
  "ethrex-common 9.0.0",
@@ -4295,10 +4296,13 @@ dependencies = [
  "ethrex-storage 1.0.0",
  "ethrex-storage 9.0.0",
  "eyre",
+ "futures",
+ "ratatui",
  "rocksdb",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "snap",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

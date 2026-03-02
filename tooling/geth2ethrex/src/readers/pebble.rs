@@ -70,6 +70,7 @@ impl PebbleReader {
     }
 
     /// Returns the underlying RocksDB instance (for advanced usage)
+    #[allow(dead_code)]
     pub fn db(&self) -> &DBWithThreadMode<MultiThreaded> {
         &self.db
     }

@@ -12,6 +12,13 @@
 //! | Block header  | `"h" + num(8 BE) + hash(32)`       |
 //! | Block body    | `"b" + num(8 BE) + hash(32)`       |
 //! | Block number  | `"H" + hash(32)`                   |
+//!
+//! ## Ancient (Freezer) Fallback
+//!
+//! Geth's path-state scheme moves canonical block data to an "ancient" freezer
+//! database almost immediately. `GethBlockReader` transparently falls back to
+//! [`super::ancient::AncientReader`] for blocks that are no longer in the hot
+//! Pebble store.
 
 use ethrex_common::{
     H256,
@@ -20,16 +27,25 @@ use ethrex_common::{
 use ethrex_rlp::decode::RLPDecode;
 
 use super::KeyValueReader;
+use super::ancient::AncientReader;
 
 /// Reads Ethereum blocks from a Geth chaindata directory using Geth's rawdb key schema.
+///
+/// Transparently reads from both the hot Pebble/LevelDB store and the ancient
+/// (freezer) database so that the caller does not need to know where each block
+/// is stored.
 pub struct GethBlockReader {
     reader: Box<dyn KeyValueReader>,
+    ancient: Option<AncientReader>,
 }
 
 impl GethBlockReader {
-    /// Creates a new GethBlockReader wrapping any KeyValueReader.
-    pub fn new(reader: Box<dyn KeyValueReader>) -> Self {
-        Self { reader }
+    /// Creates a new `GethBlockReader`.
+    ///
+    /// `ancient` should be opened from `{chaindata}/ancient/chain/` when
+    /// available. Pass `None` to read only from the hot key-value store.
+    pub fn new(reader: Box<dyn KeyValueReader>, ancient: Option<AncientReader>) -> Self {
+        Self { reader, ancient }
     }
 
     /// Returns the hash of the head block stored under `"LastBlock"`.
@@ -53,9 +69,10 @@ impl GethBlockReader {
     /// Returns the block number for the given hash using the reverse index `"H" + hash`.
     pub fn read_block_number(&self, hash: H256) -> Result<u64, Box<dyn std::error::Error>> {
         let key = header_number_key(hash);
-        let raw = self.reader.get(&key)?.ok_or_else(|| {
-            format!("Block number not found for hash {:?}", hash)
-        })?;
+        let raw = self
+            .reader
+            .get(&key)?
+            .ok_or_else(|| format!("Block number not found for hash {:?}", hash))?;
 
         if raw.len() != 8 {
             return Err(format!(
@@ -70,61 +87,79 @@ impl GethBlockReader {
 
     /// Returns the canonical block hash for the given block number.
     ///
-    /// Returns `None` if there is no canonical block at that number (e.g. above chain head).
+    /// Checks the hot Pebble/LevelDB store first, then falls back to the
+    /// ancient DB. Returns `None` if the block is beyond the chain head.
     pub fn read_canonical_hash(
         &self,
         number: u64,
     ) -> Result<Option<H256>, Box<dyn std::error::Error>> {
+        // Hot DB lookup
         let key = canonical_hash_key(number);
-        match self.reader.get(&key)? {
-            None => Ok(None),
-            Some(raw) => {
-                if raw.len() != 32 {
-                    return Err(format!(
-                        "Canonical hash for block #{number} has unexpected length {} (expected 32)",
-                        raw.len()
-                    )
-                    .into());
-                }
-                Ok(Some(H256::from_slice(&raw)))
+        if let Some(raw) = self.reader.get(&key)? {
+            if raw.len() != 32 {
+                return Err(format!(
+                    "Canonical hash for block #{number} has unexpected length {} (expected 32)",
+                    raw.len()
+                )
+                .into());
             }
+            return Ok(Some(H256::from_slice(&raw)));
         }
+
+        // Ancient DB fallback
+        if let Some(ancient) = &self.ancient {
+            return ancient.read_canonical_hash(number);
+        }
+
+        Ok(None)
     }
 
     /// Reads and RLP-decodes the block header for a known (number, hash) pair.
+    ///
+    /// Falls back to the ancient DB when the key is absent from the hot store.
     pub fn read_block_header(
         &self,
         number: u64,
         hash: H256,
     ) -> Result<Option<BlockHeader>, Box<dyn std::error::Error>> {
+        // Hot DB lookup
         let key = header_key(number, hash);
-        match self.reader.get(&key)? {
-            None => Ok(None),
-            Some(raw) => {
-                let header = BlockHeader::decode(&raw).map_err(|e| {
-                    format!("RLP decode error for block header #{number}: {e:?}")
-                })?;
-                Ok(Some(header))
-            }
+        if let Some(raw) = self.reader.get(&key)? {
+            let header = BlockHeader::decode(&raw)
+                .map_err(|e| format!("RLP decode error for block header #{number}: {e:?}"))?;
+            return Ok(Some(header));
         }
+
+        // Ancient DB fallback (index by block number)
+        if let Some(ancient) = &self.ancient {
+            return ancient.read_block_header(number);
+        }
+
+        Ok(None)
     }
 
     /// Reads and RLP-decodes the block body for a known (number, hash) pair.
+    ///
+    /// Falls back to the ancient DB when the key is absent from the hot store.
     pub fn read_block_body(
         &self,
         number: u64,
         hash: H256,
     ) -> Result<Option<BlockBody>, Box<dyn std::error::Error>> {
+        // Hot DB lookup
         let key = body_key(number, hash);
-        match self.reader.get(&key)? {
-            None => Ok(None),
-            Some(raw) => {
-                let body = BlockBody::decode(&raw).map_err(|e| {
-                    format!("RLP decode error for block body #{number}: {e:?}")
-                })?;
-                Ok(Some(body))
-            }
+        if let Some(raw) = self.reader.get(&key)? {
+            let body = BlockBody::decode(&raw)
+                .map_err(|e| format!("RLP decode error for block body #{number}: {e:?}"))?;
+            return Ok(Some(body));
         }
+
+        // Ancient DB fallback
+        if let Some(ancient) = &self.ancient {
+            return ancient.read_block_body(number);
+        }
+
+        Ok(None)
     }
 
     /// Reads a complete block (header + body) for a known (number, hash) pair.
