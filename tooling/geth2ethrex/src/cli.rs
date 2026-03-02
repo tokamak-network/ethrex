@@ -1318,22 +1318,18 @@ async fn migrate_geth_to_rocksdb(
     .await?;
     retries_performed += attempts.saturating_sub(1);
 
-    // Phase 3b: Determine effective start block and get merge block for difficulty adjustment
-    // For initial migration (RocksDB empty): start from merge block to skip PoW blocks
-    // (ethrex is PoS-only and rejects PoW blocks with difficulty > 0)
-    // For resume migration (RocksDB has data): continue from last_known_block + 1
+    // Phase 3b: Get merge block for difficulty adjustment
+    // ethrex is PoS-only and rejects PoW blocks with difficulty > 0,
+    // but we must migrate ALL blocks (including PoW) for parent hash validation.
     let chain_config = new_store.get_chain_config();
     let merge_netsplit_block = chain_config.merge_netsplit_block;
 
     let resume_from_block = if let Some(explicit_from_block) = from_block {
         // User explicitly specified --from-block, use it
         Some(explicit_from_block)
-    } else if last_known_block == 0 {
-        // Initial migration: start from block before merge to ensure parent header exists
-        // (merge block's parent must be present for chain continuity validation)
-        merge_netsplit_block.map(|mb| mb.saturating_sub(1))
     } else {
-        // Resume migration: continue from where we left off
+        // Both initial and resume migrations continue from last_known_block + 1
+        // We cannot skip blocks because ethrex validates parent hashes
         None
     };
 
