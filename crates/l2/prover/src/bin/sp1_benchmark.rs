@@ -118,6 +118,7 @@ fn deterministic_secret_key(index: u32) -> SecretKey {
     key_bytes[0] = 0x01;
     let idx_bytes = index.to_be_bytes();
     key_bytes[28..32].copy_from_slice(&idx_bytes);
+    #[expect(clippy::expect_used, reason = "benchmark utility with deterministic inputs")]
     SecretKey::from_slice(&key_bytes).expect("deterministic key should be valid")
 }
 
@@ -330,7 +331,7 @@ fn generate_zk_dex_input(transfer_count: u32) -> anyhow::Result<Vec<u8>> {
 /// Creates a mix of game action types (CreateSpot, ClaimReward, FeedTokamon,
 /// Battle) cycling through them. Each action has valid payloads matching the
 /// validation requirements of the execution function.
-#[expect(clippy::indexing_slicing)]
+#[expect(clippy::indexing_slicing, clippy::as_conversions)]
 fn generate_tokamon_input(action_count: u32) -> anyhow::Result<TokammonProgramInput> {
     let initial_state_root = [0x42u8; 32];
     let count = usize::try_from(action_count).context("action count overflow")?;
