@@ -1148,6 +1148,8 @@ async fn migrate_geth_to_rocksdb(
             let batch_end = (batch_start + BATCH_SIZE - 1).min(plan.end_block);
             let mut batch: Vec<ethrex_common::types::Block> = Vec::new();
             let mut batch_canonical: Vec<(u64, ethrex_common::H256)> = Vec::new();
+            let mut batch_receipts: Vec<(ethrex_common::H256, Vec<ethrex_common::types::Receipt>)> =
+                Vec::new();
 
             for block_number in batch_start..=batch_end {
                 // Read canonical hash for this block number
@@ -1242,6 +1244,32 @@ async fn migrate_geth_to_rocksdb(
 
                 batch_canonical.push((block_number, block_hash));
                 batch.push(block);
+
+                // Read receipts for this block (derive tx_type from block body)
+                match geth_reader
+                    .read_receipts(block_number, block_hash, &batch.last().unwrap().body)
+                {
+                    Ok(Some(receipts)) => {
+                        batch_receipts.push((block_hash, receipts));
+                    }
+                    Ok(None) => {
+                        // Receipts not available (e.g., ancient DB without receipt support).
+                        // Not fatal — skip receipt writing for this block.
+                    }
+                    Err(e) => {
+                        if continue_on_error {
+                            if !tui {
+                                eprintln!(
+                                    "Warning: cannot read receipts for block #{block_number}: {e}"
+                                );
+                            }
+                        } else {
+                            return Err(eyre::eyre!(
+                                "Cannot read receipts for block #{block_number}: {e}"
+                            ));
+                        }
+                    }
+                }
             }
 
             if batch.is_empty() {
@@ -1263,6 +1291,16 @@ async fn migrate_geth_to_rocksdb(
             )
             .await?;
             retries_performed += attempts.saturating_sub(1);
+
+            // Write receipts for this batch
+            for (block_hash, receipts) in batch_receipts.drain(..) {
+                new_store
+                    .add_receipts(block_hash, receipts)
+                    .await
+                    .wrap_err_with(|| {
+                        format!("Cannot write receipts for block {block_hash:?}")
+                    })?;
+            }
 
             // Update canonical chain for this batch
             let (last_num, last_hash) = *batch_canonical
