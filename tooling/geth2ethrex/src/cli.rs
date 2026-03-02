@@ -1319,11 +1319,20 @@ async fn migrate_geth_to_rocksdb(
     retries_performed += attempts.saturating_sub(1);
 
     // Phase 3b: Determine effective start block
-    // Only use --from-block if explicitly specified by user.
-    // Do NOT auto-detect merge block as start point: ancient DB blocks before merge block
-    // (blocks 0..merge_block-1) must be migrated to ensure chain continuity.
-    // Merge block is a consensus parameter, not a migration boundary.
-    let resume_from_block = from_block;
+    // For initial migration (RocksDB empty): start from merge block to skip PoW blocks
+    // (ethrex is PoS-only and rejects PoW blocks with difficulty > 0)
+    // For resume migration (RocksDB has data): continue from last_known_block + 1
+    let resume_from_block = if let Some(explicit_from_block) = from_block {
+        // User explicitly specified --from-block, use it
+        Some(explicit_from_block)
+    } else if last_known_block == 0 {
+        // Initial migration: start from merge block to skip PoW era blocks
+        let chain_config = new_store.get_chain_config();
+        chain_config.merge_netsplit_block
+    } else {
+        // Resume migration: continue from where we left off
+        None
+    };
 
     // Phase 4: Build migration plan
     let Some(plan) = build_migration_plan(last_known_block, last_source_block, resume_from_block)? else {
