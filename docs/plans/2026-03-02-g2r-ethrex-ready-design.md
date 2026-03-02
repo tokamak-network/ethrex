@@ -9,31 +9,26 @@
 
 현재 g2r은 블록/상태 데이터를 마이그레이션하지만, ethrex가 직접 로드하기에는 몇 가지 갭이 존재:
 
-| Gap | Impact |
-|-----|--------|
-| `metadata.json` 미생성 | ethrex startup `NotFoundDBVersion` 에러 |
-| Receipts 마이그레이션 불확실 | `eth_getTransactionReceipt` RPC 실패 |
-| Transaction Locations 미확인 | `eth_getTransactionByHash` RPC 실패 |
-| Finalized/Safe Block Number 미기록 | `eth_getBlockByNumber("finalized")` null |
-| 검증 커버리지 ~30% | body/receipt/code 손상 미감지 |
+| Gap | Status | Impact |
+|-----|--------|--------|
+| `metadata.json` 미생성 | **이미 해결됨** (`Store::new_from_genesis()`가 자동 생성) | - |
+| Receipts 마이그레이션 | **미작성** → 구현 완료 | `eth_getTransactionReceipt` RPC 실패 |
+| Transaction Locations | **이미 해결됨** (`add_blocks()`가 자동 생성) | - |
+| Finalized/Safe Block Number 미기록 | **미기록** → 구현 완료 | `eth_getBlockByNumber("finalized")` null |
+| 검증 커버리지 ~30% | **개선 완료** (body + receipt 검증 추가) | body/receipt 손상 미감지 |
 
 ## Design
 
 ### Section 1: Data Gap Completion
 
-#### 1.1 metadata.json
-마이그레이션 완료 시 target 디렉토리에 자동 생성:
-```json
-{"schema_version": 1}
-```
-ethrex `validate_store_schema_version()` 호환.
+#### 1.1 metadata.json (이미 해결됨)
+`Store::new_from_genesis()`가 `validate_store_schema_version()`을 통해 자동 생성. 추가 작업 불필요.
 
-#### 1.2 Receipts Migration
-`add_blocks()` → `forkchoice_update()` 경로에서 receipts 기록 여부 확인.
-미작성 시: `geth_reader.read_receipts(block_num, hash)` → ethrex `RECEIPTS` 테이블에 `(block_hash, tx_idx) → Receipt` 저장.
+#### 1.2 Receipts Migration (구현 완료)
+`add_blocks()`는 receipts를 쓰지 않음을 확인. `geth_reader.read_receipts(block_num, hash, body)` 구현 후 migration 루프에 receipt 쓰기 추가. Geth stored receipt에는 tx_type이 없으므로 block body의 트랜잭션에서 파생.
 
-#### 1.3 Transaction Locations Index
-각 블록 body의 tx hash에서 `TRANSACTION_LOCATIONS` 테이블에 `tx_hash → (block_num, block_hash, tx_idx)` 매핑 저장.
+#### 1.3 Transaction Locations Index (이미 해결됨)
+`add_blocks()`가 `TRANSACTION_LOCATIONS` 테이블에 자동으로 `tx_hash + block_hash → (block_num, block_hash, tx_idx)` 매핑 저장. 추가 작업 불필요.
 
 #### 1.4 Finalized/Safe Block Number
 마이그레이션 최종 단계:
