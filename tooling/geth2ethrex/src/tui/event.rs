@@ -30,4 +30,43 @@ pub enum ProgressEvent {
     },
     /// Emitted when migration terminates with a fatal error.
     Error { message: String },
+    /// Emitted when state migration phase starts.
+    StatePhaseStarted { total_accounts: u64 },
+    /// Emitted after a batch of accounts is processed.
+    AccountBatchCompleted {
+        processed: u64,
+        total: u64,
+        elapsed: Duration,
+    },
+    /// Emitted when state migration phase completes.
+    StatePhaseCompleted {
+        accounts: u64,
+        storage_slots: u64,
+        code_entries: u64,
+        accounts_without_preimage: u64,
+        slots_without_preimage: u64,
+        elapsed: Duration,
+    },
+    /// Emitted when offline verification phase starts.
+    VerificationStarted {
+        start_block: u64,
+        end_block: u64,
+        total_blocks: u64,
+        state_trie_check: bool,
+    },
+    /// Emitted as offline verification progresses.
+    VerificationProgress {
+        checked: u64,
+        total: u64,
+        mismatches: u64,
+        elapsed: Duration,
+    },
+    /// Emitted when a mismatch is found during verification.
+    VerificationMismatch { block_number: u64, reason: String },
+    /// Emitted when offline verification finishes.
+    VerificationCompleted {
+        checked: u64,
+        mismatches: u64,
+        elapsed: Duration,
+    },
 }

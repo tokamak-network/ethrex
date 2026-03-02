@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs::OpenOptions,
     future::Future,
     io::Write,
     path::{Path, PathBuf},
@@ -7,18 +7,14 @@ use std::{
 };
 
 use clap::{Parser as ClapParser, Subcommand as ClapSubcommand};
-use ethrex_blockchain::{Blockchain, BlockchainOptions, BlockchainType, L2Config};
-use ethrex_common::types::Block;
 use eyre::{ContextCompat, Result, WrapErr};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
-use crate::utils::{migrate_block_body, migrate_block_header};
+use serde::Serialize;
 
 const MAX_RETRY_ATTEMPTS: u32 = 3;
 const REPORT_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_RETRY_BASE_DELAY_MS: u64 = 1_000;
 const MAX_RETRY_BASE_DELAY_MS: u64 = 60_000;
+const VERIFICATION_PROGRESS_INTERVAL: u64 = 10;
 
 #[allow(clippy::upper_case_acronyms)]
 #[derive(ClapParser)]
@@ -34,49 +30,6 @@ pub struct CLI {
 
 #[derive(ClapSubcommand)]
 pub enum Subcommand {
-    #[command(
-        name = "libmdbx2rocksdb",
-        visible_alias = "l2r",
-        about = "Migrate a libmdbx database to rocksdb"
-    )]
-    Libmdbx2Rocksdb {
-        #[arg(long = "genesis")]
-        /// Path to the genesis file for the old database
-        genesis_path: PathBuf,
-        #[arg(long = "store.old")]
-        /// Path to the target Libmbdx database to migrate
-        old_storage_path: PathBuf,
-        #[arg(long = "store.new")]
-        /// Path for the new RocksDB database
-        new_storage_path: PathBuf,
-        #[arg(long = "dry-run", default_value_t = false)]
-        /// Validate source/target stores and print migration plan without writing blocks
-        dry_run: bool,
-        #[arg(long = "json", default_value_t = false)]
-        /// Emit machine-readable JSON output
-        json: bool,
-        #[arg(long = "report-file")]
-        /// Optional path to append emitted reports (JSON lines in --json mode)
-        report_file: Option<PathBuf>,
-        #[arg(long = "retry-attempts", default_value_t = MAX_RETRY_ATTEMPTS, value_parser = clap::value_parser!(u32).range(1..=10))]
-        /// Retry budget for retryable operations (1-10, inclusive)
-        retry_attempts: u32,
-        #[arg(long = "retry-base-delay-ms", default_value_t = DEFAULT_RETRY_BASE_DELAY_MS, value_parser = clap::value_parser!(u64).range(0..=MAX_RETRY_BASE_DELAY_MS))]
-        /// Initial retry backoff delay in milliseconds (0-60000)
-        retry_base_delay_ms: u64,
-        #[arg(long = "continue-on-error", default_value_t = false)]
-        /// Continue migrating subsequent blocks when a block-level import fails
-        continue_on_error: bool,
-        #[arg(long = "resume-from-block", conflicts_with = "resume_from_checkpoint")]
-        /// Force migration start block (must be > current target head and <= source head)
-        resume_from_block: Option<u64>,
-        #[arg(long = "checkpoint-file")]
-        /// Optional path to write migration checkpoint metadata after successful completion
-        checkpoint_file: Option<PathBuf>,
-        #[arg(long = "resume-from-checkpoint", conflicts_with = "resume_from_block")]
-        /// Optional path to a checkpoint file whose target_head is used as migration start
-        resume_from_checkpoint: Option<PathBuf>,
-    },
     #[command(
         name = "geth2rocksdb",
         visible_alias = "g2r",
@@ -110,6 +63,64 @@ pub enum Subcommand {
         #[arg(long = "continue-on-error", default_value_t = false)]
         /// Continue migrating subsequent blocks when a block-level import fails
         continue_on_error: bool,
+        #[arg(long = "verify-offline", default_value_t = true, action = clap::ArgAction::Set)]
+        /// Run offline DB-to-DB verification after migration
+        verify_offline: bool,
+        #[arg(long = "verify-start-block")]
+        /// Optional start block override for offline verification
+        verify_start_block: Option<u64>,
+        #[arg(long = "verify-end-block")]
+        /// Optional end block override for offline verification
+        verify_end_block: Option<u64>,
+        #[arg(long = "skip-state-trie-check", default_value_t = false)]
+        /// Skip ethrex has_state_root check during offline verification
+        skip_state_trie_check: bool,
+        #[arg(long = "blocks-only", default_value_t = false)]
+        /// Only migrate block data (skip state: accounts, storage, code)
+        blocks_only: bool,
+        #[arg(long = "from-block")]
+        /// Start block migration from this block number (auto-detects merge block if unset)
+        from_block: Option<u64>,
+    },
+    #[command(
+        name = "geth2lmdb",
+        visible_alias = "g2l",
+        about = "Migrate Geth chaindata (Pebble) to py-ethclient LMDB format"
+    )]
+    Geth2Lmdb {
+        #[arg(long = "source")]
+        /// Path to Geth chaindata directory (Pebble)
+        geth_chaindata: PathBuf,
+        #[arg(long = "target")]
+        /// Path for the output LMDB database
+        lmdb_path: PathBuf,
+        #[arg(long = "dry-run", default_value_t = false)]
+        /// Detect Geth DB type and print migration plan without writing
+        dry_run: bool,
+        #[arg(long = "json", default_value_t = false)]
+        /// Emit machine-readable JSON output
+        json: bool,
+        #[arg(long = "report-file")]
+        /// Optional path to append emitted reports
+        report_file: Option<PathBuf>,
+        #[arg(long = "blocks-only", default_value_t = false)]
+        /// Only migrate block data (skip state: accounts, storage, code)
+        blocks_only: bool,
+        #[arg(long = "map-size-gb", default_value_t = 4)]
+        /// LMDB map size in GB (default: 4)
+        map_size_gb: u32,
+        #[arg(long = "continue-on-error", default_value_t = false)]
+        /// Continue migrating when individual items fail
+        continue_on_error: bool,
+        #[arg(long = "verify-offline", default_value_t = true, action = clap::ArgAction::Set)]
+        /// Run offline DB-to-DB verification after migration
+        verify_offline: bool,
+        #[arg(long = "verify-start-block")]
+        /// Optional start block override for offline verification
+        verify_start_block: Option<u64>,
+        #[arg(long = "verify-end-block")]
+        /// Optional end block override for offline verification
+        verify_end_block: Option<u64>,
     },
 }
 
@@ -298,24 +309,6 @@ struct MigrationErrorReport {
     elapsed_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MigrationCheckpoint {
-    schema_version: u32,
-    #[serde(default)]
-    genesis_path: Option<String>,
-    #[serde(default)]
-    genesis_sha256: Option<String>,
-    #[serde(default)]
-    source_store_path: Option<String>,
-    source_head: u64,
-    target_head: u64,
-    imported_blocks: u64,
-    skipped_blocks: u64,
-    retry_attempts: u32,
-    retries_performed: u32,
-    elapsed_ms: u64,
-}
-
 fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis() as u64
 }
@@ -400,129 +393,6 @@ fn append_report_line(report_file: Option<&Path>, line: &str) -> Result<()> {
     Ok(())
 }
 
-fn canonicalize_path(path: &Path) -> Result<std::path::PathBuf> {
-    path.canonicalize()
-        .wrap_err_with(|| format!("Cannot canonicalize path {path:?}"))
-}
-
-fn canonical_path_string(path: &Path) -> Result<String> {
-    Ok(canonicalize_path(path)?.to_string_lossy().to_string())
-}
-
-fn sha256_hex_for_file(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).wrap_err_with(|| format!("Cannot read file for sha256 {path:?}"))?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    Ok(format!("{digest:x}"))
-}
-
-fn read_resume_block_from_checkpoint(
-    path: &Path,
-    expected_genesis_path: &Path,
-    expected_source_store_path: &Path,
-) -> Result<u64> {
-    let content = fs::read_to_string(path)
-        .wrap_err_with(|| format!("Cannot read checkpoint file {path:?}"))?;
-    let checkpoint: MigrationCheckpoint = serde_json::from_str(&content)
-        .wrap_err_with(|| format!("Cannot parse checkpoint file {path:?}"))?;
-
-    if checkpoint.schema_version != REPORT_SCHEMA_VERSION {
-        return Err(eyre::eyre!(
-            "Unsupported checkpoint schema_version={} in {path:?}; expected {}",
-            checkpoint.schema_version,
-            REPORT_SCHEMA_VERSION
-        ));
-    }
-
-    let expected_genesis = canonical_path_string(expected_genesis_path)?;
-    let expected_source = canonical_path_string(expected_source_store_path)?;
-    if let Some(checkpoint_genesis) = checkpoint.genesis_path.as_deref()
-        && checkpoint_genesis != expected_genesis
-    {
-        return Err(eyre::eyre!(
-            "Checkpoint genesis_path mismatch in {path:?}: expected {:?}, got {:?}",
-            expected_genesis,
-            checkpoint_genesis
-        ));
-    }
-
-    if let Some(checkpoint_genesis_hash) = checkpoint.genesis_sha256.as_deref() {
-        let expected_genesis_hash =
-            sha256_hex_for_file(&canonicalize_path(expected_genesis_path)?)?;
-        if checkpoint_genesis_hash != expected_genesis_hash {
-            return Err(eyre::eyre!(
-                "Checkpoint genesis_sha256 mismatch in {path:?}: expected {:?}, got {:?}",
-                expected_genesis_hash,
-                checkpoint_genesis_hash
-            ));
-        }
-    }
-
-    if let Some(checkpoint_source) = checkpoint.source_store_path.as_deref()
-        && checkpoint_source != expected_source
-    {
-        return Err(eyre::eyre!(
-            "Checkpoint source_store_path mismatch in {path:?}: expected {:?}, got {:?}",
-            expected_source,
-            checkpoint_source
-        ));
-    }
-
-    if checkpoint.target_head > checkpoint.source_head {
-        return Err(eyre::eyre!(
-            "Invalid checkpoint in {path:?}: target_head ({}) cannot exceed source_head ({})",
-            checkpoint.target_head,
-            checkpoint.source_head
-        ));
-    }
-
-    checkpoint
-        .target_head
-        .checked_add(1)
-        .ok_or_else(|| eyre::eyre!("Invalid checkpoint target_head overflow in {path:?}"))
-}
-
-fn write_checkpoint_file(
-    path: Option<&Path>,
-    report: &MigrationReport,
-    genesis_path: &Path,
-    source_store_path: &Path,
-) -> Result<()> {
-    let Some(path) = path else {
-        return Ok(());
-    };
-
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("Cannot create checkpoint directory {parent:?}"))?;
-    }
-
-    let canonical_genesis_path = canonicalize_path(genesis_path)?;
-    let canonical_source_store_path = canonicalize_path(source_store_path)?;
-
-    let checkpoint = MigrationCheckpoint {
-        schema_version: REPORT_SCHEMA_VERSION,
-        genesis_path: Some(canonical_genesis_path.to_string_lossy().to_string()),
-        genesis_sha256: Some(sha256_hex_for_file(&canonical_genesis_path)?),
-        source_store_path: Some(canonical_source_store_path.to_string_lossy().to_string()),
-        source_head: report.source_head,
-        target_head: report.target_head,
-        imported_blocks: report.imported_blocks,
-        skipped_blocks: report.skipped_blocks,
-        retry_attempts: report.retry_attempts,
-        retries_performed: report.retries_performed,
-        elapsed_ms: report.elapsed_ms,
-    };
-
-    let encoded = serde_json::to_string_pretty(&checkpoint)
-        .wrap_err("Cannot serialize migration checkpoint")?;
-    fs::write(path, encoded).wrap_err_with(|| format!("Cannot write checkpoint file {path:?}"))?;
-    Ok(())
-}
-
 fn emit_report(report: &MigrationReport, json: bool, report_file: Option<&Path>) -> Result<()> {
     if json {
         let encoded =
@@ -575,57 +445,27 @@ fn emit_report(report: &MigrationReport, json: bool, report_file: Option<&Path>)
 impl Subcommand {
     pub fn json_output(&self) -> bool {
         match self {
-            Self::Libmdbx2Rocksdb { json, .. } => *json,
             Self::Geth2Rocksdb { json, .. } => *json,
+            Self::Geth2Lmdb { json, .. } => *json,
         }
     }
 
     pub fn retry_attempts(&self) -> u32 {
         match self {
-            Self::Libmdbx2Rocksdb { retry_attempts, .. } => *retry_attempts,
             Self::Geth2Rocksdb { retry_attempts, .. } => *retry_attempts,
+            Self::Geth2Lmdb { .. } => MAX_RETRY_ATTEMPTS,
         }
     }
 
     pub fn report_file(&self) -> Option<&Path> {
         match self {
-            Self::Libmdbx2Rocksdb { report_file, .. } => report_file.as_deref(),
             Self::Geth2Rocksdb { report_file, .. } => report_file.as_deref(),
+            Self::Geth2Lmdb { report_file, .. } => report_file.as_deref(),
         }
     }
 
     pub async fn run(&self) -> Result<()> {
         match self {
-            Self::Libmdbx2Rocksdb {
-                genesis_path,
-                old_storage_path,
-                new_storage_path,
-                dry_run,
-                json,
-                retry_attempts,
-                retry_base_delay_ms,
-                continue_on_error,
-                resume_from_block,
-                checkpoint_file,
-                resume_from_checkpoint,
-                report_file,
-            } => {
-                migrate_libmdbx_to_rocksdb(
-                    genesis_path,
-                    old_storage_path,
-                    new_storage_path,
-                    *dry_run,
-                    *json,
-                    *retry_attempts,
-                    Duration::from_millis(*retry_base_delay_ms),
-                    *continue_on_error,
-                    *resume_from_block,
-                    resume_from_checkpoint.as_deref(),
-                    checkpoint_file.as_deref(),
-                    report_file.as_deref(),
-                )
-                .await
-            }
             Self::Geth2Rocksdb {
                 geth_chaindata,
                 target_storage,
@@ -635,7 +475,13 @@ impl Subcommand {
                 retry_attempts,
                 retry_base_delay_ms,
                 continue_on_error,
+                verify_offline,
+                verify_start_block,
+                verify_end_block,
+                skip_state_trie_check,
                 report_file,
+                blocks_only,
+                from_block,
             } => {
                 // TUI is on by default when compiled with the `tui` feature,
                 // unless JSON output is requested.
@@ -649,6 +495,42 @@ impl Subcommand {
                     *retry_attempts,
                     Duration::from_millis(*retry_base_delay_ms),
                     *continue_on_error,
+                    *verify_offline,
+                    *verify_start_block,
+                    *verify_end_block,
+                    *skip_state_trie_check,
+                    report_file.as_deref(),
+                    use_tui,
+                    *blocks_only,
+                    *from_block,
+                )
+                .await
+            }
+            Self::Geth2Lmdb {
+                geth_chaindata,
+                lmdb_path,
+                dry_run,
+                json,
+                report_file,
+                blocks_only,
+                map_size_gb,
+                continue_on_error,
+                verify_offline,
+                verify_start_block,
+                verify_end_block,
+            } => {
+                let use_tui = cfg!(feature = "tui") && !json;
+                migrate_geth_to_lmdb(
+                    geth_chaindata,
+                    lmdb_path,
+                    *dry_run,
+                    *json,
+                    *blocks_only,
+                    *map_size_gb,
+                    *continue_on_error,
+                    *verify_offline,
+                    *verify_start_block,
+                    *verify_end_block,
                     report_file.as_deref(),
                     use_tui,
                 )
@@ -656,305 +538,6 @@ impl Subcommand {
             }
         }
     }
-}
-
-async fn migrate_libmdbx_to_rocksdb(
-    genesis_path: &Path,
-    old_storage_path: &Path,
-    new_storage_path: &Path,
-    dry_run: bool,
-    json: bool,
-    retry_attempts: u32,
-    retry_base_delay: Duration,
-    continue_on_error: bool,
-    resume_from_block: Option<u64>,
-    resume_from_checkpoint: Option<&Path>,
-    checkpoint_file: Option<&Path>,
-    report_file: Option<&Path>,
-) -> Result<()> {
-    let started_at = Instant::now();
-    let mut retries_performed = 0u32;
-
-    let old_path = old_storage_path
-        .to_str()
-        .wrap_err("Invalid UTF-8 in old storage path")?;
-    let (old_store, attempts) = retry_sync(
-        || {
-            ethrex_storage_libmdbx::Store::new(
-                old_path,
-                ethrex_storage_libmdbx::EngineType::Libmdbx,
-            )
-            .wrap_err_with(|| format!("Cannot open libmdbx store at {old_storage_path:?}"))
-        },
-        retry_attempts,
-        retry_base_delay,
-    )?;
-    retries_performed += attempts.saturating_sub(1);
-
-    let (_, attempts) = retry_async(
-        || async {
-            old_store
-                .load_initial_state()
-                .await
-                .wrap_err("Cannot load libmdbx store state")
-        },
-        retry_attempts,
-        retry_base_delay,
-    )
-    .await?;
-    retries_performed += attempts.saturating_sub(1);
-
-    let genesis = genesis_path
-        .to_str()
-        .wrap_err("Invalid UTF-8 in genesis path")?;
-    let (new_store, attempts) = retry_async(
-        || async {
-            ethrex_storage::Store::new_from_genesis(
-                new_storage_path,
-                ethrex_storage::EngineType::RocksDB,
-                genesis,
-            )
-            .await
-            .wrap_err_with(|| format!("Cannot create/open rocksdb store at {new_storage_path:?}"))
-        },
-        retry_attempts,
-        retry_base_delay,
-    )
-    .await?;
-    retries_performed += attempts.saturating_sub(1);
-
-    let (last_block_number, attempts) = retry_async(
-        || async {
-            old_store
-                .get_latest_block_number()
-                .await
-                .wrap_err("Cannot get latest block from libmdbx store")
-        },
-        retry_attempts,
-        retry_base_delay,
-    )
-    .await?;
-    retries_performed += attempts.saturating_sub(1);
-
-    let (last_known_block, attempts) = retry_async(
-        || async {
-            new_store
-                .get_latest_block_number()
-                .await
-                .wrap_err("Cannot get latest block from rocksdb store")
-        },
-        retry_attempts,
-        retry_base_delay,
-    )
-    .await?;
-    retries_performed += attempts.saturating_sub(1);
-
-    let resume_override = match (resume_from_block, resume_from_checkpoint) {
-        (Some(block), None) => Some(block),
-        (None, Some(path)) => Some(read_resume_block_from_checkpoint(
-            path,
-            genesis_path,
-            old_storage_path,
-        )?),
-        (None, None) => None,
-        (Some(_), Some(_)) => unreachable!("clap conflict validation should prevent this"),
-    };
-
-    let Some(plan) = build_migration_plan(last_known_block, last_block_number, resume_override)?
-    else {
-        let report = MigrationReport {
-            schema_version: REPORT_SCHEMA_VERSION,
-            status: "up_to_date",
-            phase: "planning",
-            source_head: last_block_number,
-            target_head: last_known_block,
-            plan: None,
-            dry_run,
-            imported_blocks: 0,
-            skipped_blocks: 0,
-            elapsed_ms: elapsed_ms(started_at),
-            retry_attempts,
-            retries_performed,
-        };
-        emit_report(&report, json, report_file)?;
-        return Ok(());
-    };
-
-    if dry_run {
-        let report = MigrationReport {
-            schema_version: REPORT_SCHEMA_VERSION,
-            status: "planned",
-            phase: "planning",
-            source_head: last_block_number,
-            target_head: last_known_block,
-            plan: Some(plan),
-            dry_run: true,
-            imported_blocks: 0,
-            skipped_blocks: 0,
-            elapsed_ms: elapsed_ms(started_at),
-            retry_attempts,
-            retries_performed,
-        };
-        emit_report(&report, json, report_file)?;
-        return Ok(());
-    }
-
-    emit_report(
-        &MigrationReport {
-            schema_version: REPORT_SCHEMA_VERSION,
-            status: "in_progress",
-            phase: "execution",
-            source_head: last_block_number,
-            target_head: last_known_block,
-            plan: Some(plan),
-            dry_run: false,
-            imported_blocks: 0,
-            skipped_blocks: 0,
-            elapsed_ms: elapsed_ms(started_at),
-            retry_attempts,
-            retries_performed,
-        },
-        json,
-        report_file,
-    )?;
-
-    let blockchain_opts = BlockchainOptions {
-        // TODO: we may want to migrate using a specified fee config
-        r#type: BlockchainType::L2(L2Config::default()),
-        ..Default::default()
-    };
-    let blockchain = Blockchain::new(new_store.clone(), blockchain_opts);
-
-    let (block_bodies, attempts) = retry_async(
-        || async {
-            old_store
-                .get_block_bodies(plan.start_block, plan.end_block)
-                .await
-                .wrap_err("Cannot get block bodies from libmdbx store")
-        },
-        retry_attempts,
-        retry_base_delay,
-    )
-    .await?;
-    retries_performed += attempts.saturating_sub(1);
-
-    let mut added_blocks = Vec::new();
-    let mut skipped_blocks = 0u64;
-    for (block_number, body) in (plan.start_block..=plan.end_block).zip(block_bodies) {
-        let header_result = retry_sync(
-            || {
-                old_store
-                    .get_block_header(block_number)
-                    .wrap_err_with(|| {
-                        format!("Cannot fetch block header #{block_number} from libmdbx store")
-                    })?
-                    .ok_or_else(|| {
-                        eyre::eyre!("Missing block header #{block_number} in libmdbx store")
-                    })
-            },
-            retry_attempts,
-            retry_base_delay,
-        );
-
-        let (header, attempts) = match header_result {
-            Ok(value) => value,
-            Err(error) if continue_on_error => {
-                skipped_blocks += 1;
-                eprintln!(
-                    "Warning: skipping block #{block_number} after header read failure: {error:#}"
-                );
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        retries_performed += attempts.saturating_sub(1);
-
-        let header = migrate_block_header(header);
-        let body = migrate_block_body(body);
-        let block = Block::new(header, body);
-
-        let block_hash = block.hash();
-        let add_result = retry_sync(
-            || {
-                blockchain
-                    .add_block_pipeline(block.clone())
-                    .wrap_err_with(|| format!("Cannot add block {block_number} to rocksdb store"))
-            },
-            retry_attempts,
-            retry_base_delay,
-        );
-
-        let (_, attempts) = match add_result {
-            Ok(value) => value,
-            Err(error) if continue_on_error => {
-                skipped_blocks += 1;
-                eprintln!(
-                    "Warning: skipping block #{block_number} after import failure: {error:#}"
-                );
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        retries_performed += attempts.saturating_sub(1);
-
-        added_blocks.push((block_number, block_hash));
-    }
-
-    if added_blocks.is_empty() {
-        return Err(eyre::eyre!(
-            "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
-            plan.start_block,
-            plan.end_block
-        ));
-    }
-
-    let (head_block_number, head_block_hash) = *added_blocks
-        .last()
-        .ok_or_else(|| eyre::eyre!("Cannot determine migrated chain head"))?;
-
-    let (_, attempts) = retry_async(
-        || async {
-            new_store
-                .forkchoice_update(
-                    added_blocks.clone(),
-                    head_block_number,
-                    head_block_hash,
-                    None,
-                    None,
-                )
-                .await
-                .wrap_err("Cannot apply forkchoice update")
-        },
-        retry_attempts,
-        retry_base_delay,
-    )
-    .await?;
-    retries_performed += attempts.saturating_sub(1);
-
-    if skipped_blocks > 0 {
-        eprintln!(
-            "Warning: migration completed with {skipped_blocks} skipped block(s) due to --continue-on-error"
-        );
-    }
-
-    let report = MigrationReport {
-        schema_version: REPORT_SCHEMA_VERSION,
-        status: "completed",
-        phase: "execution",
-        source_head: last_block_number,
-        target_head: head_block_number,
-        plan: Some(plan),
-        dry_run: false,
-        imported_blocks: added_blocks.len() as u64,
-        skipped_blocks,
-        elapsed_ms: elapsed_ms(started_at),
-        retry_attempts,
-        retries_performed,
-    };
-    emit_report(&report, json, report_file)?;
-    write_checkpoint_file(checkpoint_file, &report, genesis_path, old_storage_path)?;
-
-    Ok(())
 }
 
 fn build_migration_plan(
@@ -989,7 +572,341 @@ fn build_migration_plan(
     )
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OfflineVerificationSummary {
+    start_block: u64,
+    end_block: u64,
+    checked_blocks: u64,
+    mismatches: u64,
+}
+
+fn resolve_verify_range(
+    default_start: u64,
+    default_end: u64,
+    verify_start: Option<u64>,
+    verify_end: Option<u64>,
+) -> Result<(u64, u64)> {
+    let start = verify_start.unwrap_or(default_start);
+    let end = verify_end.unwrap_or(default_end);
+
+    if start > end {
+        return Err(eyre::eyre!(
+            "Invalid verification range: start #{start} is greater than end #{end}"
+        ));
+    }
+
+    if start < default_start || end > default_end {
+        return Err(eyre::eyre!(
+            "Invalid verification range #{}..=#{} (allowed #{}..=#{}).",
+            start,
+            end,
+            default_start,
+            default_end
+        ));
+    }
+
+    Ok((start, end))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn verify_geth_to_rocksdb_offline(
+    geth_reader: &crate::readers::geth_db::GethBlockReader,
+    store: &ethrex_storage::Store,
+    start_block: u64,
+    end_block: u64,
+    skip_state_trie_check: bool,
+    tui: bool,
+    #[cfg(feature = "tui")] tui_tx: &Option<
+        tokio::sync::mpsc::Sender<crate::tui::event::ProgressEvent>,
+    >,
+) -> Result<OfflineVerificationSummary> {
+    let total_blocks = end_block.saturating_sub(start_block) + 1;
+    let started = Instant::now();
+    let mut mismatches = 0u64;
+    let mut checked = 0u64;
+
+    #[cfg(feature = "tui")]
+    if let Some(tx) = tui_tx {
+        let _ = tx
+            .send(crate::tui::event::ProgressEvent::VerificationStarted {
+                start_block,
+                end_block,
+                total_blocks,
+                state_trie_check: !skip_state_trie_check,
+            })
+            .await;
+    }
+
+    for block_number in start_block..=end_block {
+        let mut block_mismatch = false;
+
+        let geth_hash = geth_reader
+            .read_canonical_hash(block_number)
+            .map_err(|e| {
+                eyre::eyre!("verify #{block_number}: cannot read geth canonical hash: {e}")
+            })?
+            .ok_or_else(|| eyre::eyre!("verify #{block_number}: missing geth canonical hash"))?;
+
+        let ethrex_hash = store
+            .get_canonical_block_hash(block_number)
+            .await?
+            .ok_or_else(|| eyre::eyre!("verify #{block_number}: missing ethrex canonical hash"))?;
+
+        if geth_hash != ethrex_hash {
+            mismatches += 1;
+            block_mismatch = true;
+            #[cfg(feature = "tui")]
+            if let Some(tx) = tui_tx {
+                let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationMismatch {
+                    block_number,
+                    reason: format!(
+                        "canonical hash mismatch geth={geth_hash:?} ethrex={ethrex_hash:?}"
+                    ),
+                });
+            }
+        } else {
+            let geth_header = geth_reader
+                .read_block_header(block_number, geth_hash)
+                .map_err(|e| eyre::eyre!("verify #{block_number}: cannot read geth header: {e}"))?
+                .ok_or_else(|| eyre::eyre!("verify #{block_number}: missing geth header"))?;
+
+            let ethrex_header = store
+                .get_block_header(block_number)?
+                .ok_or_else(|| eyre::eyre!("verify #{block_number}: missing ethrex header"))?;
+
+            if geth_header.hash() != ethrex_header.hash() {
+                mismatches += 1;
+                block_mismatch = true;
+                #[cfg(feature = "tui")]
+                if let Some(tx) = tui_tx {
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationMismatch {
+                        block_number,
+                        reason: "header hash mismatch".into(),
+                    });
+                }
+            }
+
+            if geth_header.state_root != ethrex_header.state_root {
+                mismatches += 1;
+                block_mismatch = true;
+                #[cfg(feature = "tui")]
+                if let Some(tx) = tui_tx {
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationMismatch {
+                        block_number,
+                        reason: format!(
+                            "state root mismatch geth={:?} ethrex={:?}",
+                            geth_header.state_root, ethrex_header.state_root
+                        ),
+                    });
+                }
+            }
+
+            if !skip_state_trie_check && !store.has_state_root(ethrex_header.state_root)? {
+                mismatches += 1;
+                block_mismatch = true;
+                #[cfg(feature = "tui")]
+                if let Some(tx) = tui_tx {
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationMismatch {
+                        block_number,
+                        reason: format!("missing state trie root {:?}", ethrex_header.state_root),
+                    });
+                }
+            }
+        }
+
+        checked += 1;
+
+        #[cfg(feature = "tui")]
+        if let Some(tx) = tui_tx
+            && (checked.is_multiple_of(VERIFICATION_PROGRESS_INTERVAL) || checked == total_blocks)
+        {
+            let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationProgress {
+                checked,
+                total: total_blocks,
+                mismatches,
+                elapsed: started.elapsed(),
+            });
+        }
+
+        if !tui
+            && (checked.is_multiple_of(VERIFICATION_PROGRESS_INTERVAL) || checked == total_blocks)
+        {
+            let elapsed = started.elapsed().as_secs_f64();
+            let rate = if elapsed > 0.0 {
+                checked as f64 / elapsed
+            } else {
+                0.0
+            };
+            let pct = (checked as f64 * 100.0) / total_blocks as f64;
+            println!(
+                "[verify] {checked}/{total_blocks} ({pct:5.1}%) mismatches={mismatches} elapsed={elapsed:7.1}s rate={rate:7.2}/s"
+            );
+        }
+
+        if !tui && block_mismatch {
+            eprintln!("[verify] mismatch at block #{block_number}");
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    if let Some(tx) = tui_tx {
+        let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationCompleted {
+            checked,
+            mismatches,
+            elapsed: started.elapsed(),
+        });
+    }
+
+    Ok(OfflineVerificationSummary {
+        start_block,
+        end_block,
+        checked_blocks: checked,
+        mismatches,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_geth_to_lmdb_offline(
+    geth_reader: &crate::readers::geth_db::GethBlockReader,
+    lmdb: &crate::writers::lmdb::LmdbWriter,
+    start_block: u64,
+    end_block: u64,
+    tui: bool,
+    #[cfg(feature = "tui")] tui_tx: &Option<
+        tokio::sync::mpsc::Sender<crate::tui::event::ProgressEvent>,
+    >,
+) -> Result<OfflineVerificationSummary> {
+    use ethrex_common::types::BlockHeader;
+    use ethrex_rlp::decode::RLPDecode;
+
+    let total_blocks = end_block.saturating_sub(start_block) + 1;
+    let started = Instant::now();
+    let mut checked = 0u64;
+    let mut mismatches = 0u64;
+    let rtxn = lmdb
+        .read_txn()
+        .map_err(|e| eyre::eyre!("LMDB read transaction failed: {e}"))?;
+
+    for block_number in start_block..=end_block {
+        let mut block_mismatch = false;
+        let geth_hash = geth_reader
+            .read_canonical_hash(block_number)
+            .map_err(|e| {
+                eyre::eyre!("verify #{block_number}: cannot read geth canonical hash: {e}")
+            })?
+            .ok_or_else(|| eyre::eyre!("verify #{block_number}: missing geth canonical hash"))?;
+
+        let lmdb_hash_raw = lmdb
+            .get_canonical(&rtxn, block_number)
+            .map_err(|e| eyre::eyre!("verify #{block_number}: cannot read LMDB canonical: {e}"))?
+            .ok_or_else(|| eyre::eyre!("verify #{block_number}: missing LMDB canonical hash"))?;
+
+        if lmdb_hash_raw.len() != 32 {
+            return Err(eyre::eyre!(
+                "verify #{block_number}: LMDB canonical hash length is {}, expected 32",
+                lmdb_hash_raw.len()
+            ));
+        }
+
+        let mut lmdb_hash_bytes = [0u8; 32];
+        lmdb_hash_bytes.copy_from_slice(&lmdb_hash_raw);
+        let lmdb_hash = ethrex_common::H256(lmdb_hash_bytes);
+
+        if geth_hash != lmdb_hash {
+            mismatches += 1;
+            block_mismatch = true;
+            #[cfg(feature = "tui")]
+            if let Some(tx) = tui_tx {
+                let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationMismatch {
+                    block_number,
+                    reason: format!("canonical hash mismatch geth={geth_hash:?} lmdb={lmdb_hash:?}"),
+                });
+            }
+        } else {
+            let geth_header = geth_reader
+                .read_block_header(block_number, geth_hash)
+                .map_err(|e| eyre::eyre!("verify #{block_number}: cannot read geth header: {e}"))?
+                .ok_or_else(|| eyre::eyre!("verify #{block_number}: missing geth header"))?;
+
+            let lmdb_header_rlp = lmdb
+                .get_header(&rtxn, &lmdb_hash_bytes)
+                .map_err(|e| eyre::eyre!("verify #{block_number}: cannot read LMDB header: {e}"))?
+                .ok_or_else(|| eyre::eyre!("verify #{block_number}: missing LMDB header"))?;
+
+            let lmdb_header = BlockHeader::decode(&lmdb_header_rlp).map_err(|e| {
+                eyre::eyre!("verify #{block_number}: cannot decode LMDB header: {e:?}")
+            })?;
+
+            if geth_header.hash() != lmdb_header.hash() {
+                mismatches += 1;
+                block_mismatch = true;
+                #[cfg(feature = "tui")]
+                if let Some(tx) = tui_tx {
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationMismatch {
+                        block_number,
+                        reason: "header hash mismatch".into(),
+                    });
+                }
+            }
+            if geth_header.state_root != lmdb_header.state_root {
+                mismatches += 1;
+                block_mismatch = true;
+                #[cfg(feature = "tui")]
+                if let Some(tx) = tui_tx {
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationMismatch {
+                        block_number,
+                        reason: format!(
+                            "state root mismatch geth={:?} lmdb={:?}",
+                            geth_header.state_root, lmdb_header.state_root
+                        ),
+                    });
+                }
+            }
+        }
+
+        checked += 1;
+        #[cfg(feature = "tui")]
+        if let Some(tx) = tui_tx
+            && (checked.is_multiple_of(VERIFICATION_PROGRESS_INTERVAL) || checked == total_blocks)
+        {
+            let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationProgress {
+                checked,
+                total: total_blocks,
+                mismatches,
+                elapsed: started.elapsed(),
+            });
+        }
+
+        if !tui
+            && (checked.is_multiple_of(VERIFICATION_PROGRESS_INTERVAL) || checked == total_blocks)
+        {
+            let elapsed = started.elapsed().as_secs_f64();
+            let rate = if elapsed > 0.0 {
+                checked as f64 / elapsed
+            } else {
+                0.0
+            };
+            let pct = (checked as f64 * 100.0) / total_blocks as f64;
+            println!(
+                "[verify] {checked}/{total_blocks} ({pct:5.1}%) mismatches={mismatches} elapsed={elapsed:7.1}s rate={rate:7.2}/s"
+            );
+        }
+
+        if !tui && block_mismatch {
+            eprintln!("[verify] mismatch at block #{block_number}");
+        }
+    }
+
+    Ok(OfflineVerificationSummary {
+        start_block,
+        end_block,
+        checked_blocks: checked,
+        mismatches,
+    })
+}
+
 /// Migrates Geth chaindata (LevelDB or Pebble) to ethrex RocksDB storage
+#[allow(clippy::too_many_arguments)]
 async fn migrate_geth_to_rocksdb(
     geth_chaindata: &Path,
     target_storage: &Path,
@@ -999,8 +916,14 @@ async fn migrate_geth_to_rocksdb(
     retry_attempts: u32,
     retry_base_delay: Duration,
     continue_on_error: bool,
+    verify_offline: bool,
+    verify_start_block: Option<u64>,
+    verify_end_block: Option<u64>,
+    skip_state_trie_check: bool,
     report_file: Option<&Path>,
     tui: bool,
+    blocks_only: bool,
+    from_block: Option<u64>,
 ) -> Result<()> {
     use crate::detect::{GethDbType, detect_geth_db_type};
     use crate::readers::open_geth_block_reader;
@@ -1092,8 +1015,29 @@ async fn migrate_geth_to_rocksdb(
     .await?;
     retries_performed += attempts.saturating_sub(1);
 
+    // Phase 3b: Determine effective start block (auto-detect merge block if needed)
+    let resume_from_block = if let Some(explicit_from_block) = from_block {
+        // User explicitly specified --from-block, use it
+        Some(explicit_from_block)
+    } else {
+        // Auto-detect merge block from chain config
+        let chain_config = new_store.get_chain_config();
+        if let Some(merge_block) = chain_config.merge_netsplit_block {
+            // Only use merge block if:
+            // 1. We haven't reached it yet in migration (merge_block > last_known_block)
+            // 2. It actually exists in source data (merge_block <= last_source_block)
+            if merge_block > last_known_block && merge_block <= last_source_block {
+                Some(merge_block)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
     // Phase 4: Build migration plan
-    let Some(plan) = build_migration_plan(last_known_block, last_source_block, None)? else {
+    let Some(plan) = build_migration_plan(last_known_block, last_source_block, resume_from_block)? else {
         let report = MigrationReport {
             schema_version: REPORT_SCHEMA_VERSION,
             status: "up_to_date",
@@ -1228,6 +1172,7 @@ async fn migrate_geth_to_rocksdb(
                     Ok(value) => value,
                     Err(error) if continue_on_error => {
                         skipped_blocks += 1;
+                        #[cfg(feature = "tui")]
                         let reason = format!("canonical hash 없음: {error:#}");
                         if !tui {
                             eprintln!(
@@ -1273,6 +1218,7 @@ async fn migrate_geth_to_rocksdb(
                     Ok(value) => value,
                     Err(error) if continue_on_error => {
                         skipped_blocks += 1;
+                        #[cfg(feature = "tui")]
                         let reason = format!("블록 읽기 실패: {error:#}");
                         if !tui {
                             eprintln!(
@@ -1346,11 +1292,10 @@ async fn migrate_geth_to_rocksdb(
             total_imported += blocks_in_batch;
             last_head = batch_canonical.last().copied();
 
-            let batch_number = (batch_start - plan.start_block) / BATCH_SIZE + 1;
-            let total_batches = plan.block_count().div_ceil(BATCH_SIZE);
-
             #[cfg(feature = "tui")]
             if let Some(tx) = &tui_tx {
+                let batch_number = (batch_start - plan.start_block) / BATCH_SIZE + 1;
+                let total_batches = plan.block_count().div_ceil(BATCH_SIZE);
                 let _ = tx
                     .send(crate::tui::event::ProgressEvent::BatchCompleted {
                         batch_number,
@@ -1369,11 +1314,70 @@ async fn migrate_geth_to_rocksdb(
     }
     .await;
 
+    let mut verification_summary: Option<OfflineVerificationSummary> = None;
+    let final_result: Result<()> = if let Err(err) = migration_result {
+        Err(err)
+    } else if total_imported == 0 {
+        Err(eyre::eyre!(
+            "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
+            plan.start_block,
+            plan.end_block
+        ))
+    } else {
+        // Phase 6: State migration (accounts, storage, code)
+        if !blocks_only {
+            migrate_state_to_rocksdb(
+                &geth_reader,
+                &new_store,
+                last_source_block,
+                tui,
+                &started_at,
+                #[cfg(feature = "tui")]
+                &tui_tx,
+            )
+            .await?;
+        }
+
+        if verify_offline {
+            let (verify_start, verify_end) = resolve_verify_range(
+                plan.start_block,
+                plan.end_block,
+                verify_start_block,
+                verify_end_block,
+            )?;
+
+            let summary = verify_geth_to_rocksdb_offline(
+                &geth_reader,
+                &new_store,
+                verify_start,
+                verify_end,
+                skip_state_trie_check,
+                tui,
+                #[cfg(feature = "tui")]
+                &tui_tx,
+            )
+            .await?;
+
+            if summary.mismatches > 0 {
+                Err(eyre::eyre!(
+                    "Offline verification failed with {} mismatch(es) in range #{}..=#{}",
+                    summary.mismatches,
+                    summary.start_block,
+                    summary.end_block
+                ))
+            } else {
+                verification_summary = Some(summary);
+                Ok(())
+            }?
+        }
+        Ok(())
+    };
+
     // Always cleanup TUI before propagating errors — ensures terminal is restored.
     #[cfg(feature = "tui")]
     {
         if let Some(tx) = tui_tx.take() {
-            match &migration_result {
+            match &final_result {
                 Ok(()) if total_imported > 0 => {
                     let _ = tx
                         .send(crate::tui::event::ProgressEvent::Completed {
@@ -1405,25 +1409,18 @@ async fn migrate_geth_to_rocksdb(
             // Drop tx — TUI will detect channel close and wait for 'q'.
             drop(tx);
         }
-        if let Some(handle) = tui_handle.take() {
-            if let Err(join_error) = handle.await {
-                eprintln!("TUI task join failed: {join_error}");
-            }
+        if let Some(handle) = tui_handle.take()
+            && let Err(join_error) = handle.await
+        {
+            eprintln!("TUI task join failed: {join_error}");
         }
     }
 
-    // Propagate migration errors after TUI is cleaned up
-    migration_result?;
+    // Propagate migration/verification errors after TUI is cleaned up
+    final_result?;
 
-    if total_imported == 0 {
-        return Err(eyre::eyre!(
-            "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
-            plan.start_block, plan.end_block
-        ));
-    }
-
-    let (head_block_number, _head_block_hash) = last_head
-        .ok_or_else(|| eyre::eyre!("Cannot determine migrated chain head"))?;
+    let (head_block_number, _head_block_hash) =
+        last_head.ok_or_else(|| eyre::eyre!("Cannot determine migrated chain head"))?;
 
     if skipped_blocks > 0 && !tui {
         eprintln!(
@@ -1447,10 +1444,856 @@ async fn migrate_geth_to_rocksdb(
             retries_performed,
         };
         emit_report(&report, json, report_file)?;
+        if let Some(summary) = verification_summary {
+            println!(
+                "Offline verification passed: checked {} block(s) in #{}..=#{}.",
+                summary.checked_blocks, summary.start_block, summary.end_block
+            );
+        }
     }
 
     Ok(())
 }
+
+/// Migrates Geth account/storage/code snapshots into ethrex's Merkle Patricia Trie.
+///
+/// Reads all accounts from Geth's snapshot layer (`"a" + hash` prefix),
+/// builds per-account storage tries and a global state trie, then commits
+/// all trie nodes to ethrex's RocksDB trie tables.
+///
+/// The computed state root is verified against the head block header.
+#[allow(clippy::too_many_arguments)]
+async fn migrate_state_to_rocksdb(
+    geth_reader: &crate::readers::geth_db::GethBlockReader,
+    store: &ethrex_storage::Store,
+    head_block_number: u64,
+    tui: bool,
+    started_at: &Instant,
+    #[cfg(feature = "tui")] tui_tx: &Option<
+        tokio::sync::mpsc::Sender<crate::tui::event::ProgressEvent>,
+    >,
+) -> Result<()> {
+    use ethrex_common::types::{AccountState, Code};
+    use ethrex_common::U256;
+    use ethrex_rlp::encode::RLPEncode;
+    use ethrex_trie::EMPTY_TRIE_HASH;
+
+    const STATE_BATCH_SIZE: u64 = 10_000;
+    const KECCAK_EMPTY_BYTES: [u8; 32] = [
+        0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d, 0xb2, 0xdc, 0xc7,
+        0x03, 0xc0, 0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b, 0x7b, 0xfa, 0xd8, 0x04,
+        0x5d, 0x85, 0xa4, 0x70,
+    ];
+
+    // Read head block header for state_root verification
+    let head_header = store
+        .get_block_header(head_block_number)?
+        .ok_or_else(|| eyre::eyre!("Head block #{head_block_number} header not found"))?;
+    let expected_state_root = head_header.state_root;
+
+    // Count accounts for progress tracking
+    let total_accounts = geth_reader.count_account_snapshots().unwrap_or(0);
+
+    if !tui {
+        eprintln!(
+            "[state] Starting state migration ({total_accounts} accounts, expected root={expected_state_root:?})"
+        );
+    }
+
+    #[cfg(feature = "tui")]
+    if let Some(tx) = tui_tx {
+        let _ = tx
+            .send(crate::tui::event::ProgressEvent::StatePhaseStarted { total_accounts })
+            .await;
+    }
+
+    // Open a fresh state trie (BackendTrieDB handles DB writes on commit)
+    let mut state_trie = store.open_direct_state_trie(*EMPTY_TRIE_HASH)?;
+
+    let mut processed_accounts: u64 = 0;
+    let mut total_storage_slots: u64 = 0;
+    let mut total_code_entries: u64 = 0;
+    let mut code_hashes_written: std::collections::HashSet<ethrex_common::H256> =
+        std::collections::HashSet::new();
+
+    let account_iter = geth_reader
+        .iter_account_snapshots()
+        .map_err(|e| eyre::eyre!("Account snapshot iteration failed: {e}"))?;
+
+    for (account_hash, slim_account) in account_iter {
+        // 1. Build storage trie for this account
+        let storage_root = if slim_account.storage_root != *EMPTY_TRIE_HASH {
+            // open_direct_storage_trie uses BackendTrieDB with account_hash prefix
+            // so commit() writes to STORAGE_TRIE_NODES with correct prefix
+            let mut storage_trie =
+                store.open_direct_storage_trie(account_hash, *EMPTY_TRIE_HASH)?;
+
+            if let Ok(storage_iter) = geth_reader.iter_storage_snapshots(&account_hash) {
+                for (slot_hash, raw_value) in storage_iter {
+                    let value = U256::from_big_endian(&raw_value);
+                    if !value.is_zero() {
+                        storage_trie.insert(
+                            slot_hash.as_bytes().to_vec(),
+                            value.encode_to_vec(),
+                        )?;
+                        total_storage_slots += 1;
+                    }
+                }
+            }
+
+            // Commit writes storage trie nodes to DB via BackendTrieDB
+            storage_trie.commit()?;
+            storage_trie.hash_no_commit()
+        } else {
+            *EMPTY_TRIE_HASH
+        };
+
+        // 2. Write contract code
+        if slim_account.code_hash.0 != KECCAK_EMPTY_BYTES
+            && !code_hashes_written.contains(&slim_account.code_hash)
+            && let Ok(Some(bytecode)) = geth_reader.read_code(slim_account.code_hash)
+        {
+            let code = Code::from_bytecode_unchecked(
+                bytecode.into(),
+                slim_account.code_hash,
+            );
+            store.add_account_code(code).await?;
+            code_hashes_written.insert(slim_account.code_hash);
+            total_code_entries += 1;
+        }
+
+        // 3. Insert account into state trie
+        let account_state = AccountState {
+            nonce: slim_account.nonce,
+            balance: slim_account.balance,
+            storage_root,
+            code_hash: slim_account.code_hash,
+        };
+        state_trie.insert(
+            account_hash.as_bytes().to_vec(),
+            account_state.encode_to_vec(),
+        )?;
+
+        processed_accounts += 1;
+
+        // 4. Progress reporting every STATE_BATCH_SIZE accounts
+        if processed_accounts.is_multiple_of(STATE_BATCH_SIZE) {
+            if !tui {
+                let pct = (processed_accounts as f64 * 100.0) / total_accounts.max(1) as f64;
+                eprintln!(
+                    "[state] {processed_accounts}/{total_accounts} ({pct:.1}%) accounts, {total_storage_slots} slots, {total_code_entries} codes"
+                );
+            }
+
+            #[cfg(feature = "tui")]
+            if let Some(tx) = tui_tx {
+                let _ = tx
+                    .send(crate::tui::event::ProgressEvent::AccountBatchCompleted {
+                        processed: processed_accounts,
+                        total: total_accounts,
+                        elapsed: started_at.elapsed(),
+                    })
+                    .await;
+            }
+        }
+    }
+
+    // Commit the entire state trie to DB
+    state_trie.commit()?;
+    let computed_state_root = state_trie.hash_no_commit();
+
+    // Verify state root
+    if computed_state_root != expected_state_root {
+        eprintln!(
+            "[state] WARNING: State root mismatch! computed={computed_state_root:?} expected={expected_state_root:?}"
+        );
+        eprintln!("[state] The migration completed but the state trie may be inconsistent.");
+    } else if !tui {
+        eprintln!("[state] State root verified: {computed_state_root:?}");
+    }
+
+    if !tui {
+        eprintln!(
+            "[state] Completed: {processed_accounts} accounts, {total_storage_slots} storage slots, {total_code_entries} code entries"
+        );
+    }
+
+    #[cfg(feature = "tui")]
+    if let Some(tx) = tui_tx {
+        let _ = tx
+            .send(crate::tui::event::ProgressEvent::StatePhaseCompleted {
+                accounts: processed_accounts,
+                storage_slots: total_storage_slots,
+                code_entries: total_code_entries,
+                accounts_without_preimage: 0,
+                slots_without_preimage: 0,
+                elapsed: started_at.elapsed(),
+            })
+            .await;
+    }
+
+    Ok(())
+}
+
+/// Migrates Geth chaindata (Pebble) to py-ethclient LMDB format.
+///
+/// Two-phase migration:
+/// - Phase 1: Block data (headers, bodies, canonical, tx_index)
+/// - Phase 2: State data (accounts, storage, code) — skipped if `blocks_only` is true
+#[allow(clippy::too_many_arguments)]
+async fn migrate_geth_to_lmdb(
+    geth_chaindata: &Path,
+    lmdb_path: &Path,
+    dry_run: bool,
+    json: bool,
+    blocks_only: bool,
+    map_size_gb: u32,
+    continue_on_error: bool,
+    verify_offline: bool,
+    verify_start_block: Option<u64>,
+    verify_end_block: Option<u64>,
+    report_file: Option<&Path>,
+    tui: bool,
+) -> Result<()> {
+    use crate::detect::{GethDbType, detect_geth_db_type};
+    use crate::readers::geth_db::decode_stored_receipts;
+    use crate::readers::open_geth_block_reader;
+    use crate::writers::lmdb::LmdbWriter;
+    use ethrex_common::types::{ReceiptWithBloom, TxType, bloom_from_logs};
+    use ethrex_rlp::encode::RLPEncode;
+    use tiny_keccak::{Hasher, Keccak};
+
+    const BATCH_SIZE: u64 = 1_000;
+    const STATE_BATCH_SIZE: usize = 10_000;
+
+    let started_at = Instant::now();
+
+    // Phase 1: Detect and open Geth reader
+    let db_type = detect_geth_db_type(geth_chaindata).wrap_err("Geth DB 타입 감지 실패")?;
+
+    let db_type_str = match db_type {
+        GethDbType::Pebble => "Pebble",
+        GethDbType::LevelDB => "LevelDB",
+        GethDbType::Unknown => "Unknown",
+    };
+
+    if json {
+        eprintln!(
+            r#"{{"phase":"detect","db_type":"{db_type_str}","chaindata_path":"{}"}}"#,
+            geth_chaindata.display()
+        );
+    }
+
+    let geth_reader = open_geth_block_reader(geth_chaindata)
+        .map_err(|e| eyre::eyre!("Geth chaindata 열기 실패: {e}"))?;
+
+    // Read Geth head block number
+    let head_hash = geth_reader
+        .read_head_block_hash()
+        .map_err(|e| eyre::eyre!("Geth head 블록 해시 읽기 실패: {e}"))?;
+
+    let last_source_block = geth_reader
+        .read_block_number(head_hash)
+        .map_err(|e| eyre::eyre!("Geth head 블록 번호 읽기 실패: {e}"))?;
+
+    let plan = MigrationPlan {
+        start_block: 0,
+        end_block: last_source_block,
+    };
+
+    if json {
+        eprintln!(
+            r#"{{"phase":"plan","source_head":{},"block_count":{},"blocks_only":{}}}"#,
+            last_source_block,
+            plan.block_count(),
+            blocks_only
+        );
+    }
+
+    if dry_run {
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "planned",
+            phase: "planning",
+            source_head: last_source_block,
+            target_head: 0,
+            plan: Some(plan),
+            dry_run: true,
+            imported_blocks: 0,
+            skipped_blocks: 0,
+            elapsed_ms: elapsed_ms(started_at),
+            retry_attempts: MAX_RETRY_ATTEMPTS,
+            retries_performed: 0,
+        };
+        emit_report(&report, json, report_file)?;
+        return Ok(());
+    }
+
+    // Create LMDB writer
+    let map_size_bytes = (map_size_gb as usize) * 1024 * 1024 * 1024;
+    let lmdb = LmdbWriter::create(lmdb_path, map_size_bytes)
+        .map_err(|e| eyre::eyre!("LMDB 생성 실패 ({}): {e}", lmdb_path.display()))?;
+
+    // Optionally start TUI dashboard
+    #[cfg(feature = "tui")]
+    let (mut tui_tx, mut tui_handle): (
+        Option<tokio::sync::mpsc::Sender<crate::tui::event::ProgressEvent>>,
+        Option<tokio::task::JoinHandle<()>>,
+    ) = if tui {
+        let (tx, rx) = tokio::sync::mpsc::channel::<crate::tui::event::ProgressEvent>(256);
+        let handle = tokio::spawn(crate::tui::run_tui(rx));
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
+
+    #[cfg(not(feature = "tui"))]
+    {
+        let _ = tui;
+    }
+
+    #[cfg(feature = "tui")]
+    if let Some(tx) = &tui_tx {
+        let _ = tx
+            .send(crate::tui::event::ProgressEvent::Init {
+                source_path: geth_chaindata.display().to_string(),
+                target_path: lmdb_path.display().to_string(),
+                db_type: db_type_str.to_string(),
+                start_block: plan.start_block,
+                end_block: plan.end_block,
+            })
+            .await;
+    }
+
+    // --- Phase 1: Block migration ---
+    let mut total_imported: u64 = 0;
+    let mut skipped_blocks = 0u64;
+
+    let migration_result: Result<()> = async {
+        let mut batch_start = plan.start_block;
+        while batch_start <= plan.end_block {
+            let batch_end = (batch_start + BATCH_SIZE - 1).min(plan.end_block);
+
+            let mut wtxn = lmdb
+                .write_txn()
+                .map_err(|e| eyre::eyre!("LMDB 쓰기 트랜잭션 시작 실패: {e}"))?;
+
+            let mut blocks_in_batch: u64 = 0;
+
+            for block_number in batch_start..=batch_end {
+                let canonical_hash = match geth_reader.read_canonical_hash(block_number) {
+                    Ok(Some(h)) => h,
+                    Ok(None) if continue_on_error => {
+                        skipped_blocks += 1;
+                        continue;
+                    }
+                    Ok(None) => {
+                        return Err(eyre::eyre!("블록 #{block_number}의 canonical 해시 없음"));
+                    }
+                    Err(e) if continue_on_error => {
+                        skipped_blocks += 1;
+                        eprintln!("경고: 블록 #{block_number} canonical 해시 읽기 실패: {e}");
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(eyre::eyre!(
+                            "블록 #{block_number} canonical 해시 읽기 실패: {e}"
+                        ));
+                    }
+                };
+
+                let block_hash_bytes: [u8; 32] = canonical_hash.0;
+
+                // Read header and body
+                let header = match geth_reader.read_block_header(block_number, canonical_hash) {
+                    Ok(Some(h)) => h,
+                    Ok(None) if continue_on_error => {
+                        skipped_blocks += 1;
+                        continue;
+                    }
+                    Ok(None) => {
+                        return Err(eyre::eyre!("블록 #{block_number} 헤더 없음"));
+                    }
+                    Err(e) if continue_on_error => {
+                        skipped_blocks += 1;
+                        eprintln!("경고: 블록 #{block_number} 헤더 읽기 실패: {e}");
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(eyre::eyre!("블록 #{block_number} 헤더 읽기 실패: {e}"));
+                    }
+                };
+
+                let body = match geth_reader.read_block_body(block_number, canonical_hash) {
+                    Ok(Some(b)) => b,
+                    Ok(None) if continue_on_error => {
+                        skipped_blocks += 1;
+                        continue;
+                    }
+                    Ok(None) => {
+                        return Err(eyre::eyre!("블록 #{block_number} 바디 없음"));
+                    }
+                    Err(e) if continue_on_error => {
+                        skipped_blocks += 1;
+                        eprintln!("경고: 블록 #{block_number} 바디 읽기 실패: {e}");
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(eyre::eyre!("블록 #{block_number} 바디 읽기 실패: {e}"));
+                    }
+                };
+
+                // Encode header and body as RLP
+                let header_rlp = header.encode_to_vec();
+                let body_rlp = body.encode_to_vec();
+
+                // Write to LMDB
+                lmdb.put_header(&mut wtxn, &block_hash_bytes, &header_rlp)
+                    .map_err(|e| eyre::eyre!("LMDB header 쓰기 실패 #{block_number}: {e}"))?;
+                lmdb.put_body(&mut wtxn, &block_hash_bytes, &body_rlp)
+                    .map_err(|e| eyre::eyre!("LMDB body 쓰기 실패 #{block_number}: {e}"))?;
+                lmdb.put_canonical(&mut wtxn, block_number, &block_hash_bytes)
+                    .map_err(|e| eyre::eyre!("LMDB canonical 쓰기 실패 #{block_number}: {e}"))?;
+                lmdb.put_header_number(&mut wtxn, block_number, &block_hash_bytes)
+                    .map_err(|e| {
+                        eyre::eyre!("LMDB header_numbers 쓰기 실패 #{block_number}: {e}")
+                    })?;
+
+                // Write tx_index entries
+                for (tx_idx, tx) in body.transactions.iter().enumerate() {
+                    let tx_hash_h256 = tx.hash();
+                    let tx_hash_bytes: [u8; 32] = tx_hash_h256.0;
+                    lmdb.put_tx_index(&mut wtxn, &tx_hash_bytes, &block_hash_bytes, tx_idx as u32)
+                        .map_err(|e| {
+                            eyre::eyre!("LMDB tx_index 쓰기 실패 #{block_number} tx {tx_idx}: {e}")
+                        })?;
+                }
+
+                // Write receipts (P0): read from Geth, recompute bloom, encode for py-ethclient
+                match geth_reader.read_raw_receipts(block_number, canonical_hash) {
+                    Ok(Some(raw_receipts)) => match decode_stored_receipts(&raw_receipts) {
+                        Ok(stored_receipts) => {
+                            let mut receipt_inner_encodings = Vec::new();
+                            for (i, sr) in stored_receipts.iter().enumerate() {
+                                let tx_type = body
+                                    .transactions
+                                    .get(i)
+                                    .map(|tx| tx.tx_type())
+                                    .unwrap_or(TxType::Legacy);
+                                let bloom = bloom_from_logs(&sr.logs);
+                                let rwb = ReceiptWithBloom {
+                                    tx_type,
+                                    succeeded: sr.succeeded,
+                                    cumulative_gas_used: sr.cumulative_gas_used,
+                                    bloom,
+                                    logs: sr.logs.clone(),
+                                };
+                                receipt_inner_encodings.push(rwb.encode_inner());
+                            }
+                            let mut receipts_rlp = Vec::new();
+                            let items: Vec<&[u8]> = receipt_inner_encodings
+                                .iter()
+                                .map(|v| v.as_slice())
+                                .collect();
+                            encode_rlp_receipt_list(&items, &mut receipts_rlp);
+                            lmdb.put_receipts(&mut wtxn, &block_hash_bytes, &receipts_rlp)
+                                .map_err(|e| {
+                                    eyre::eyre!("LMDB receipts 쓰기 실패 #{block_number}: {e}")
+                                })?;
+                        }
+                        Err(e) if continue_on_error => {
+                            eprintln!("경고: 블록 #{block_number} receipt 디코딩 실패: {e}");
+                        }
+                        Err(e) => {
+                            return Err(eyre::eyre!(
+                                "블록 #{block_number} receipt 디코딩 실패: {e}"
+                            ));
+                        }
+                    },
+                    Ok(None) => {} // No receipts (e.g., genesis block)
+                    Err(e) if continue_on_error => {
+                        eprintln!("경고: 블록 #{block_number} receipt 읽기 실패: {e}");
+                    }
+                    Err(e) => {
+                        return Err(eyre::eyre!("블록 #{block_number} receipt 읽기 실패: {e}"));
+                    }
+                }
+
+                blocks_in_batch += 1;
+            }
+
+            // Set latest_block in meta
+            lmdb.set_latest_block(&mut wtxn, batch_end)
+                .map_err(|e| eyre::eyre!("LMDB meta 쓰기 실패: {e}"))?;
+
+            wtxn.commit()
+                .map_err(|e| eyre::eyre!("LMDB 트랜잭션 커밋 실패: {e}"))?;
+
+            total_imported += blocks_in_batch;
+
+            #[cfg(feature = "tui")]
+            if let Some(tx) = &tui_tx {
+                let batch_number = (batch_start - plan.start_block) / BATCH_SIZE + 1;
+                let total_batches = plan.block_count().div_ceil(BATCH_SIZE);
+                let _ = tx
+                    .send(crate::tui::event::ProgressEvent::BatchCompleted {
+                        batch_number,
+                        total_batches,
+                        current_block: batch_end,
+                        blocks_in_batch,
+                        elapsed: started_at.elapsed(),
+                    })
+                    .await;
+            }
+
+            batch_start = batch_end + 1;
+        }
+
+        // --- Phase 2: State migration ---
+        if !blocks_only {
+            // Count accounts for progress tracking
+            #[cfg(feature = "tui")]
+            let total_accounts = geth_reader.count_account_snapshots().unwrap_or(0);
+
+            #[cfg(feature = "tui")]
+            if let Some(tx) = &tui_tx {
+                let _ = tx
+                    .send(crate::tui::event::ProgressEvent::StatePhaseStarted { total_accounts })
+                    .await;
+            }
+
+            let mut processed_accounts: u64 = 0;
+            let mut total_storage_slots: u64 = 0;
+            let mut total_code_entries: u64 = 0;
+            let mut accounts_without_preimage: u64 = 0;
+            let mut slots_without_preimage: u64 = 0;
+            let mut code_hashes_written: std::collections::HashSet<[u8; 32]> =
+                std::collections::HashSet::new();
+
+            // Helper: compute keccak256
+            let keccak256 = |data: &[u8]| -> [u8; 32] {
+                let mut hasher = Keccak::v256();
+                let mut output = [0u8; 32];
+                hasher.update(data);
+                hasher.finalize(&mut output);
+                output
+            };
+
+            let account_iter = geth_reader
+                .iter_account_snapshots()
+                .map_err(|e| eyre::eyre!("account 스냅샷 순회 실패: {e}"))?;
+
+            let mut wtxn = lmdb
+                .write_txn()
+                .map_err(|e| eyre::eyre!("LMDB 상태 트랜잭션 시작 실패: {e}"))?;
+
+            for (account_hash, slim_account) in account_iter {
+                let account_hash_bytes: [u8; 32] = account_hash.0;
+                let full_rlp = slim_account.rlp_encode_full();
+
+                // Always write to snap_accounts (hash-keyed)
+                lmdb.put_snap_account(&mut wtxn, &account_hash_bytes, &full_rlp)
+                    .map_err(|e| eyre::eyre!("LMDB snap_accounts 쓰기 실패: {e}"))?;
+
+                // Try to resolve preimage for address-keyed accounts DB
+                if let Ok(Some(preimage)) = geth_reader.read_preimage(account_hash) {
+                    if preimage.len() == 20 {
+                        let address: [u8; 20] = preimage.try_into().unwrap();
+                        // Verify hash matches
+                        let computed_hash = keccak256(&address);
+                        if computed_hash == account_hash_bytes {
+                            lmdb.put_account(&mut wtxn, &address, &full_rlp)
+                                .map_err(|e| eyre::eyre!("LMDB accounts 쓰기 실패: {e}"))?;
+
+                            // Migrate storage for this account (address-keyed)
+                            if let Ok(storage_iter) =
+                                geth_reader.iter_storage_snapshots(&account_hash)
+                            {
+                                for (slot_hash, raw_value) in storage_iter {
+                                    let slot_hash_bytes: [u8; 32] = slot_hash.0;
+
+                                    // Write to snap_storage (hash-keyed)
+                                    lmdb.put_snap_storage(
+                                        &mut wtxn,
+                                        &account_hash_bytes,
+                                        &slot_hash_bytes,
+                                        &raw_value,
+                                    )
+                                    .map_err(|e| eyre::eyre!("LMDB snap_storage 쓰기 실패: {e}"))?;
+
+                                    // Try to resolve slot preimage for address-keyed storage
+                                    if let Ok(Some(slot_preimage)) =
+                                        geth_reader.read_preimage(slot_hash)
+                                        && slot_preimage.len() == 32
+                                    {
+                                        let slot: [u8; 32] = slot_preimage.try_into().unwrap();
+                                        lmdb.put_storage(&mut wtxn, &address, &slot, &raw_value)
+                                            .map_err(|e| {
+                                                eyre::eyre!("LMDB storage 쓰기 실패: {e}")
+                                            })?;
+                                        // P1: original_storage (same data at migration time)
+                                        lmdb.put_original_storage(&mut wtxn, &address, &slot, &raw_value)
+                                            .map_err(|e| {
+                                                eyre::eyre!("LMDB original_storage 쓰기 실패: {e}")
+                                            })?;
+                                    } else {
+                                        slots_without_preimage += 1;
+                                    }
+
+                                    total_storage_slots += 1;
+                                }
+                            }
+                        }
+                    } else {
+                        accounts_without_preimage += 1;
+                    }
+                } else {
+                    accounts_without_preimage += 1;
+                    // No preimage — only write snap_storage (hash-keyed)
+                    if let Ok(storage_iter) = geth_reader.iter_storage_snapshots(&account_hash) {
+                        for (slot_hash, raw_value) in storage_iter {
+                            let slot_hash_bytes: [u8; 32] = slot_hash.0;
+                            lmdb.put_snap_storage(
+                                &mut wtxn,
+                                &account_hash_bytes,
+                                &slot_hash_bytes,
+                                &raw_value,
+                            )
+                            .map_err(|e| eyre::eyre!("LMDB snap_storage 쓰기 실패: {e}"))?;
+                            slots_without_preimage += 1;
+                            total_storage_slots += 1;
+                        }
+                    }
+                }
+
+                // Write code if not already written
+                let code_hash_bytes: [u8; 32] = slim_account.code_hash.0;
+                if code_hash_bytes != KECCAK_EMPTY_BYTES
+                    && !code_hashes_written.contains(&code_hash_bytes)
+                    && let Ok(Some(bytecode)) = geth_reader.read_code(slim_account.code_hash)
+                {
+                    lmdb.put_code(&mut wtxn, &code_hash_bytes, &bytecode)
+                        .map_err(|e| eyre::eyre!("LMDB code 쓰기 실패: {e}"))?;
+                    code_hashes_written.insert(code_hash_bytes);
+                    total_code_entries += 1;
+                }
+
+                processed_accounts += 1;
+
+                // Commit in batches to avoid oversized transactions
+                if processed_accounts.is_multiple_of(STATE_BATCH_SIZE as u64) {
+                    wtxn.commit()
+                        .map_err(|e| eyre::eyre!("LMDB 상태 커밋 실패: {e}"))?;
+
+                    #[cfg(feature = "tui")]
+                    if let Some(tx) = &tui_tx {
+                        let _ = tx
+                            .send(crate::tui::event::ProgressEvent::AccountBatchCompleted {
+                                processed: processed_accounts,
+                                total: total_accounts,
+                                elapsed: started_at.elapsed(),
+                            })
+                            .await;
+                    }
+
+                    wtxn = lmdb
+                        .write_txn()
+                        .map_err(|e| eyre::eyre!("LMDB 상태 트랜잭션 재시작 실패: {e}"))?;
+                }
+            }
+
+            // P3: Write snap_progress metadata
+            let snap_progress = format!(
+                r#"{{"done":true,"synced_accounts":{},"synced_storage_slots":{},"synced_bytecodes":{}}}"#,
+                processed_accounts, total_storage_slots, total_code_entries
+            );
+            lmdb.set_snap_progress(&mut wtxn, snap_progress.as_bytes())
+                .map_err(|e| eyre::eyre!("LMDB snap_progress 쓰기 실패: {e}"))?;
+
+            // Final commit for remaining state data
+            wtxn.commit()
+                .map_err(|e| eyre::eyre!("LMDB 최종 상태 커밋 실패: {e}"))?;
+
+            // P2: Warn about preimage misses
+            if accounts_without_preimage > 0 || slots_without_preimage > 0 {
+                eprintln!(
+                    "경고: preimage 누락 — 계정: {accounts_without_preimage}, 슬롯: {slots_without_preimage}"
+                );
+            }
+
+            #[cfg(feature = "tui")]
+            if let Some(tx) = &tui_tx {
+                let _ = tx
+                    .send(crate::tui::event::ProgressEvent::StatePhaseCompleted {
+                        accounts: processed_accounts,
+                        storage_slots: total_storage_slots,
+                        code_entries: total_code_entries,
+                        accounts_without_preimage,
+                        slots_without_preimage,
+                        elapsed: started_at.elapsed(),
+                    })
+                    .await;
+            }
+        }
+
+        Ok(())
+    }
+    .await;
+
+    let mut verification_summary: Option<OfflineVerificationSummary> = None;
+    let final_result: Result<()> = if let Err(err) = migration_result {
+        Err(err)
+    } else if total_imported == 0 {
+        Err(eyre::eyre!("마이그레이션에서 블록을 가져오지 못했습니다."))
+    } else {
+        if verify_offline {
+            let (verify_start, verify_end) = resolve_verify_range(
+                plan.start_block,
+                plan.end_block,
+                verify_start_block,
+                verify_end_block,
+            )?;
+            #[cfg(feature = "tui")]
+            if let Some(tx) = &tui_tx {
+                let verify_total = verify_end.saturating_sub(verify_start) + 1;
+                let _ = tx
+                    .send(crate::tui::event::ProgressEvent::VerificationStarted {
+                        start_block: verify_start,
+                        end_block: verify_end,
+                        total_blocks: verify_total,
+                        state_trie_check: false,
+                    })
+                    .await;
+            }
+
+            let summary = verify_geth_to_lmdb_offline(
+                &geth_reader,
+                &lmdb,
+                verify_start,
+                verify_end,
+                tui,
+                #[cfg(feature = "tui")]
+                &tui_tx,
+            )?;
+
+            #[cfg(feature = "tui")]
+            if let Some(tx) = &tui_tx {
+                let _ = tx
+                    .send(crate::tui::event::ProgressEvent::VerificationCompleted {
+                        checked: summary.checked_blocks,
+                        mismatches: summary.mismatches,
+                        elapsed: started_at.elapsed(),
+                    })
+                    .await;
+            }
+
+            if summary.mismatches > 0 {
+                Err(eyre::eyre!(
+                    "Offline verification failed with {} mismatch(es) in range #{}..=#{}",
+                    summary.mismatches,
+                    summary.start_block,
+                    summary.end_block
+                ))
+            } else {
+                verification_summary = Some(summary);
+                Ok(())
+            }?
+        }
+        Ok(())
+    };
+
+    // Cleanup TUI
+    #[cfg(feature = "tui")]
+    {
+        if let Some(tx) = tui_tx.take() {
+            match &final_result {
+                Ok(()) if total_imported > 0 => {
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Completed {
+                            imported_blocks: total_imported,
+                            skipped_blocks,
+                            elapsed: started_at.elapsed(),
+                            retries_performed: 0,
+                        })
+                        .await;
+                }
+                Ok(()) => {
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Error {
+                            message: "마이그레이션에서 블록을 가져오지 못했습니다.".into(),
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Error {
+                            message: format!("{e:#}"),
+                        })
+                        .await;
+                }
+            }
+            drop(tx);
+        }
+        if let Some(handle) = tui_handle.take() {
+            let _ = handle.await;
+        }
+    }
+
+    final_result?;
+
+    if !tui {
+        let report = MigrationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            status: "completed",
+            phase: "execution",
+            source_head: last_source_block,
+            target_head: last_source_block,
+            plan: Some(plan),
+            dry_run: false,
+            imported_blocks: total_imported,
+            skipped_blocks,
+            elapsed_ms: elapsed_ms(started_at),
+            retry_attempts: MAX_RETRY_ATTEMPTS,
+            retries_performed: 0,
+        };
+        emit_report(&report, json, report_file)?;
+        if let Some(summary) = verification_summary {
+            println!(
+                "Offline verification passed: checked {} block(s) in #{}..=#{}.",
+                summary.checked_blocks, summary.start_block, summary.end_block
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Encodes a list of pre-encoded receipt items into an RLP list.
+///
+/// Each item is already encoded (e.g., via `ReceiptWithBloom::encode_inner()`).
+/// This wraps them in an outer RLP list: `0xc0+len | items_concat` or
+/// `0xf7+len_bytes | len | items_concat`.
+fn encode_rlp_receipt_list(items: &[&[u8]], out: &mut Vec<u8>) {
+    let total_len: usize = items.iter().map(|i| i.len()).sum();
+    if total_len <= 55 {
+        out.push(0xc0 + total_len as u8);
+    } else {
+        let len_bytes = total_len.to_be_bytes();
+        let start = len_bytes.iter().position(|&b| b != 0).unwrap_or(7);
+        let len_payload = &len_bytes[start..];
+        out.push(0xf7 + len_payload.len() as u8);
+        out.extend_from_slice(len_payload);
+    }
+    for item in items {
+        out.extend_from_slice(item);
+    }
+}
+
+/// keccak256 of empty bytes (constant for comparison)
+const KECCAK_EMPTY_BYTES: [u8; 32] = [
+    0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d, 0xb2, 0xdc, 0xc7, 0x03, 0xc0,
+    0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b, 0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70,
+];
 
 #[cfg(test)]
 mod tests {
@@ -1464,14 +2307,12 @@ mod tests {
     };
 
     use super::{
-        CLI, DEFAULT_RETRY_BASE_DELAY_MS, MAX_RETRY_ATTEMPTS, MigrationErrorReport, MigrationPlan,
-        MigrationReport, REPORT_SCHEMA_VERSION, RetryFailure, Subcommand, append_report_line,
-        build_migration_error_report, build_migration_plan, classify_error_from_message,
-        classify_error_from_report, classify_io_error_kind, compute_backoff_delay,
-        emit_error_report, emit_report, read_resume_block_from_checkpoint, retry_async, retry_sync,
-        sha256_hex_for_file, write_checkpoint_file,
+        MAX_RETRY_ATTEMPTS, MigrationErrorReport, MigrationPlan, MigrationReport,
+        REPORT_SCHEMA_VERSION, RetryFailure, append_report_line, build_migration_error_report,
+        build_migration_plan, classify_error_from_message, classify_error_from_report,
+        classify_io_error_kind, compute_backoff_delay, emit_error_report, emit_report, retry_async,
+        retry_sync,
     };
-    use clap::Parser;
     use serde_json::{Value, json};
 
     fn unique_test_path(suffix: &str) -> std::path::PathBuf {
@@ -1480,29 +2321,6 @@ mod tests {
             .expect("clock should be after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("migrations-cli-unit-{suffix}-{nanos}"))
-    }
-
-    fn expected_paths_for_checkpoint(
-        checkpoint_path: &std::path::Path,
-    ) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root = checkpoint_path
-            .parent()
-            .and_then(|parent| parent.parent())
-            .unwrap_or_else(|| {
-                checkpoint_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-            });
-
-        fs::create_dir_all(root).expect("checkpoint root should be creatable");
-
-        let genesis_path = root.join("genesis.json");
-        fs::write(&genesis_path, "test-genesis").expect("genesis file should be writable");
-
-        let source_store_path = root.join("old-store");
-        fs::create_dir_all(&source_store_path).expect("source store directory should be creatable");
-
-        (genesis_path, source_store_path)
     }
 
     #[test]
@@ -1684,403 +2502,6 @@ mod tests {
 
         if let Some(parent) = report_path.parent() {
             let _ = fs::remove_dir_all(parent);
-        }
-    }
-
-    #[test]
-    fn read_resume_block_from_checkpoint_returns_target_plus_one() {
-        let checkpoint_path = unique_test_path("checkpoint-read").join("state/checkpoint.json");
-        let checkpoint = json!({
-            "schema_version": 1,
-            "source_head": 100,
-            "target_head": 98,
-            "imported_blocks": 98,
-            "skipped_blocks": 0,
-            "retry_attempts": 3,
-            "retries_performed": 1,
-            "elapsed_ms": 44
-        });
-
-        if let Some(parent) = checkpoint_path.parent() {
-            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
-        }
-        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
-
-        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-        let resume_block =
-            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
-                .expect("resume block should be readable");
-        assert_eq!(resume_block, 99);
-
-        if let Some(parent) = checkpoint_path.parent() {
-            let root = parent.parent().unwrap_or(parent);
-            let _ = fs::remove_dir_all(root);
-        }
-    }
-
-    #[test]
-    fn read_resume_block_from_checkpoint_rejects_schema_mismatch() {
-        let checkpoint_path =
-            unique_test_path("checkpoint-read-schema-mismatch").join("state/checkpoint.json");
-        let checkpoint = json!({
-            "schema_version": 999,
-            "source_head": 100,
-            "target_head": 98,
-            "imported_blocks": 98,
-            "skipped_blocks": 0,
-            "retry_attempts": 3,
-            "retries_performed": 1,
-            "elapsed_ms": 44
-        });
-
-        if let Some(parent) = checkpoint_path.parent() {
-            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
-        }
-        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
-
-        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-        let error =
-            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
-                .expect_err("schema mismatch should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("Unsupported checkpoint schema_version")
-        );
-
-        if let Some(parent) = checkpoint_path.parent() {
-            let root = parent.parent().unwrap_or(parent);
-            let _ = fs::remove_dir_all(root);
-        }
-    }
-
-    #[test]
-    fn read_resume_block_from_checkpoint_rejects_target_head_overflow() {
-        let checkpoint_path =
-            unique_test_path("checkpoint-read-overflow").join("state/checkpoint.json");
-        let checkpoint = json!({
-            "schema_version": 1,
-            "source_head": u64::MAX,
-            "target_head": u64::MAX,
-            "imported_blocks": 0,
-            "skipped_blocks": 0,
-            "retry_attempts": 3,
-            "retries_performed": 1,
-            "elapsed_ms": 44
-        });
-
-        if let Some(parent) = checkpoint_path.parent() {
-            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
-        }
-        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
-
-        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-        let error =
-            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
-                .expect_err("overflow should fail");
-        assert!(error.to_string().contains("target_head overflow"));
-
-        if let Some(parent) = checkpoint_path.parent() {
-            let root = parent.parent().unwrap_or(parent);
-            let _ = fs::remove_dir_all(root);
-        }
-    }
-
-    #[test]
-    fn read_resume_block_from_checkpoint_rejects_target_above_source() {
-        let checkpoint_path =
-            unique_test_path("checkpoint-read-target-above-source").join("state/checkpoint.json");
-        let checkpoint = json!({
-            "schema_version": 1,
-            "source_head": 50,
-            "target_head": 51,
-            "imported_blocks": 51,
-            "skipped_blocks": 0,
-            "retry_attempts": 3,
-            "retries_performed": 1,
-            "elapsed_ms": 44
-        });
-
-        if let Some(parent) = checkpoint_path.parent() {
-            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
-        }
-        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
-
-        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-        let error =
-            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
-                .expect_err("target_head above source_head should fail");
-        assert!(error.to_string().contains("cannot exceed source_head"));
-
-        if let Some(parent) = checkpoint_path.parent() {
-            let root = parent.parent().unwrap_or(parent);
-            let _ = fs::remove_dir_all(root);
-        }
-    }
-
-    #[test]
-    fn read_resume_block_from_checkpoint_rejects_genesis_path_mismatch() {
-        let checkpoint_path =
-            unique_test_path("checkpoint-read-genesis-mismatch").join("state/checkpoint.json");
-        let checkpoint = json!({
-            "schema_version": 1,
-            "genesis_path": "other-genesis.json",
-            "source_store_path": "old-store",
-            "source_head": 100,
-            "target_head": 98,
-            "imported_blocks": 98,
-            "skipped_blocks": 0,
-            "retry_attempts": 3,
-            "retries_performed": 1,
-            "elapsed_ms": 44
-        });
-
-        if let Some(parent) = checkpoint_path.parent() {
-            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
-        }
-        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
-
-        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-        let error =
-            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
-                .expect_err("genesis mismatch should fail");
-        assert!(error.to_string().contains("genesis_path mismatch"));
-
-        if let Some(parent) = checkpoint_path.parent() {
-            let root = parent.parent().unwrap_or(parent);
-            let _ = fs::remove_dir_all(root);
-        }
-    }
-
-    #[test]
-    fn read_resume_block_from_checkpoint_rejects_source_store_path_mismatch() {
-        let checkpoint_path =
-            unique_test_path("checkpoint-read-source-mismatch").join("state/checkpoint.json");
-
-        // Create genesis and source store directories first so we can canonicalize them
-        let (genesis_path, source_store_path) = expected_paths_for_checkpoint(&checkpoint_path);
-
-        // Checkpoint has the correct canonical genesis_path but wrong source_store_path
-        let checkpoint = json!({
-            "schema_version": 1,
-            "genesis_path": genesis_path.canonicalize().unwrap().to_string_lossy(),
-            "source_store_path": "other-old-store",
-            "source_head": 100,
-            "target_head": 98,
-            "imported_blocks": 98,
-            "skipped_blocks": 0,
-            "retry_attempts": 3,
-            "retries_performed": 1,
-            "elapsed_ms": 44
-        });
-
-        if let Some(parent) = checkpoint_path.parent() {
-            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
-        }
-        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
-
-        let error =
-            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
-                .expect_err("source store mismatch should fail");
-        assert!(error.to_string().contains("source_store_path mismatch"));
-
-        if let Some(parent) = checkpoint_path.parent() {
-            let root = parent.parent().unwrap_or(parent);
-            let _ = fs::remove_dir_all(root);
-        }
-    }
-
-    #[test]
-    fn read_resume_block_from_checkpoint_rejects_genesis_hash_mismatch() {
-        let checkpoint_root = unique_test_path("checkpoint-read-genesis-hash-mismatch");
-        let checkpoint_path = checkpoint_root.join("state/checkpoint.json");
-        let genesis_path = checkpoint_root.join("genesis.json");
-        fs::create_dir_all(&checkpoint_root).expect("checkpoint root should be creatable");
-        fs::write(&genesis_path, "hello-genesis").expect("genesis file should be writable");
-        let source_store_path = checkpoint_root.join("old-store");
-        fs::create_dir_all(&source_store_path).expect("source store directory should be creatable");
-
-        let checkpoint = json!({
-            "schema_version": 1,
-            "genesis_path": genesis_path.canonicalize().unwrap().to_string_lossy(),
-            "genesis_sha256": "deadbeef",
-            "source_store_path": "old-store",
-            "source_head": 100,
-            "target_head": 98,
-            "imported_blocks": 98,
-            "skipped_blocks": 0,
-            "retry_attempts": 3,
-            "retries_performed": 1,
-            "elapsed_ms": 44
-        });
-
-        if let Some(parent) = checkpoint_path.parent() {
-            fs::create_dir_all(parent).expect("checkpoint parent should be creatable");
-        }
-        fs::write(&checkpoint_path, checkpoint.to_string()).expect("checkpoint should be writable");
-
-        let error =
-            read_resume_block_from_checkpoint(&checkpoint_path, &genesis_path, &source_store_path)
-                .expect_err("genesis hash mismatch should fail");
-        assert!(error.to_string().contains("genesis_sha256 mismatch"));
-
-        let _ = fs::remove_file(&genesis_path);
-        if let Some(parent) = checkpoint_path.parent() {
-            let root = parent.parent().unwrap_or(parent);
-            let _ = fs::remove_dir_all(root);
-        }
-    }
-
-    #[test]
-    fn write_checkpoint_file_writes_json_payload() {
-        let checkpoint_root = unique_test_path("checkpoint-json");
-        let checkpoint_path = checkpoint_root.join("state/checkpoint.json");
-        let genesis_path = checkpoint_root.join("genesis.json");
-        fs::create_dir_all(&checkpoint_root).expect("checkpoint root should be creatable");
-        fs::write(&genesis_path, "hello-genesis").expect("genesis file should be writable");
-        let source_store_path = checkpoint_root.join("old-store");
-        fs::create_dir_all(&source_store_path).expect("source store directory should be creatable");
-
-        let report = MigrationReport {
-            schema_version: REPORT_SCHEMA_VERSION,
-            status: "completed",
-            phase: "execution",
-            source_head: 100,
-            target_head: 98,
-            plan: Some(MigrationPlan {
-                start_block: 1,
-                end_block: 100,
-            }),
-            dry_run: false,
-            imported_blocks: 98,
-            skipped_blocks: 2,
-            elapsed_ms: 123,
-            retry_attempts: 3,
-            retries_performed: 4,
-        };
-
-        write_checkpoint_file(
-            Some(&checkpoint_path),
-            &report,
-            &genesis_path,
-            &source_store_path,
-        )
-        .expect("checkpoint file write should succeed");
-
-        let content = fs::read_to_string(&checkpoint_path).expect("checkpoint should be readable");
-        let payload: Value = serde_json::from_str(&content).expect("checkpoint should be json");
-
-        assert_eq!(payload["schema_version"], 1);
-        assert_eq!(
-            payload["genesis_path"],
-            genesis_path
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .to_string()
-        );
-        assert_eq!(
-            payload["genesis_sha256"],
-            sha256_hex_for_file(&genesis_path).unwrap()
-        );
-        assert_eq!(
-            payload["source_store_path"],
-            source_store_path
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .to_string()
-        );
-        assert_eq!(payload["source_head"], 100);
-        assert_eq!(payload["target_head"], 98);
-        assert_eq!(payload["imported_blocks"], 98);
-        assert_eq!(payload["skipped_blocks"], 2);
-        assert_eq!(payload["retry_attempts"], 3);
-
-        if let Some(parent) = checkpoint_path.parent() {
-            let root = parent.parent().unwrap_or(parent);
-            let _ = fs::remove_dir_all(root);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn checkpoint_provenance_uses_canonical_paths_and_accepts_symlinked_inputs() {
-        use std::os::unix::fs::symlink;
-
-        let checkpoint_root = unique_test_path("checkpoint-canonicalize");
-        let real_root = checkpoint_root.join("real");
-        let link_root = checkpoint_root.join("link");
-        fs::create_dir_all(&real_root).expect("real root should be creatable");
-        fs::create_dir_all(&link_root).expect("link root should be creatable");
-
-        let real_genesis = real_root.join("genesis.json");
-        fs::write(&real_genesis, "hello-genesis").expect("real genesis should be writable");
-        let real_store = real_root.join("old-store");
-        fs::create_dir_all(&real_store).expect("real store should be creatable");
-
-        let linked_genesis = link_root.join("genesis.json");
-        symlink(&real_genesis, &linked_genesis).expect("genesis symlink should be creatable");
-
-        let linked_store = link_root.join("old-store");
-        symlink(&real_store, &linked_store).expect("store symlink should be creatable");
-
-        let checkpoint_path = checkpoint_root.join("state/checkpoint.json");
-        let report = MigrationReport {
-            schema_version: REPORT_SCHEMA_VERSION,
-            status: "completed",
-            phase: "execution",
-            source_head: 100,
-            target_head: 98,
-            plan: Some(MigrationPlan {
-                start_block: 1,
-                end_block: 100,
-            }),
-            dry_run: false,
-            imported_blocks: 98,
-            skipped_blocks: 2,
-            elapsed_ms: 123,
-            retry_attempts: 3,
-            retries_performed: 4,
-        };
-
-        write_checkpoint_file(
-            Some(&checkpoint_path),
-            &report,
-            &linked_genesis,
-            &linked_store,
-        )
-        .expect("checkpoint file write should succeed");
-
-        let content = fs::read_to_string(&checkpoint_path).expect("checkpoint should be readable");
-        let payload: Value = serde_json::from_str(&content).expect("checkpoint should be json");
-
-        assert_eq!(
-            payload["genesis_path"],
-            real_genesis
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .to_string()
-        );
-        assert_eq!(
-            payload["source_store_path"],
-            real_store
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .to_string()
-        );
-
-        // Ensure resume works regardless of expected path representation.
-        let resume_block =
-            read_resume_block_from_checkpoint(&checkpoint_path, &real_genesis, &linked_store)
-                .expect("resume should succeed with canonicalized provenance");
-        assert_eq!(resume_block, 99);
-
-        if let Some(parent) = checkpoint_path.parent() {
-            let root = parent.parent().unwrap_or(parent);
-            let _ = fs::remove_dir_all(root);
         }
     }
 
@@ -2269,369 +2690,6 @@ mod tests {
     fn rejects_resume_from_block_above_source_head() {
         let result = build_migration_plan(12, 20, Some(21));
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn parses_libmdbx2rocksdb_flags() {
-        let cli = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "genesis.json",
-            "--store.old",
-            "old-db",
-            "--store.new",
-            "new-db",
-            "--dry-run",
-            "--json",
-        ]);
-
-        match cli.command {
-            Subcommand::Libmdbx2Rocksdb {
-                genesis_path,
-                old_storage_path,
-                new_storage_path,
-                dry_run,
-                json,
-                report_file,
-                retry_attempts,
-                retry_base_delay_ms,
-                continue_on_error,
-                resume_from_block,
-                checkpoint_file,
-                resume_from_checkpoint,
-            } => {
-                assert_eq!(genesis_path, std::path::PathBuf::from("genesis.json"));
-                assert_eq!(old_storage_path, std::path::PathBuf::from("old-db"));
-                assert_eq!(new_storage_path, std::path::PathBuf::from("new-db"));
-                assert!(dry_run);
-                assert!(json);
-                assert!(report_file.is_none());
-                assert_eq!(retry_attempts, MAX_RETRY_ATTEMPTS);
-                assert_eq!(retry_base_delay_ms, DEFAULT_RETRY_BASE_DELAY_MS);
-                assert!(!continue_on_error);
-                assert!(resume_from_block.is_none());
-                assert!(checkpoint_file.is_none());
-                assert!(resume_from_checkpoint.is_none());
-            }
-            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn parses_alias_l2r() {
-        let cli = CLI::parse_from([
-            "migrations",
-            "l2r",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "a",
-            "--store.new",
-            "b",
-        ]);
-
-        match cli.command {
-            Subcommand::Libmdbx2Rocksdb { dry_run, json, .. } => {
-                assert!(!dry_run);
-                assert!(!json);
-            }
-            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn rejects_missing_required_args() {
-        let parsed = CLI::try_parse_from(["migrations", "libmdbx2rocksdb", "--genesis", "g.json"]);
-        assert!(
-            parsed.is_err(),
-            "cli should fail when required store paths are missing"
-        );
-        let rendered = parsed.err().expect("must be clap error").to_string();
-
-        assert!(rendered.contains("--store.old"));
-        assert!(rendered.contains("--store.new"));
-    }
-
-    #[test]
-    fn rejects_retry_attempts_out_of_range() {
-        let parsed = CLI::try_parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--retry-attempts",
-            "0",
-        ]);
-
-        assert!(parsed.is_err());
-    }
-
-    #[test]
-    fn parses_custom_retry_config() {
-        let cli = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--retry-attempts",
-            "5",
-            "--retry-base-delay-ms",
-            "250",
-        ]);
-
-        match cli.command {
-            Subcommand::Libmdbx2Rocksdb {
-                retry_attempts,
-                retry_base_delay_ms,
-                ..
-            } => {
-                assert_eq!(retry_attempts, 5);
-                assert_eq!(retry_base_delay_ms, 250);
-            }
-            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn accepts_zero_retry_base_delay() {
-        let cli = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--retry-base-delay-ms",
-            "0",
-        ]);
-
-        match cli.command {
-            Subcommand::Libmdbx2Rocksdb {
-                retry_base_delay_ms,
-                ..
-            } => {
-                assert_eq!(retry_base_delay_ms, 0);
-            }
-            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn parses_continue_on_error_flag() {
-        let cli = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--continue-on-error",
-        ]);
-
-        match cli.command {
-            Subcommand::Libmdbx2Rocksdb {
-                continue_on_error, ..
-            } => {
-                assert!(continue_on_error);
-            }
-            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn parses_resume_from_block_flag() {
-        let cli = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--resume-from-block",
-            "15",
-        ]);
-
-        match cli.command {
-            Subcommand::Libmdbx2Rocksdb {
-                resume_from_block, ..
-            } => {
-                assert_eq!(resume_from_block, Some(15));
-            }
-            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn parses_checkpoint_file_flag() {
-        let cli = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--checkpoint-file",
-            "state/checkpoint.json",
-        ]);
-
-        match cli.command {
-            Subcommand::Libmdbx2Rocksdb {
-                checkpoint_file, ..
-            } => {
-                assert_eq!(
-                    checkpoint_file,
-                    Some(std::path::PathBuf::from("state/checkpoint.json"))
-                );
-            }
-            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn parses_resume_from_checkpoint_flag() {
-        let cli = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--resume-from-checkpoint",
-            "state/checkpoint.json",
-        ]);
-
-        match cli.command {
-            Subcommand::Libmdbx2Rocksdb {
-                resume_from_checkpoint,
-                ..
-            } => {
-                assert_eq!(
-                    resume_from_checkpoint,
-                    Some(std::path::PathBuf::from("state/checkpoint.json"))
-                );
-            }
-            Subcommand::Geth2Rocksdb { .. } => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn rejects_conflicting_resume_flags() {
-        let parsed = CLI::try_parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--resume-from-block",
-            "10",
-            "--resume-from-checkpoint",
-            "state/checkpoint.json",
-        ]);
-
-        assert!(parsed.is_err());
-        let rendered = parsed.err().expect("must be clap error").to_string();
-        assert!(rendered.contains("--resume-from-block"));
-        assert!(rendered.contains("--resume-from-checkpoint"));
-    }
-
-    #[test]
-    fn rejects_retry_base_delay_out_of_range() {
-        let parsed = CLI::try_parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--retry-base-delay-ms",
-            "60001",
-        ]);
-
-        assert!(parsed.is_err());
-    }
-
-    #[test]
-    fn report_file_reflects_flag_value() {
-        let with_report_file = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--report-file",
-            "reports/migration.jsonl",
-        ]);
-        assert_eq!(
-            with_report_file.command.report_file(),
-            Some(std::path::Path::new("reports/migration.jsonl"))
-        );
-
-        let without_report_file = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-        ]);
-        assert!(without_report_file.command.report_file().is_none());
-    }
-
-    #[test]
-    fn json_output_reflects_flag_value() {
-        let with_json = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-            "--json",
-        ]);
-        assert!(with_json.command.json_output());
-
-        let without_json = CLI::parse_from([
-            "migrations",
-            "libmdbx2rocksdb",
-            "--genesis",
-            "g.json",
-            "--store.old",
-            "old",
-            "--store.new",
-            "new",
-        ]);
-        assert!(!without_json.command.json_output());
     }
 
     #[test]
