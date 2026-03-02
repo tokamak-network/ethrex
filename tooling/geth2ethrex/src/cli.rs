@@ -75,9 +75,12 @@ pub enum Subcommand {
         #[arg(long = "verify-deep", default_value_t = false)]
         /// Run deep verification: receipt existence check for blocks with transactions
         verify_deep: bool,
-        #[arg(long = "blocks-only", default_value_t = false)]
-        /// Only migrate block data (skip state: accounts, storage, code)
+        #[arg(long = "blocks-only", default_value_t = true)]
+        /// Only migrate block data (skip state: accounts, storage, code). Default: true
         blocks_only: bool,
+        #[arg(long = "include-state", default_value_t = false)]
+        /// Include state migration (accounts, storage, code). Experimental; requires Geth snapshot compatibility
+        include_state: bool,
         #[arg(long = "from-block")]
         /// Start block migration from this block number (auto-detects merge block if unset)
         from_block: Option<u64>,
@@ -106,9 +109,12 @@ pub enum Subcommand {
         #[arg(long = "report-file")]
         /// Optional path to append emitted reports
         report_file: Option<PathBuf>,
-        #[arg(long = "blocks-only", default_value_t = false)]
-        /// Only migrate block data (skip state: accounts, storage, code)
+        #[arg(long = "blocks-only", default_value_t = true)]
+        /// Only migrate block data (skip state: accounts, storage, code). Default: true
         blocks_only: bool,
+        #[arg(long = "include-state", default_value_t = false)]
+        /// Include state migration (accounts, storage, code). Experimental; requires Geth snapshot compatibility
+        include_state: bool,
         #[arg(long = "map-size-gb", default_value_t = 16)]
         /// LMDB map size in GB (default: 16)
         map_size_gb: u32,
@@ -487,9 +493,12 @@ impl Subcommand {
                 verify_deep,
                 report_file,
                 blocks_only,
+                include_state,
                 from_block,
                 ethrex_ready,
             } => {
+                // Override blocks_only if include_state is true
+                let blocks_only = *blocks_only && !*include_state;
                 // TUI is on by default when compiled with the `tui` feature,
                 // unless JSON output is requested.
                 let use_tui = cfg!(feature = "tui") && !json;
@@ -509,7 +518,7 @@ impl Subcommand {
                     *ethrex_ready,
                     report_file.as_deref(),
                     use_tui,
-                    *blocks_only,
+                    blocks_only,
                     *from_block,
                 )
                 .await
@@ -521,6 +530,7 @@ impl Subcommand {
                 json,
                 report_file,
                 blocks_only,
+                include_state,
                 map_size_gb,
                 skip_receipts,
                 continue_on_error,
@@ -528,13 +538,15 @@ impl Subcommand {
                 verify_start_block,
                 verify_end_block,
             } => {
+                // Override blocks_only if include_state is true
+                let blocks_only = *blocks_only && !*include_state;
                 let use_tui = cfg!(feature = "tui") && !json;
                 migrate_geth_to_lmdb(
                     geth_chaindata,
                     lmdb_path,
                     *dry_run,
                     *json,
-                    *blocks_only,
+                    blocks_only,
                     *map_size_gb,
                     *skip_receipts,
                     *continue_on_error,
@@ -1846,31 +1858,36 @@ async fn migrate_geth_to_rocksdb(
 /// This function handles both formats:
 /// - Raw trimmed bytes (<= 32): decoded directly as big-endian U256
 /// - RLP-encoded (> 32): strip the RLP length prefix, then decode
-fn decode_storage_value(raw: &[u8]) -> ethrex_common::U256 {
-    use ethrex_common::U256;
-
+/// Decode a Geth snapshot storage value to raw bytes.
+///
+/// Geth snapshot stores storage values in compact form:
+/// - Trimmed (leading zeros removed) or zero-padded to 32 bytes
+/// - In some versions, RLP-encoded as a byte string with 0x80+len prefix
+///
+/// Returns the actual value bytes (after stripping RLP prefix if present).
+fn decode_storage_value(raw: &[u8]) -> Vec<u8> {
     if raw.is_empty() {
-        return U256::zero();
+        return vec![];
     }
+
     if raw.len() <= 32 {
-        return U256::from_big_endian(raw);
+        return raw.to_vec();
     }
-    // Value > 32 bytes: likely has an RLP string prefix.
-    // RLP single-byte length prefix: 0x80 + len for strings of length 1..55
-    // e.g. 33-byte value starting with 0xa0 means "32-byte string follows"
+
+    // Value > 32 bytes: check for RLP string prefix
+    // RLP: 0x80 + len for strings of length 1..55
+    // e.g. 0xa0 = 0x80 + 32, means "32-byte string follows"
     let first = raw[0];
     if first > 0x80 && first <= 0xb7 {
         let str_len = (first - 0x80) as usize;
-        if raw.len() == 1 + str_len && str_len <= 32 {
-            return U256::from_big_endian(&raw[1..]);
+        // Valid RLP string with stated length matching actual length
+        if raw.len() == 1 + str_len {
+            return raw[1..].to_vec();
         }
     }
-    // Fallback: take the last 32 bytes (same as go-ethereum's common.BytesToHash)
-    if raw.len() > 32 {
-        U256::from_big_endian(&raw[raw.len() - 32..])
-    } else {
-        U256::from_big_endian(raw)
-    }
+
+    // Fallback: return as-is (may be malformed or different format)
+    raw.to_vec()
 }
 
 ///
@@ -1890,7 +1907,6 @@ async fn migrate_state_to_rocksdb(
     >,
 ) -> Result<()> {
     use ethrex_common::types::{AccountState, Code};
-    use ethrex_common::U256;
     use ethrex_rlp::encode::RLPEncode;
     use ethrex_trie::EMPTY_TRIE_HASH;
 
@@ -1970,14 +1986,15 @@ async fn migrate_state_to_rocksdb(
                             );
                         }
                     }
-                    // Geth snapshot stores storage values as compact trimmed bytes.
-                    // However, in some versions the value is RLP-encoded, which adds
-                    // a length prefix and can exceed 32 bytes.
-                    let value = decode_storage_value(&raw_value);
-                    if !value.is_zero() {
+                    // Geth snapshot stores storage values as compact trimmed bytes
+                    // or RLP-encoded byte strings. Decode to extract actual bytes,
+                    // then store as-is (ethrex storage trie expects raw bytes).
+                    let decoded = decode_storage_value(&raw_value);
+                    // Skip zero/empty values (same as Geth)
+                    if !decoded.is_empty() && decoded != vec![0u8] {
                         storage_trie.insert(
                             slot_hash.as_bytes().to_vec(),
-                            value.encode_to_vec(),
+                            decoded,
                         )?;
                         account_slot_count += 1;
                         total_storage_slots += 1;
