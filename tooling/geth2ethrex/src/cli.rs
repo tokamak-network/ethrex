@@ -1318,26 +1318,12 @@ async fn migrate_geth_to_rocksdb(
     .await?;
     retries_performed += attempts.saturating_sub(1);
 
-    // Phase 3b: Determine effective start block (auto-detect merge block if needed)
-    let resume_from_block = if let Some(explicit_from_block) = from_block {
-        // User explicitly specified --from-block, use it
-        Some(explicit_from_block)
-    } else {
-        // Auto-detect merge block from chain config
-        let chain_config = new_store.get_chain_config();
-        if let Some(merge_block) = chain_config.merge_netsplit_block {
-            // Only use merge block if:
-            // 1. We haven't reached it yet in migration (merge_block > last_known_block)
-            // 2. It actually exists in source data (merge_block <= last_source_block)
-            if merge_block > last_known_block && merge_block <= last_source_block {
-                Some(merge_block)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    };
+    // Phase 3b: Determine effective start block
+    // Only use --from-block if explicitly specified by user.
+    // Do NOT auto-detect merge block as start point: ancient DB blocks before merge block
+    // (blocks 0..merge_block-1) must be migrated to ensure chain continuity.
+    // Merge block is a consensus parameter, not a migration boundary.
+    let resume_from_block = from_block;
 
     // Phase 4: Build migration plan
     let Some(plan) = build_migration_plan(last_known_block, last_source_block, resume_from_block)? else {
