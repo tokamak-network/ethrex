@@ -703,8 +703,9 @@ pub fn decode_stored_receipts(
         receipts.push(receipt);
     }
 
-    // Consume the decoder (ignore remaining bytes after the list)
-    let _ = dec.finish();
+    // Ensure no trailing bytes after the list
+    dec.finish()
+        .map_err(|e| format!("trailing data in outer receipt list: {e}"))?;
 
     Ok(receipts)
 }
@@ -718,22 +719,10 @@ fn decode_single_stored_receipt(
     let decoder =
         Decoder::new(data).map_err(|e| format!("failed to decode stored receipt: {e}"))?;
 
-    // status: single byte, 0x01 = success, 0x00 = failure
-    let (status_bytes, decoder): (Vec<u8>, _) = decoder
+    // status: RLP-encoded bool — success = 0x01, failure = 0x80 (empty bytes)
+    let (succeeded, decoder): (bool, _) = decoder
         .decode_field("status")
         .map_err(|e| format!("failed to decode receipt status: {e}"))?;
-
-    let succeeded = match status_bytes.as_slice() {
-        [0x01] => true,
-        [0x00] | [] => false,
-        other => {
-            return Err(format!(
-                "unexpected receipt status bytes: {:?} (expected [0x00] or [0x01])",
-                other
-            )
-            .into())
-        }
-    };
 
     // cumulativeGasUsed: u64
     let (cumulative_gas_used, decoder): (u64, _) = decoder
@@ -765,11 +754,10 @@ mod tests {
     /// Helper: RLP-encode a single stored receipt as [status, cumGasUsed, [logs]]
     fn encode_stored_receipt(succeeded: bool, cum_gas: u64, logs: &[Log]) -> Vec<u8> {
         use ethrex_rlp::structs::Encoder;
-        let status_byte: Vec<u8> = if succeeded { vec![0x01] } else { vec![0x00] };
         let logs_vec: Vec<Log> = logs.to_vec();
         let mut buf = Vec::new();
         Encoder::new(&mut buf)
-            .encode_field(&status_byte)
+            .encode_field(&succeeded)
             .encode_field(&cum_gas)
             .encode_field(&logs_vec)
             .finish();
