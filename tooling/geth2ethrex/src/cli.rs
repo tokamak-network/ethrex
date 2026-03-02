@@ -1545,15 +1545,30 @@ async fn migrate_geth_to_rocksdb(
                 };
                 retries_performed += attempts.saturating_sub(1);
 
-                // Normalize difficulty for PoW blocks (blocks before merge)
-                // ethrex is PoS-only and requires difficulty=0 for all blocks
+                // Normalize PoW block fields for PoS-only ethrex
+                // ethrex rejects difficulty > 0 and nonce != 0 (which are PoW-specific)
                 let mut block = block;
                 let mut canonical_hash = block_hash;
                 if let Some(merge_block) = merge_netsplit_block {
-                    if block_number < merge_block && block.header.difficulty > ethrex_common::U256::from(0) {
-                        block.header.difficulty = ethrex_common::U256::from(0);
-                        // Recalculate hash after modifying header
-                        canonical_hash = block.header.hash();
+                    if block_number < merge_block {
+                        let mut header_modified = false;
+
+                        // Normalize difficulty to 0 (PoW blocks have difficulty > 0)
+                        if block.header.difficulty > ethrex_common::U256::from(0) {
+                            block.header.difficulty = ethrex_common::U256::from(0);
+                            header_modified = true;
+                        }
+
+                        // Normalize nonce to 0 (PoW blocks have nonce > 0 from mining)
+                        if block.header.nonce != 0 {
+                            block.header.nonce = 0;
+                            header_modified = true;
+                        }
+
+                        // Recalculate hash if header was modified
+                        if header_modified {
+                            canonical_hash = block.header.hash();
+                        }
                     }
                 }
 
