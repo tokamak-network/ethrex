@@ -1246,29 +1246,39 @@ async fn migrate_geth_to_rocksdb(
                 batch.push(block);
 
                 // Read receipts for this block (derive tx_type from block body)
-                match geth_reader
-                    .read_receipts(block_number, block_hash, &batch.last().unwrap().body)
-                {
-                    Ok(Some(receipts)) => {
+                let body_ref = &batch.last().unwrap().body;
+                let receipt_result = retry_sync(
+                    || {
+                        geth_reader
+                            .read_receipts(block_number, block_hash, body_ref)
+                            .map_err(|e| {
+                                eyre::eyre!(
+                                    "Cannot read receipts for block #{block_number}: {e}"
+                                )
+                            })
+                    },
+                    retry_attempts,
+                    retry_base_delay,
+                );
+
+                match receipt_result {
+                    Ok((Some(receipts), attempts)) => {
+                        retries_performed += attempts.saturating_sub(1);
                         batch_receipts.push((block_hash, receipts));
                     }
-                    Ok(None) => {
+                    Ok((None, attempts)) => {
+                        retries_performed += attempts.saturating_sub(1);
                         // Receipts not available (e.g., ancient DB without receipt support).
                         // Not fatal — skip receipt writing for this block.
                     }
-                    Err(e) => {
-                        if continue_on_error {
-                            if !tui {
-                                eprintln!(
-                                    "Warning: cannot read receipts for block #{block_number}: {e}"
-                                );
-                            }
-                        } else {
-                            return Err(eyre::eyre!(
-                                "Cannot read receipts for block #{block_number}: {e}"
-                            ));
+                    Err(error) if continue_on_error => {
+                        if !tui {
+                            eprintln!(
+                                "Warning: cannot read receipts for block #{block_number}: {error:#}"
+                            );
                         }
                     }
+                    Err(error) => return Err(error),
                 }
             }
 
@@ -1293,13 +1303,28 @@ async fn migrate_geth_to_rocksdb(
             retries_performed += attempts.saturating_sub(1);
 
             // Write receipts for this batch
-            for (block_hash, receipts) in batch_receipts.drain(..) {
-                new_store
-                    .add_receipts(block_hash, receipts)
-                    .await
-                    .wrap_err_with(|| {
-                        format!("Cannot write receipts for block {block_hash:?}")
-                    })?;
+            let receipts_to_write: Vec<_> = batch_receipts.drain(..).collect();
+            if !receipts_to_write.is_empty() {
+                let (_, attempts) = retry_async(
+                    || {
+                        let receipts = receipts_to_write.clone();
+                        async {
+                            for (block_hash, receipts) in receipts {
+                                new_store
+                                    .add_receipts(block_hash, receipts)
+                                    .await
+                                    .wrap_err_with(|| {
+                                        format!("Cannot write receipts for block {block_hash:?}")
+                                    })?;
+                            }
+                            Ok(())
+                        }
+                    },
+                    retry_attempts,
+                    retry_base_delay,
+                )
+                .await?;
+                retries_performed += attempts.saturating_sub(1);
             }
 
             // Update canonical chain for this batch
