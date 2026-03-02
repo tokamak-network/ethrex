@@ -75,6 +75,9 @@ pub enum Subcommand {
         #[arg(long = "skip-state-trie-check", default_value_t = false)]
         /// Skip ethrex has_state_root check during offline verification
         skip_state_trie_check: bool,
+        #[arg(long = "verify-deep", default_value_t = false)]
+        /// Run deep verification: receipt existence check for blocks with transactions
+        verify_deep: bool,
         #[arg(long = "blocks-only", default_value_t = false)]
         /// Only migrate block data (skip state: accounts, storage, code)
         blocks_only: bool,
@@ -479,6 +482,7 @@ impl Subcommand {
                 verify_start_block,
                 verify_end_block,
                 skip_state_trie_check,
+                verify_deep,
                 report_file,
                 blocks_only,
                 from_block,
@@ -499,6 +503,7 @@ impl Subcommand {
                     *verify_start_block,
                     *verify_end_block,
                     *skip_state_trie_check,
+                    *verify_deep,
                     report_file.as_deref(),
                     use_tui,
                     *blocks_only,
@@ -616,6 +621,7 @@ async fn verify_geth_to_rocksdb_offline(
     start_block: u64,
     end_block: u64,
     skip_state_trie_check: bool,
+    verify_deep: bool,
     tui: bool,
     #[cfg(feature = "tui")] tui_tx: &Option<
         tokio::sync::mpsc::Sender<crate::tui::event::ProgressEvent>,
@@ -763,6 +769,39 @@ async fn verify_geth_to_rocksdb_offline(
                 }
                 (None, None) => {
                     // Both missing, skip
+                }
+            }
+
+            // Deep verification: check receipt existence for blocks with transactions
+            if verify_deep {
+                if let Some(eb) = &ethrex_body {
+                    if !eb.transactions.is_empty() {
+                        let mut has_all_receipts = true;
+                        for idx in 0..eb.transactions.len() {
+                            if store
+                                .get_receipt(block_number, idx as u64)
+                                .await?
+                                .is_none()
+                            {
+                                has_all_receipts = false;
+                                break;
+                            }
+                        }
+                        if !has_all_receipts {
+                            mismatches += 1;
+                            block_mismatch = true;
+                            #[cfg(feature = "tui")]
+                            if let Some(tx) = tui_tx {
+                                let _ = tx.try_send(
+                                    crate::tui::event::ProgressEvent::VerificationMismatch {
+                                        block_number,
+                                        reason: "missing receipts for block with transactions"
+                                            .into(),
+                                    },
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -975,6 +1014,7 @@ async fn migrate_geth_to_rocksdb(
     verify_start_block: Option<u64>,
     verify_end_block: Option<u64>,
     skip_state_trie_check: bool,
+    verify_deep: bool,
     report_file: Option<&Path>,
     tui: bool,
     blocks_only: bool,
@@ -1470,6 +1510,7 @@ async fn migrate_geth_to_rocksdb(
                 verify_start,
                 verify_end,
                 skip_state_trie_check,
+                verify_deep,
                 tui,
                 #[cfg(feature = "tui")]
                 &tui_tx,
