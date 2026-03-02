@@ -1041,7 +1041,7 @@ async fn verify_geth_to_rocksdb_offline(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn verify_geth_to_lmdb_offline(
+async fn verify_geth_to_lmdb_offline(
     geth_reader: &crate::readers::geth_db::GethBlockReader,
     lmdb: &crate::writers::lmdb::LmdbWriter,
     start_block: u64,
@@ -2621,7 +2621,8 @@ async fn migrate_geth_to_lmdb(
                 tui,
                 #[cfg(feature = "tui")]
                 &tui_tx,
-            )?;
+            )
+            .await?;
 
             #[cfg(feature = "tui")]
             if let Some(tx) = &tui_tx {
