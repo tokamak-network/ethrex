@@ -2,7 +2,8 @@
 	init-l1 rm-db-l1 deploy-l1 deploy-l1-sp1 init-l2 \
 	init-metrics down-metrics restart-metrics down-l2 restart-l2 rm-db-l2 \
 	init-prover-sp1 init-prover-risc0 init-prover-exec build-prover clean-tee clean-tee-contract-deps \
-	test integration-test integration-test-gpu state-diff-test
+	test integration-test integration-test-gpu state-diff-test \
+	init-guest-program down-guest-program
 
 .DEFAULT_GOAL := help
 
@@ -213,6 +214,24 @@ init-prover-exec:
 	--proof-coordinators tcp://127.0.0.1:3900 \
 	--backend exec
 
+
+# ==============================================================================
+# Guest Programs
+# ==============================================================================
+
+# Default guest program if not specified
+PROGRAM ?= evm-l2
+
+init-guest-program: ## 🧩 Starts the localnet with a specific guest program (PROGRAM=zk-dex)
+	@echo "Starting L2 with guest program: $(PROGRAM)"
+	touch .env
+	DOCKER_ETHREX_WORKDIR=${DOCKER_ETHREX_WORKDIR} \
+	ETHREX_GUEST_PROGRAM_ID=$(PROGRAM) \
+	docker compose -f docker-compose.yaml -f docker-compose-guest-program.overrides.yaml up --detach --build
+
+down-guest-program: ## 🛑 Stops the guest program localnet
+	DOCKER_ETHREX_WORKDIR=${DOCKER_ETHREX_WORKDIR} \
+	docker compose -f docker-compose.yaml -f docker-compose-guest-program.overrides.yaml down
 
 # ==============================================================================
 # TEE

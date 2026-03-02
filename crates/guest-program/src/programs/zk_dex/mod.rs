@@ -1,25 +1,36 @@
-pub mod execution;
-pub mod types;
+pub mod circuit;
 
 use crate::traits::{GuestProgram, GuestProgramError, ResourceLimits, backends};
 
+/// DEX contract address on the L2 (must match the guest binary constant).
+const DEX_CONTRACT_ADDRESS: ethrex_common::Address = ethrex_common::H160([0xDE; 20]);
+
 /// ZK-DEX Guest Program — privacy-preserving decentralized exchange.
 ///
-/// This program proves batch token transfer state transitions.  Each batch
-/// contains a list of [`types::DexTransfer`] items; the execution function
-/// ([`execution::execution_program`]) validates every transfer and computes
-/// a deterministic `final_state_root` via chained Keccak-256 hashing.
+/// This program proves batch token transfer state transitions using the
+/// [`DexCircuit`](circuit::DexCircuit) implementation of the [`AppCircuit`]
+/// trait.  The execution engine ([`execute_app_circuit`]) handles common
+/// logic (signature verification, nonces, deposits, withdrawals, gas,
+/// receipts, state root computation) and delegates token-transfer operations
+/// to the circuit.
 ///
 /// Reference: <https://github.com/tokamak-network/zk-dex/tree/circom>
 ///
 /// ## Serialization
 ///
-/// The ZK-DEX guest binary reads rkyv-serialized [`types::DexProgramInput`]
+/// The ZK-DEX guest binary reads rkyv-serialized [`AppProgramInput`]
 /// from the zkVM stdin.  [`serialize_input`](GuestProgram::serialize_input)
-/// is a pass-through because the prover already supplies the correct bytes.
+/// converts from `ProgramInput` (full `ExecutionWitness`) to
+/// `AppProgramInput` (Merkle proofs only), so the coordinator/protocol
+/// does not need changes.
 ///
-/// [`encode_output`](GuestProgram::encode_output) is also a pass-through;
-/// the guest binary calls [`types::DexProgramOutput::encode`] internally.
+/// [`encode_output`](GuestProgram::encode_output) is a pass-through;
+/// the guest binary calls [`ProgramOutput::encode`] internally.
+///
+/// [`AppProgramInput`]: crate::common::app_types::AppProgramInput
+/// [`AppCircuit`]: crate::common::app_execution::AppCircuit
+/// [`execute_app_circuit`]: crate::common::app_execution::execute_app_circuit
+/// [`ProgramOutput`]: crate::l2::ProgramOutput
 pub struct ZkDexGuestProgram;
 
 impl ZkDexGuestProgram {
@@ -53,14 +64,41 @@ impl GuestProgram for ZkDexGuestProgram {
     }
 
     fn serialize_input(&self, raw_input: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
-        // The prover serializes DexProgramInput to rkyv bytes before calling
-        // this method.  Pass-through is correct.
-        Ok(raw_input.to_vec())
+        // With the l2 feature, convert ProgramInput → AppProgramInput.
+        // Without it (e.g., inside the zkVM guest), pass through as-is.
+        #[cfg(feature = "l2")]
+        {
+            use crate::common::input_converter::convert_to_app_input;
+            use crate::l2::ProgramInput;
+            use rkyv::rancor::Error as RkyvError;
+
+            // 1. Deserialize ProgramInput from rkyv.
+            let program_input: ProgramInput =
+                rkyv::from_bytes::<ProgramInput, RkyvError>(raw_input)
+                    .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
+
+            // 2. Determine needed accounts and storage slots from transactions.
+            let (accounts, storage_slots) =
+                analyze_zk_dex_transactions(&program_input.blocks, DEX_CONTRACT_ADDRESS)
+                    .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
+
+            // 3. Convert to AppProgramInput.
+            let app_input = convert_to_app_input(program_input, &accounts, &storage_slots)
+                .map_err(|e| GuestProgramError::Internal(e.to_string()))?;
+
+            // 4. Re-serialize as AppProgramInput via rkyv.
+            let bytes = rkyv::to_bytes::<RkyvError>(&app_input)
+                .map_err(|e| GuestProgramError::Serialization(e.to_string()))?;
+            Ok(bytes.to_vec())
+        }
+
+        #[cfg(not(feature = "l2"))]
+        {
+            Ok(raw_input.to_vec())
+        }
     }
 
     fn encode_output(&self, raw_output: &[u8]) -> Result<Vec<u8>, GuestProgramError> {
-        // The zkVM guest binary calls DexProgramOutput::encode() internally
-        // and commits the result as public values.  Pass-through is correct.
         Ok(raw_output.to_vec())
     }
 
@@ -76,10 +114,109 @@ impl GuestProgram for ZkDexGuestProgram {
     }
 }
 
+/// Accounts and storage slots required for proof generation.
+#[cfg(feature = "l2")]
+type ProofRequirements = (
+    Vec<ethrex_common::Address>,
+    Vec<(ethrex_common::Address, ethrex_common::H256)>,
+);
+
+/// Analyze zk-dex batch transactions to determine which accounts and storage
+/// slots are needed for proof generation.
+///
+/// For each transaction in the blocks:
+/// - Sender address → needed for nonce/balance verification
+/// - Recipient address → needed for balance updates
+/// - DEX contract transfers: parse calldata to find token/user pairs → storage slots
+/// - Privileged txs (deposits): recipient account
+/// - Withdrawals: bridge contract account
+/// - System calls: system contract account
+#[cfg(feature = "l2")]
+fn analyze_zk_dex_transactions(
+    blocks: &[ethrex_common::types::Block],
+    dex_contract: ethrex_common::Address,
+) -> Result<ProofRequirements, String> {
+    use std::collections::BTreeSet;
+
+    use ethrex_common::types::TxKind;
+
+    use crate::common::app_execution::{
+        COMMON_BRIDGE_L2_ADDRESS, FEE_TOKEN_RATIO_ADDRESS, FEE_TOKEN_REGISTRY_ADDRESS,
+        L2_TO_L1_MESSENGER_ADDRESS,
+    };
+
+    let mut accounts: BTreeSet<ethrex_common::Address> = BTreeSet::new();
+    let mut storage_slots: BTreeSet<(ethrex_common::Address, ethrex_common::H256)> =
+        BTreeSet::new();
+
+    // Transfer selector for classify_tx matching.
+    let transfer_sel = circuit::transfer_selector_bytes();
+
+    for block in blocks {
+        for tx in &block.body.transactions {
+            // Privileged (deposit) transactions.
+            if tx.is_privileged() {
+                if let TxKind::Call(to) = tx.to() {
+                    accounts.insert(to);
+                }
+                continue;
+            }
+
+            // Sender always needed (nonce, balance for gas).
+            if let Ok(sender) = tx.sender() {
+                accounts.insert(sender);
+
+                let to_addr = match tx.to() {
+                    TxKind::Call(addr) => addr,
+                    TxKind::Create => continue,
+                };
+
+                accounts.insert(to_addr);
+
+                // Withdrawal via CommonBridgeL2.
+                if to_addr == COMMON_BRIDGE_L2_ADDRESS {
+                    accounts.insert(COMMON_BRIDGE_L2_ADDRESS);
+                    continue;
+                }
+
+                // System contract calls.
+                if to_addr == L2_TO_L1_MESSENGER_ADDRESS
+                    || to_addr == FEE_TOKEN_REGISTRY_ADDRESS
+                    || to_addr == FEE_TOKEN_RATIO_ADDRESS
+                {
+                    accounts.insert(to_addr);
+                    continue;
+                }
+
+                // DEX contract transfer — extract token balances.
+                if to_addr == dex_contract {
+                    let data = tx.data();
+                    if data.len() >= 4 + 96 && data[..4] == transfer_sel {
+                        // transfer(address to, address token, uint256 amount)
+                        let transfer_to = ethrex_common::Address::from_slice(&data[4 + 12..4 + 32]);
+                        let token = ethrex_common::Address::from_slice(&data[4 + 32 + 12..4 + 64]);
+
+                        // Need balance slots for sender and recipient.
+                        let sender_slot = circuit::balance_storage_slot(token, sender);
+                        let to_slot = circuit::balance_storage_slot(token, transfer_to);
+
+                        storage_slots.insert((dex_contract, sender_slot));
+                        storage_slots.insert((dex_contract, to_slot));
+                        accounts.insert(dex_contract);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((
+        accounts.into_iter().collect(),
+        storage_slots.into_iter().collect(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::execution::execution_program;
-    use super::types::{DexProgramInput, DexTransfer};
     use super::*;
 
     #[test]
@@ -114,105 +251,13 @@ mod tests {
     }
 
     #[test]
-    fn serialize_input_is_identity() {
+    fn serialize_input_rejects_invalid_bytes() {
         let gp = ZkDexGuestProgram;
+        // Arbitrary bytes are not valid rkyv ProgramInput, so we expect an error.
         let data = b"test data";
-        assert_eq!(gp.serialize_input(data).unwrap(), data);
-    }
-
-    // ── Execution tests ────────────────────────────────────────────
-
-    fn sample_transfer(nonce: u64) -> DexTransfer {
-        DexTransfer {
-            from: [1u8; 20],
-            to: [2u8; 20],
-            token: [3u8; 20],
-            amount: 100,
-            nonce,
-        }
-    }
-
-    #[test]
-    fn execution_produces_deterministic_output() {
-        let input = DexProgramInput {
-            initial_state_root: [0xAA; 32],
-            transfers: vec![sample_transfer(0), sample_transfer(1)],
-        };
-        let output = execution_program(input.clone()).expect("should succeed");
-
-        assert_eq!(output.initial_state_root, [0xAA; 32]);
-        assert_eq!(output.transfer_count, 2);
-        assert_ne!(output.final_state_root, output.initial_state_root);
-
-        // Same input must produce the same output (deterministic).
-        let output2 = execution_program(input).expect("should succeed");
-        assert_eq!(output.final_state_root, output2.final_state_root);
-    }
-
-    #[test]
-    fn execution_rejects_empty_batch() {
-        let input = DexProgramInput {
-            initial_state_root: [0; 32],
-            transfers: vec![],
-        };
-        assert!(execution_program(input).is_err());
-    }
-
-    #[test]
-    fn execution_rejects_zero_amount() {
-        let input = DexProgramInput {
-            initial_state_root: [0; 32],
-            transfers: vec![DexTransfer {
-                from: [1; 20],
-                to: [2; 20],
-                token: [3; 20],
-                amount: 0,
-                nonce: 0,
-            }],
-        };
-        assert!(execution_program(input).is_err());
-    }
-
-    #[test]
-    fn execution_rejects_self_transfer() {
-        let input = DexProgramInput {
-            initial_state_root: [0; 32],
-            transfers: vec![DexTransfer {
-                from: [1; 20],
-                to: [1; 20], // same as from
-                token: [3; 20],
-                amount: 100,
-                nonce: 0,
-            }],
-        };
-        assert!(execution_program(input).is_err());
-    }
-
-    #[test]
-    fn output_encode_roundtrip() {
-        let input = DexProgramInput {
-            initial_state_root: [0xBB; 32],
-            transfers: vec![sample_transfer(0)],
-        };
-        let output = execution_program(input).expect("should succeed");
-        let encoded = output.encode();
-        // 32 (initial) + 32 (final) + 8 (count) = 72 bytes
-        assert_eq!(encoded.len(), 72);
-        assert_eq!(&encoded[..32], &output.initial_state_root);
-        assert_eq!(&encoded[32..64], &output.final_state_root);
-    }
-
-    #[test]
-    fn rkyv_roundtrip() {
-        let input = DexProgramInput {
-            initial_state_root: [0xCC; 32],
-            transfers: vec![sample_transfer(0), sample_transfer(1)],
-        };
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&input).expect("rkyv serialize");
-        let restored: DexProgramInput =
-            rkyv::from_bytes::<DexProgramInput, rkyv::rancor::Error>(&bytes)
-                .expect("rkyv deserialize");
-        assert_eq!(restored.initial_state_root, input.initial_state_root);
-        assert_eq!(restored.transfers.len(), 2);
+        assert!(
+            gp.serialize_input(data).is_err(),
+            "serialize_input should reject arbitrary bytes"
+        );
     }
 }

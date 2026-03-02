@@ -105,6 +105,7 @@ services:
       - ETHREX_WATCHER_L2_CHAIN_IDS
       - ETHREX_WATCHER_ROUTER_ADDRESS
       - ETHREX_LOG_LEVEL
+      - ETHREX_GUEST_PROGRAM_ID=${ETHREX_GUEST_PROGRAM_ID:-evm-l2}
     volumes:
       - ../../fixtures/genesis/l2.json:/genesis/l2.json
       - env:/env/
