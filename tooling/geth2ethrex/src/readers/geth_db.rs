@@ -27,9 +27,10 @@
 
 use ethrex_common::{
     H256, U256,
-    types::{Block, BlockBody, BlockHeader, Log},
+    types::{Block, BlockBody, BlockHeader, Log, Receipt},
 };
 use ethrex_rlp::decode::RLPDecode;
+use ethrex_rlp::structs::Decoder;
 
 use super::KeyValueReader;
 use super::ancient::AncientReader;
@@ -510,6 +511,49 @@ impl GethBlockReader {
         let key = receipt_key(number, hash);
         self.reader.get(&key)
     }
+
+    /// Reads and decodes receipts for a block, pairing each with its tx_type.
+    ///
+    /// Geth stored receipts do NOT include tx_type, so we derive it from
+    /// the corresponding transaction in the block body.
+    ///
+    /// Returns `Ok(None)` if no raw receipt data exists for this block.
+    /// Returns an error if the receipt count does not match the transaction count.
+    pub fn read_receipts(
+        &self,
+        number: u64,
+        hash: H256,
+        body: &BlockBody,
+    ) -> Result<Option<Vec<Receipt>>, Box<dyn std::error::Error>> {
+        let raw = match self.read_raw_receipts(number, hash)? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let stored = decode_stored_receipts(&raw)?;
+
+        if stored.len() != body.transactions.len() {
+            return Err(format!(
+                "receipt count ({}) != transaction count ({}) for block #{number}",
+                stored.len(),
+                body.transactions.len()
+            )
+            .into());
+        }
+
+        let receipts = stored
+            .into_iter()
+            .zip(body.transactions.iter())
+            .map(|(sr, tx)| Receipt {
+                tx_type: tx.tx_type(),
+                succeeded: sr.succeeded,
+                cumulative_gas_used: sr.cumulative_gas_used,
+                logs: sr.logs,
+            })
+            .collect();
+
+        Ok(Some(receipts))
+    }
 }
 
 // --- Key encoding helpers (mirrors go-ethereum rawdb/schema.go) ---
@@ -621,17 +665,269 @@ fn receipt_key(number: u64, hash: H256) -> Vec<u8> {
     key
 }
 
-/// Decodes stored receipts from RLP format
+/// Decodes stored receipts from Geth's RLP format.
+///
+/// Geth stores per-block receipts as:
+/// ```text
+/// RLP([
+///   RLP([status(1byte), cumulativeGasUsed(u64), [log1, log2, ...]]),
+///   ...
+/// ])
+/// ```
+/// Each log: `RLP([address(20), [topic1, topic2, ...], data])`
+///
+/// The stored format omits bloom filters and tx_type (those are derived
+/// from the corresponding transaction).
 pub fn decode_stored_receipts(
-    _raw: &[u8],
+    raw: &[u8],
 ) -> Result<Vec<StoredReceipt>, Box<dyn std::error::Error>> {
-    // TODO: Implement receipt decoding if needed
-    Ok(Vec::new())
+    if raw.is_empty() {
+        return Err("empty receipt data".into());
+    }
+
+    // Outer structure: an RLP list of RLP-encoded receipts
+    let outer_decoder = Decoder::new(raw)
+        .map_err(|e| format!("failed to decode outer receipt list: {e}"))?;
+
+    let mut receipts = Vec::new();
+    let mut dec = outer_decoder;
+
+    // Iterate through the outer list: each item is an RLP-encoded receipt
+    while !dec.is_done() {
+        let (receipt_bytes, next_dec): (Vec<u8>, _) = dec
+            .get_encoded_item()
+            .map_err(|e| format!("failed to get receipt item: {e}"))?;
+        dec = next_dec;
+
+        let receipt = decode_single_stored_receipt(&receipt_bytes)?;
+        receipts.push(receipt);
+    }
+
+    // Consume the decoder (ignore remaining bytes after the list)
+    let _ = dec.finish();
+
+    Ok(receipts)
+}
+
+/// Decodes a single stored receipt from its RLP encoding.
+///
+/// Format: `RLP([status(1byte), cumulativeGasUsed(u64), [log1, log2, ...]])`
+fn decode_single_stored_receipt(
+    data: &[u8],
+) -> Result<StoredReceipt, Box<dyn std::error::Error>> {
+    let decoder =
+        Decoder::new(data).map_err(|e| format!("failed to decode stored receipt: {e}"))?;
+
+    // status: single byte, 0x01 = success, 0x00 = failure
+    let (status_bytes, decoder): (Vec<u8>, _) = decoder
+        .decode_field("status")
+        .map_err(|e| format!("failed to decode receipt status: {e}"))?;
+
+    let succeeded = match status_bytes.as_slice() {
+        [0x01] => true,
+        [0x00] | [] => false,
+        other => {
+            return Err(format!(
+                "unexpected receipt status bytes: {:?} (expected [0x00] or [0x01])",
+                other
+            )
+            .into())
+        }
+    };
+
+    // cumulativeGasUsed: u64
+    let (cumulative_gas_used, decoder): (u64, _) = decoder
+        .decode_field("cumulative_gas_used")
+        .map_err(|e| format!("failed to decode cumulative gas used: {e}"))?;
+
+    // logs: Vec<Log>
+    let (logs, decoder): (Vec<Log>, _) = decoder
+        .decode_field("logs")
+        .map_err(|e| format!("failed to decode receipt logs: {e}"))?;
+
+    decoder
+        .finish()
+        .map_err(|e| format!("trailing data in stored receipt: {e}"))?;
+
+    Ok(StoredReceipt {
+        succeeded,
+        cumulative_gas_used,
+        logs,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethrex_common::types::Log;
+    use ethrex_common::{Address, Bytes};
+
+    /// Helper: RLP-encode a single stored receipt as [status, cumGasUsed, [logs]]
+    fn encode_stored_receipt(succeeded: bool, cum_gas: u64, logs: &[Log]) -> Vec<u8> {
+        use ethrex_rlp::structs::Encoder;
+        let status_byte: Vec<u8> = if succeeded { vec![0x01] } else { vec![0x00] };
+        let logs_vec: Vec<Log> = logs.to_vec();
+        let mut buf = Vec::new();
+        Encoder::new(&mut buf)
+            .encode_field(&status_byte)
+            .encode_field(&cum_gas)
+            .encode_field(&logs_vec)
+            .finish();
+        buf
+    }
+
+    /// Helper: RLP-encode a list of already-encoded receipt items into an outer list
+    fn encode_receipt_list(receipts: &[Vec<u8>]) -> Vec<u8> {
+        // Concatenate all receipt bytes, then wrap in an RLP list header
+        let mut payload = Vec::new();
+        for r in receipts {
+            payload.extend_from_slice(r);
+        }
+        let mut result = Vec::new();
+        encode_rlp_list_header(&mut result, payload.len());
+        result.extend_from_slice(&payload);
+        result
+    }
+
+    /// Encode an RLP list header for a given payload length
+    fn encode_rlp_list_header(buf: &mut Vec<u8>, len: usize) {
+        if len < 56 {
+            buf.push(0xc0 + len as u8);
+        } else {
+            let len_bytes = {
+                let mut n = len;
+                let mut bytes = Vec::new();
+                while n > 0 {
+                    bytes.push((n & 0xff) as u8);
+                    n >>= 8;
+                }
+                bytes.reverse();
+                bytes
+            };
+            buf.push(0xf7 + len_bytes.len() as u8);
+            buf.extend_from_slice(&len_bytes);
+        }
+    }
+
+    #[test]
+    fn decode_stored_receipts_empty_block() {
+        // Empty receipt list: RLP encoding of empty list = 0xc0
+        let raw = vec![0xc0];
+        let result = decode_stored_receipts(&raw).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn decode_stored_receipts_single_legacy() {
+        // Single receipt: succeeded, cumGasUsed=21000, no logs
+        let receipt_rlp = encode_stored_receipt(true, 21000, &[]);
+        let raw = encode_receipt_list(&[receipt_rlp]);
+
+        let receipts = decode_stored_receipts(&raw).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert!(receipts[0].succeeded);
+        assert_eq!(receipts[0].cumulative_gas_used, 21000);
+        assert!(receipts[0].logs.is_empty());
+    }
+
+    #[test]
+    fn decode_stored_receipts_failed_receipt() {
+        // Single receipt: failed, cumGasUsed=50000, no logs
+        let receipt_rlp = encode_stored_receipt(false, 50000, &[]);
+        let raw = encode_receipt_list(&[receipt_rlp]);
+
+        let receipts = decode_stored_receipts(&raw).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert!(!receipts[0].succeeded);
+        assert_eq!(receipts[0].cumulative_gas_used, 50000);
+        assert!(receipts[0].logs.is_empty());
+    }
+
+    #[test]
+    fn decode_stored_receipts_with_logs() {
+        let addr = Address::from_low_u64_be(0xdead);
+        let topic = H256::from_low_u64_be(0xbeef);
+        let data = Bytes::from(vec![0x01, 0x02, 0x03]);
+
+        let log = Log {
+            address: addr,
+            topics: vec![topic],
+            data: data.clone(),
+        };
+
+        let receipt_rlp = encode_stored_receipt(true, 100_000, &[log]);
+        let raw = encode_receipt_list(&[receipt_rlp]);
+
+        let receipts = decode_stored_receipts(&raw).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert!(receipts[0].succeeded);
+        assert_eq!(receipts[0].cumulative_gas_used, 100_000);
+        assert_eq!(receipts[0].logs.len(), 1);
+        assert_eq!(receipts[0].logs[0].address, addr);
+        assert_eq!(receipts[0].logs[0].topics, vec![topic]);
+        assert_eq!(receipts[0].logs[0].data, data);
+    }
+
+    #[test]
+    fn decode_stored_receipts_multiple() {
+        // Two receipts in a single block
+        let r1 = encode_stored_receipt(true, 21000, &[]);
+
+        let addr = Address::from_low_u64_be(0xca11);
+        let log = Log {
+            address: addr,
+            topics: vec![H256::from_low_u64_be(1), H256::from_low_u64_be(2)],
+            data: Bytes::from(vec![0xff]),
+        };
+        let r2 = encode_stored_receipt(false, 63000, &[log]);
+
+        let raw = encode_receipt_list(&[r1, r2]);
+
+        let receipts = decode_stored_receipts(&raw).unwrap();
+        assert_eq!(receipts.len(), 2);
+
+        // First receipt
+        assert!(receipts[0].succeeded);
+        assert_eq!(receipts[0].cumulative_gas_used, 21000);
+        assert!(receipts[0].logs.is_empty());
+
+        // Second receipt
+        assert!(!receipts[1].succeeded);
+        assert_eq!(receipts[1].cumulative_gas_used, 63000);
+        assert_eq!(receipts[1].logs.len(), 1);
+        assert_eq!(receipts[1].logs[0].address, addr);
+        assert_eq!(receipts[1].logs[0].topics.len(), 2);
+    }
+
+    #[test]
+    fn decode_stored_receipts_with_multiple_logs() {
+        let log1 = Log {
+            address: Address::from_low_u64_be(1),
+            topics: vec![],
+            data: Bytes::from(vec![]),
+        };
+        let log2 = Log {
+            address: Address::from_low_u64_be(2),
+            topics: vec![H256::from_low_u64_be(0xaa), H256::from_low_u64_be(0xbb)],
+            data: Bytes::from(vec![0x10, 0x20, 0x30, 0x40]),
+        };
+
+        let receipt_rlp = encode_stored_receipt(true, 200_000, &[log1.clone(), log2.clone()]);
+        let raw = encode_receipt_list(&[receipt_rlp]);
+
+        let receipts = decode_stored_receipts(&raw).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].logs.len(), 2);
+        assert_eq!(receipts[0].logs[0].address, log1.address);
+        assert_eq!(receipts[0].logs[1].address, log2.address);
+        assert_eq!(receipts[0].logs[1].topics.len(), 2);
+    }
+
+    #[test]
+    fn decode_stored_receipts_rejects_empty_data() {
+        let result = decode_stored_receipts(&[]);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn canonical_hash_key_format() {
