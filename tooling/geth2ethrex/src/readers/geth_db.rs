@@ -5,13 +5,18 @@
 //!
 //! ## Key Format Reference (go-ethereum rawdb/schema.go)
 //!
-//! | Data          | Key format                         |
-//! |---------------|------------------------------------|
-//! | Head hash     | `"LastBlock"`                      |
-//! | Canonical hash| `"h" + num(8 BE) + "n"`            |
-//! | Block header  | `"h" + num(8 BE) + hash(32)`       |
-//! | Block body    | `"b" + num(8 BE) + hash(32)`       |
-//! | Block number  | `"H" + hash(32)`                   |
+//! | Data              | Key format                                   |
+//! |-------------------|----------------------------------------------|
+//! | Head hash         | `"LastBlock"`                                |
+//! | Canonical hash    | `"h" + num(8 BE) + "n"`                     |
+//! | Block header      | `"h" + num(8 BE) + hash(32)`                |
+//! | Block body        | `"b" + num(8 BE) + hash(32)`                |
+//! | Block number      | `"H" + hash(32)`                             |
+//! | Account snapshot  | `"a" + account_hash(32)`                     |
+//! | Storage snapshot  | `"o" + account_hash(32) + slot_hash(32)`     |
+//! | Code              | `"c" + code_hash(32)`                        |
+//! | Receipts          | `"r" + num(8 BE) + hash(32)`                 |
+//! | Preimage          | `"secure-key-" + hash(32)`                   |
 //!
 //! ## Ancient (Freezer) Fallback
 //!
@@ -444,10 +449,10 @@ impl GethBlockReader {
 
         let result = iter.filter_map(|entry| {
             if let Ok((key, value)) = entry {
-                // Account snapshot key format: "snap" (4) + "account" (7) + account_hash(32) = 43 bytes
-                if key.len() == 43 {
+                // Account snapshot key: "a"(1) + account_hash(32) = 33 bytes
+                if key.len() == 33 {
                     if let Ok(account) = SlimAccount::decode(&value) {
-                        let account_hash = H256::from_slice(&key[11..43]);
+                        let account_hash = H256::from_slice(&key[1..33]);
                         return Some((account_hash, account));
                     }
                 }
@@ -469,9 +474,9 @@ impl GethBlockReader {
 
         let result = iter.filter_map(|entry| {
             if let Ok((key, value)) = entry {
-                // Storage snapshot key format: "snap" (4) + "storage" (7) + account_hash(32) + slot_hash(32) = 75 bytes
-                if key.len() == 75 {
-                    let slot_hash = H256::from_slice(&key[43..75]);
+                // Storage snapshot key: "o"(1) + account_hash(32) + slot_hash(32) = 65 bytes
+                if key.len() == 65 {
+                    let slot_hash = H256::from_slice(&key[33..65]);
                     return Some((slot_hash, value));
                 }
             }
@@ -550,42 +555,51 @@ fn header_number_key(hash: H256) -> Vec<u8> {
     key
 }
 
-// --- Snapshot key builders (go-ethereum snapshot/schema.go) ---
+// --- Snapshot & data key builders (go-ethereum core/rawdb/schema.go) ---
+//
+// go-ethereum prefix reference:
+//   snapshotAccountPrefix = []byte("a")
+//   snapshotStoragePrefix = []byte("o")
+//   codePrefix            = []byte("c")
+//   blockReceiptsPrefix   = []byte("r")
+//   preimagePrefix        = []byte("secure-key-")
 
-/// `"snap" + "account" + account_hash(32)` → slim-encoded account
+/// `"a" + account_hash(32)` → slim-encoded account snapshot
+#[allow(dead_code)]
 fn account_snapshot_key(account_hash: H256) -> Vec<u8> {
-    let mut key = Vec::with_capacity(43);
-    key.extend_from_slice(b"snapaccount");
+    let mut key = Vec::with_capacity(33);
+    key.push(b'a');
     key.extend_from_slice(account_hash.as_bytes());
     key
 }
 
-/// Prefix for account snapshot iteration: `"snap" + "account"`
+/// Prefix for account snapshot iteration: `"a"`
 fn account_snapshot_prefix() -> Vec<u8> {
-    b"snapaccount".to_vec()
+    vec![b'a']
 }
 
-/// `"snap" + "storage" + account_hash(32) + slot_hash(32)` → raw value
+/// `"o" + account_hash(32) + slot_hash(32)` → raw storage value
+#[allow(dead_code)]
 fn storage_snapshot_key(account_hash: H256, slot_hash: H256) -> Vec<u8> {
-    let mut key = Vec::with_capacity(75);
-    key.extend_from_slice(b"snapstorage");
+    let mut key = Vec::with_capacity(65);
+    key.push(b'o');
     key.extend_from_slice(account_hash.as_bytes());
     key.extend_from_slice(slot_hash.as_bytes());
     key
 }
 
-/// Prefix for storage snapshot iteration of an account: `"snap" + "storage" + account_hash(32)`
+/// Prefix for storage snapshot iteration of an account: `"o" + account_hash(32)`
 fn storage_snapshot_prefix(account_hash: H256) -> Vec<u8> {
-    let mut key = Vec::with_capacity(43);
-    key.extend_from_slice(b"snapstorage");
+    let mut key = Vec::with_capacity(33);
+    key.push(b'o');
     key.extend_from_slice(account_hash.as_bytes());
     key
 }
 
-/// `"code" + code_hash(32)` → bytecode
+/// `"c" + code_hash(32)` → bytecode
 fn code_key(code_hash: H256) -> Vec<u8> {
-    let mut key = Vec::with_capacity(36);
-    key.extend_from_slice(b"code");
+    let mut key = Vec::with_capacity(33);
+    key.push(b'c');
     key.extend_from_slice(code_hash.as_bytes());
     key
 }
@@ -598,10 +612,10 @@ fn preimage_key(hash: H256) -> Vec<u8> {
     key
 }
 
-/// `"receipt" + block_num(8 BE) + hash(32)` → RLP([Receipt])
+/// `"r" + block_num(8 BE) + hash(32)` → RLP([Receipt])
 fn receipt_key(number: u64, hash: H256) -> Vec<u8> {
-    let mut key = Vec::with_capacity(48);
-    key.extend_from_slice(b"receipt");
+    let mut key = Vec::with_capacity(41);
+    key.push(b'r');
     key.extend_from_slice(&number.to_be_bytes());
     key.extend_from_slice(hash.as_bytes());
     key
