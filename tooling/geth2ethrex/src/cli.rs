@@ -109,9 +109,12 @@ pub enum Subcommand {
         #[arg(long = "blocks-only", default_value_t = false)]
         /// Only migrate block data (skip state: accounts, storage, code)
         blocks_only: bool,
-        #[arg(long = "map-size-gb", default_value_t = 4)]
-        /// LMDB map size in GB (default: 4)
+        #[arg(long = "map-size-gb", default_value_t = 16)]
+        /// LMDB map size in GB (default: 16)
         map_size_gb: u32,
+        #[arg(long = "skip-receipts", default_value_t = false)]
+        /// Skip receipt data migration (reduces LMDB map usage)
+        skip_receipts: bool,
         #[arg(long = "continue-on-error", default_value_t = false)]
         /// Continue migrating when individual items fail
         continue_on_error: bool,
@@ -519,6 +522,7 @@ impl Subcommand {
                 report_file,
                 blocks_only,
                 map_size_gb,
+                skip_receipts,
                 continue_on_error,
                 verify_offline,
                 verify_start_block,
@@ -532,6 +536,7 @@ impl Subcommand {
                     *json,
                     *blocks_only,
                     *map_size_gb,
+                    *skip_receipts,
                     *continue_on_error,
                     *verify_offline,
                     *verify_start_block,
@@ -814,14 +819,12 @@ async fn verify_geth_to_rocksdb_offline(
 
     #[cfg(feature = "tui")]
     if let Some(tx) = tui_tx {
-        let _ = tx
-            .send(crate::tui::event::ProgressEvent::VerificationStarted {
-                start_block,
-                end_block,
-                total_blocks,
-                state_trie_check: false,
-            })
-            .await;
+        let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationStarted {
+            start_block,
+            end_block,
+            total_blocks,
+            state_trie_check: false,
+        });
     }
 
     for block_number in start_block..=end_block {
@@ -1412,15 +1415,13 @@ async fn migrate_geth_to_rocksdb(
             crate::detect::GethDbType::LevelDB => "LevelDB",
             crate::detect::GethDbType::Unknown => "Unknown",
         };
-        let _ = tx
-            .send(crate::tui::event::ProgressEvent::Init {
-                source_path: geth_chaindata.display().to_string(),
-                target_path: target_storage.display().to_string(),
-                db_type: db_type_str.to_string(),
-                start_block: plan.start_block,
-                end_block: plan.end_block,
-            })
-            .await;
+        let _ = tx.try_send(crate::tui::event::ProgressEvent::Init {
+            source_path: geth_chaindata.display().to_string(),
+            target_path: target_storage.display().to_string(),
+            db_type: db_type_str.to_string(),
+            start_block: plan.start_block,
+            end_block: plan.end_block,
+        });
     }
 
     // Track migration progress without accumulating all block references.
@@ -1471,12 +1472,10 @@ async fn migrate_geth_to_rocksdb(
                         }
                         #[cfg(feature = "tui")]
                         if let Some(tx) = &tui_tx {
-                            let _ = tx
-                                .send(crate::tui::event::ProgressEvent::BlockSkipped {
-                                    block_number,
-                                    reason,
-                                })
-                                .await;
+                            let _ = tx.try_send(crate::tui::event::ProgressEvent::BlockSkipped {
+                                block_number,
+                                reason,
+                            });
                         }
                         continue;
                     }
@@ -1517,12 +1516,10 @@ async fn migrate_geth_to_rocksdb(
                         }
                         #[cfg(feature = "tui")]
                         if let Some(tx) = &tui_tx {
-                            let _ = tx
-                                .send(crate::tui::event::ProgressEvent::BlockSkipped {
-                                    block_number,
-                                    reason,
-                                })
-                                .await;
+                            let _ = tx.try_send(crate::tui::event::ProgressEvent::BlockSkipped {
+                                block_number,
+                                reason,
+                            });
                         }
                         continue;
                     }
@@ -1647,15 +1644,13 @@ async fn migrate_geth_to_rocksdb(
             if let Some(tx) = &tui_tx {
                 let batch_number = (batch_start - plan.start_block) / BATCH_SIZE + 1;
                 let total_batches = plan.block_count().div_ceil(BATCH_SIZE);
-                let _ = tx
-                    .send(crate::tui::event::ProgressEvent::BatchCompleted {
-                        batch_number,
-                        total_batches,
-                        current_block: batch_end,
-                        blocks_in_batch,
-                        elapsed: started_at.elapsed(),
-                    })
-                    .await;
+                let _ = tx.try_send(crate::tui::event::ProgressEvent::BatchCompleted {
+                    batch_number,
+                    total_batches,
+                    current_block: batch_end,
+                    blocks_in_batch,
+                    elapsed: started_at.elapsed(),
+                });
             }
 
             batch_start = batch_end + 1;
@@ -1731,31 +1726,25 @@ async fn migrate_geth_to_rocksdb(
         if let Some(tx) = tui_tx.take() {
             match &final_result {
                 Ok(()) if total_imported > 0 => {
-                    let _ = tx
-                        .send(crate::tui::event::ProgressEvent::Completed {
-                            imported_blocks: total_imported,
-                            skipped_blocks,
-                            elapsed: started_at.elapsed(),
-                            retries_performed,
-                        })
-                        .await;
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Completed {
+                        imported_blocks: total_imported,
+                        skipped_blocks,
+                        elapsed: started_at.elapsed(),
+                        retries_performed,
+                    });
                 }
                 Ok(()) => {
-                    let _ = tx
-                        .send(crate::tui::event::ProgressEvent::Error {
-                            message: format!(
-                                "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
-                                plan.start_block, plan.end_block
-                            ),
-                        })
-                        .await;
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Error {
+                        message: format!(
+                            "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
+                            plan.start_block, plan.end_block
+                        ),
+                    });
                 }
                 Err(e) => {
-                    let _ = tx
-                        .send(crate::tui::event::ProgressEvent::Error {
-                            message: format!("{e:#}"),
-                        })
-                        .await;
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Error {
+                        message: format!("{e:#}"),
+                    });
                 }
             }
             // Drop tx — TUI will detect channel close and wait for 'q'.
@@ -1847,6 +1836,43 @@ async fn migrate_geth_to_rocksdb(
 /// Reads all accounts from Geth's snapshot layer (`"a" + hash` prefix),
 /// builds per-account storage tries and a global state trie, then commits
 /// all trie nodes to ethrex's RocksDB trie tables.
+/// Decode a storage slot value from the Geth snapshot database.
+///
+/// Geth stores storage values as compact (leading-zero-trimmed) big-endian bytes,
+/// typically <= 32 bytes. However, in some Geth versions or configurations,
+/// the value may be stored with an RLP prefix, making it up to 33 bytes
+/// (0xa0 prefix + 32 bytes for a full 256-bit value).
+///
+/// This function handles both formats:
+/// - Raw trimmed bytes (<= 32): decoded directly as big-endian U256
+/// - RLP-encoded (> 32): strip the RLP length prefix, then decode
+fn decode_storage_value(raw: &[u8]) -> ethrex_common::U256 {
+    use ethrex_common::U256;
+
+    if raw.is_empty() {
+        return U256::zero();
+    }
+    if raw.len() <= 32 {
+        return U256::from_big_endian(raw);
+    }
+    // Value > 32 bytes: likely has an RLP string prefix.
+    // RLP single-byte length prefix: 0x80 + len for strings of length 1..55
+    // e.g. 33-byte value starting with 0xa0 means "32-byte string follows"
+    let first = raw[0];
+    if first > 0x80 && first <= 0xb7 {
+        let str_len = (first - 0x80) as usize;
+        if raw.len() == 1 + str_len && str_len <= 32 {
+            return U256::from_big_endian(&raw[1..]);
+        }
+    }
+    // Fallback: take the last 32 bytes (same as go-ethereum's common.BytesToHash)
+    if raw.len() > 32 {
+        U256::from_big_endian(&raw[raw.len() - 32..])
+    } else {
+        U256::from_big_endian(raw)
+    }
+}
+
 ///
 /// The computed state root is verified against `snapshot_state_root` (the Geth
 /// snapshot base layer's state root read from the `"SnapshotRoot"` key).
@@ -1905,9 +1931,7 @@ async fn migrate_state_to_rocksdb(
 
     #[cfg(feature = "tui")]
     if let Some(tx) = tui_tx {
-        let _ = tx
-            .send(crate::tui::event::ProgressEvent::StatePhaseStarted { total_accounts })
-            .await;
+        let _ = tx.try_send(crate::tui::event::ProgressEvent::StatePhaseStarted { total_accounts });
     }
 
     // Open a fresh state trie (BackendTrieDB handles DB writes on commit)
@@ -1916,6 +1940,7 @@ async fn migrate_state_to_rocksdb(
     let mut processed_accounts: u64 = 0;
     let mut total_storage_slots: u64 = 0;
     let mut total_code_entries: u64 = 0;
+    let mut storage_root_mismatches: u64 = 0;
     let mut code_hashes_written: std::collections::HashSet<ethrex_common::H256> =
         std::collections::HashSet::new();
 
@@ -1931,14 +1956,30 @@ async fn migrate_state_to_rocksdb(
             let mut storage_trie =
                 store.open_direct_storage_trie(account_hash, *EMPTY_TRIE_HASH)?;
 
+            let mut account_slot_count: u64 = 0;
+            let mut oversized_count: u64 = 0;
             if let Ok(storage_iter) = geth_reader.iter_storage_snapshots(&account_hash) {
                 for (slot_hash, raw_value) in storage_iter {
-                    let value = U256::from_big_endian(&raw_value);
+                    if raw_value.len() > 32 {
+                        oversized_count += 1;
+                        if oversized_count <= 3 && !tui {
+                            let hex_str: String = raw_value.iter().map(|b| format!("{b:02x}")).collect();
+                            eprintln!(
+                                "[state] oversized slot value: account={account_hash:?} slot={slot_hash:?} len={} hex={hex_str}",
+                                raw_value.len(),
+                            );
+                        }
+                    }
+                    // Geth snapshot stores storage values as compact trimmed bytes.
+                    // However, in some versions the value is RLP-encoded, which adds
+                    // a length prefix and can exceed 32 bytes.
+                    let value = decode_storage_value(&raw_value);
                     if !value.is_zero() {
                         storage_trie.insert(
                             slot_hash.as_bytes().to_vec(),
                             value.encode_to_vec(),
                         )?;
+                        account_slot_count += 1;
                         total_storage_slots += 1;
                     }
                 }
@@ -1946,7 +1987,20 @@ async fn migrate_state_to_rocksdb(
 
             // Commit writes storage trie nodes to DB via BackendTrieDB
             storage_trie.commit()?;
-            storage_trie.hash_no_commit()
+            let computed_root = storage_trie.hash_no_commit();
+
+            // Debug: compare computed storage root with Geth snapshot's expected root
+            if computed_root != slim_account.storage_root && !tui {
+                storage_root_mismatches += 1;
+                if storage_root_mismatches <= 5 {
+                    eprintln!(
+                        "[state] storage root mismatch #{storage_root_mismatches}: account={account_hash:?} slots={account_slot_count} oversized={oversized_count} computed={computed_root:?} expected={:?}",
+                        slim_account.storage_root
+                    );
+                }
+            }
+
+            computed_root
         } else {
             *EMPTY_TRIE_HASH
         };
@@ -1990,13 +2044,11 @@ async fn migrate_state_to_rocksdb(
 
             #[cfg(feature = "tui")]
             if let Some(tx) = tui_tx {
-                let _ = tx
-                    .send(crate::tui::event::ProgressEvent::AccountBatchCompleted {
-                        processed: processed_accounts,
-                        total: total_accounts,
-                        elapsed: started_at.elapsed(),
-                    })
-                    .await;
+                let _ = tx.try_send(crate::tui::event::ProgressEvent::AccountBatchCompleted {
+                    processed: processed_accounts,
+                    total: total_accounts,
+                    elapsed: started_at.elapsed(),
+                });
             }
         }
     }
@@ -2017,22 +2069,20 @@ async fn migrate_state_to_rocksdb(
 
     if !tui {
         eprintln!(
-            "[state] Completed: {processed_accounts} accounts, {total_storage_slots} storage slots, {total_code_entries} code entries"
+            "[state] Completed: {processed_accounts} accounts, {total_storage_slots} storage slots, {total_code_entries} code entries, {storage_root_mismatches} storage root mismatches"
         );
     }
 
     #[cfg(feature = "tui")]
     if let Some(tx) = tui_tx {
-        let _ = tx
-            .send(crate::tui::event::ProgressEvent::StatePhaseCompleted {
-                accounts: processed_accounts,
-                storage_slots: total_storage_slots,
-                code_entries: total_code_entries,
-                accounts_without_preimage: 0,
-                slots_without_preimage: 0,
-                elapsed: started_at.elapsed(),
-            })
-            .await;
+        let _ = tx.try_send(crate::tui::event::ProgressEvent::StatePhaseCompleted {
+            accounts: processed_accounts,
+            storage_slots: total_storage_slots,
+            code_entries: total_code_entries,
+            accounts_without_preimage: 0,
+            slots_without_preimage: 0,
+            elapsed: started_at.elapsed(),
+        });
     }
 
     Ok(())
@@ -2051,6 +2101,7 @@ async fn migrate_geth_to_lmdb(
     json: bool,
     blocks_only: bool,
     map_size_gb: u32,
+    skip_receipts: bool,
     continue_on_error: bool,
     verify_offline: bool,
     verify_start_block: Option<u64>,
@@ -2157,15 +2208,13 @@ async fn migrate_geth_to_lmdb(
 
     #[cfg(feature = "tui")]
     if let Some(tx) = &tui_tx {
-        let _ = tx
-            .send(crate::tui::event::ProgressEvent::Init {
-                source_path: geth_chaindata.display().to_string(),
-                target_path: lmdb_path.display().to_string(),
-                db_type: db_type_str.to_string(),
-                start_block: plan.start_block,
-                end_block: plan.end_block,
-            })
-            .await;
+        let _ = tx.try_send(crate::tui::event::ProgressEvent::Init {
+            source_path: geth_chaindata.display().to_string(),
+            target_path: lmdb_path.display().to_string(),
+            db_type: db_type_str.to_string(),
+            start_block: plan.start_block,
+            end_block: plan.end_block,
+        });
     }
 
     // --- Phase 1: Block migration ---
@@ -2273,52 +2322,54 @@ async fn migrate_geth_to_lmdb(
                 }
 
                 // Write receipts (P0): read from Geth, recompute bloom, encode for py-ethclient
-                match geth_reader.read_raw_receipts(block_number, canonical_hash) {
-                    Ok(Some(raw_receipts)) => match decode_stored_receipts(&raw_receipts) {
-                        Ok(stored_receipts) => {
-                            let mut receipt_inner_encodings = Vec::new();
-                            for (i, sr) in stored_receipts.iter().enumerate() {
-                                let tx_type = body
-                                    .transactions
-                                    .get(i)
-                                    .map(|tx| tx.tx_type())
-                                    .unwrap_or(TxType::Legacy);
-                                let bloom = bloom_from_logs(&sr.logs);
-                                let rwb = ReceiptWithBloom {
-                                    tx_type,
-                                    succeeded: sr.succeeded,
-                                    cumulative_gas_used: sr.cumulative_gas_used,
-                                    bloom,
-                                    logs: sr.logs.clone(),
-                                };
-                                receipt_inner_encodings.push(rwb.encode_inner());
+                if !skip_receipts {
+                    match geth_reader.read_raw_receipts(block_number, canonical_hash) {
+                        Ok(Some(raw_receipts)) => match decode_stored_receipts(&raw_receipts) {
+                            Ok(stored_receipts) => {
+                                let mut receipt_inner_encodings = Vec::new();
+                                for (i, sr) in stored_receipts.iter().enumerate() {
+                                    let tx_type = body
+                                        .transactions
+                                        .get(i)
+                                        .map(|tx| tx.tx_type())
+                                        .unwrap_or(TxType::Legacy);
+                                    let bloom = bloom_from_logs(&sr.logs);
+                                    let rwb = ReceiptWithBloom {
+                                        tx_type,
+                                        succeeded: sr.succeeded,
+                                        cumulative_gas_used: sr.cumulative_gas_used,
+                                        bloom,
+                                        logs: sr.logs.clone(),
+                                    };
+                                    receipt_inner_encodings.push(rwb.encode_inner());
+                                }
+                                let mut receipts_rlp = Vec::new();
+                                let items: Vec<&[u8]> = receipt_inner_encodings
+                                    .iter()
+                                    .map(|v| v.as_slice())
+                                    .collect();
+                                encode_rlp_receipt_list(&items, &mut receipts_rlp);
+                                lmdb.put_receipts(&mut wtxn, &block_hash_bytes, &receipts_rlp)
+                                    .map_err(|e| {
+                                        eyre::eyre!("LMDB receipts 쓰기 실패 #{block_number}: {e}")
+                                    })?;
                             }
-                            let mut receipts_rlp = Vec::new();
-                            let items: Vec<&[u8]> = receipt_inner_encodings
-                                .iter()
-                                .map(|v| v.as_slice())
-                                .collect();
-                            encode_rlp_receipt_list(&items, &mut receipts_rlp);
-                            lmdb.put_receipts(&mut wtxn, &block_hash_bytes, &receipts_rlp)
-                                .map_err(|e| {
-                                    eyre::eyre!("LMDB receipts 쓰기 실패 #{block_number}: {e}")
-                                })?;
-                        }
+                            Err(e) if continue_on_error => {
+                                eprintln!("경고: 블록 #{block_number} receipt 디코딩 실패: {e}");
+                            }
+                            Err(e) => {
+                                return Err(eyre::eyre!(
+                                    "블록 #{block_number} receipt 디코딩 실패: {e}"
+                                ));
+                            }
+                        },
+                        Ok(None) => {} // No receipts (e.g., genesis block)
                         Err(e) if continue_on_error => {
-                            eprintln!("경고: 블록 #{block_number} receipt 디코딩 실패: {e}");
+                            eprintln!("경고: 블록 #{block_number} receipt 읽기 실패: {e}");
                         }
                         Err(e) => {
-                            return Err(eyre::eyre!(
-                                "블록 #{block_number} receipt 디코딩 실패: {e}"
-                            ));
+                            return Err(eyre::eyre!("블록 #{block_number} receipt 읽기 실패: {e}"));
                         }
-                    },
-                    Ok(None) => {} // No receipts (e.g., genesis block)
-                    Err(e) if continue_on_error => {
-                        eprintln!("경고: 블록 #{block_number} receipt 읽기 실패: {e}");
-                    }
-                    Err(e) => {
-                        return Err(eyre::eyre!("블록 #{block_number} receipt 읽기 실패: {e}"));
                     }
                 }
 
@@ -2338,15 +2389,13 @@ async fn migrate_geth_to_lmdb(
             if let Some(tx) = &tui_tx {
                 let batch_number = (batch_start - plan.start_block) / BATCH_SIZE + 1;
                 let total_batches = plan.block_count().div_ceil(BATCH_SIZE);
-                let _ = tx
-                    .send(crate::tui::event::ProgressEvent::BatchCompleted {
-                        batch_number,
-                        total_batches,
-                        current_block: batch_end,
-                        blocks_in_batch,
-                        elapsed: started_at.elapsed(),
-                    })
-                    .await;
+                let _ = tx.try_send(crate::tui::event::ProgressEvent::BatchCompleted {
+                    batch_number,
+                    total_batches,
+                    current_block: batch_end,
+                    blocks_in_batch,
+                    elapsed: started_at.elapsed(),
+                });
             }
 
             batch_start = batch_end + 1;
@@ -2360,9 +2409,7 @@ async fn migrate_geth_to_lmdb(
 
             #[cfg(feature = "tui")]
             if let Some(tx) = &tui_tx {
-                let _ = tx
-                    .send(crate::tui::event::ProgressEvent::StatePhaseStarted { total_accounts })
-                    .await;
+                let _ = tx.try_send(crate::tui::event::ProgressEvent::StatePhaseStarted { total_accounts });
             }
 
             let mut processed_accounts: u64 = 0;
@@ -2490,13 +2537,11 @@ async fn migrate_geth_to_lmdb(
 
                     #[cfg(feature = "tui")]
                     if let Some(tx) = &tui_tx {
-                        let _ = tx
-                            .send(crate::tui::event::ProgressEvent::AccountBatchCompleted {
-                                processed: processed_accounts,
-                                total: total_accounts,
-                                elapsed: started_at.elapsed(),
-                            })
-                            .await;
+                        let _ = tx.try_send(crate::tui::event::ProgressEvent::AccountBatchCompleted {
+                            processed: processed_accounts,
+                            total: total_accounts,
+                            elapsed: started_at.elapsed(),
+                        });
                     }
 
                     wtxn = lmdb
@@ -2526,16 +2571,14 @@ async fn migrate_geth_to_lmdb(
 
             #[cfg(feature = "tui")]
             if let Some(tx) = &tui_tx {
-                let _ = tx
-                    .send(crate::tui::event::ProgressEvent::StatePhaseCompleted {
-                        accounts: processed_accounts,
-                        storage_slots: total_storage_slots,
-                        code_entries: total_code_entries,
-                        accounts_without_preimage,
-                        slots_without_preimage,
-                        elapsed: started_at.elapsed(),
-                    })
-                    .await;
+                let _ = tx.try_send(crate::tui::event::ProgressEvent::StatePhaseCompleted {
+                    accounts: processed_accounts,
+                    storage_slots: total_storage_slots,
+                    code_entries: total_code_entries,
+                    accounts_without_preimage,
+                    slots_without_preimage,
+                    elapsed: started_at.elapsed(),
+                });
             }
         }
 
@@ -2559,14 +2602,12 @@ async fn migrate_geth_to_lmdb(
             #[cfg(feature = "tui")]
             if let Some(tx) = &tui_tx {
                 let verify_total = verify_end.saturating_sub(verify_start) + 1;
-                let _ = tx
-                    .send(crate::tui::event::ProgressEvent::VerificationStarted {
-                        start_block: verify_start,
-                        end_block: verify_end,
-                        total_blocks: verify_total,
-                        state_trie_check: false,
-                    })
-                    .await;
+                let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationStarted {
+                    start_block: verify_start,
+                    end_block: verify_end,
+                    total_blocks: verify_total,
+                    state_trie_check: false,
+                });
             }
 
             let summary = verify_geth_to_lmdb_offline(
@@ -2581,13 +2622,11 @@ async fn migrate_geth_to_lmdb(
 
             #[cfg(feature = "tui")]
             if let Some(tx) = &tui_tx {
-                let _ = tx
-                    .send(crate::tui::event::ProgressEvent::VerificationCompleted {
-                        checked: summary.checked_blocks,
-                        mismatches: summary.mismatches,
-                        elapsed: started_at.elapsed(),
-                    })
-                    .await;
+                let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationCompleted {
+                    checked: summary.checked_blocks,
+                    mismatches: summary.mismatches,
+                    elapsed: started_at.elapsed(),
+                });
             }
 
             if summary.mismatches > 0 {
@@ -2611,28 +2650,22 @@ async fn migrate_geth_to_lmdb(
         if let Some(tx) = tui_tx.take() {
             match &final_result {
                 Ok(()) if total_imported > 0 => {
-                    let _ = tx
-                        .send(crate::tui::event::ProgressEvent::Completed {
-                            imported_blocks: total_imported,
-                            skipped_blocks,
-                            elapsed: started_at.elapsed(),
-                            retries_performed: 0,
-                        })
-                        .await;
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Completed {
+                        imported_blocks: total_imported,
+                        skipped_blocks,
+                        elapsed: started_at.elapsed(),
+                        retries_performed: 0,
+                    });
                 }
                 Ok(()) => {
-                    let _ = tx
-                        .send(crate::tui::event::ProgressEvent::Error {
-                            message: "마이그레이션에서 블록을 가져오지 못했습니다.".into(),
-                        })
-                        .await;
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Error {
+                        message: "마이그레이션에서 블록을 가져오지 못했습니다.".into(),
+                    });
                 }
                 Err(e) => {
-                    let _ = tx
-                        .send(crate::tui::event::ProgressEvent::Error {
-                            message: format!("{e:#}"),
-                        })
-                        .await;
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Error {
+                        message: format!("{e:#}"),
+                    });
                 }
             }
             drop(tx);
