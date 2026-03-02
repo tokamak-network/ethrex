@@ -317,6 +317,28 @@ impl GethBlockReader {
         Ok(H256::from_slice(&raw))
     }
 
+    /// Returns the state root hash of the Geth snapshot base layer.
+    ///
+    /// go-ethereum stores the state root (not block hash) under key `"SnapshotRoot"`.
+    /// This corresponds to block M, where M <= head block N.
+    /// The snapshot base layer's account/storage data reflects this state root.
+    ///
+    /// Returns `None` if the key is absent (snapshots not yet generated).
+    pub fn read_snapshot_root(&self) -> Result<Option<H256>, Box<dyn std::error::Error>> {
+        let raw = match self.reader.get(b"SnapshotRoot")? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        if raw.len() != 32 {
+            return Err(format!(
+                "'SnapshotRoot' value has unexpected length {} (expected 32)",
+                raw.len()
+            )
+            .into());
+        }
+        Ok(Some(H256::from_slice(&raw)))
+    }
+
     /// Returns the block number for the given hash using the reverse index `"H" + hash`.
     pub fn read_block_number(&self, hash: H256) -> Result<u64, Box<dyn std::error::Error>> {
         let key = header_number_key(hash);

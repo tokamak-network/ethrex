@@ -72,9 +72,6 @@ pub enum Subcommand {
         #[arg(long = "verify-end-block")]
         /// Optional end block override for offline verification
         verify_end_block: Option<u64>,
-        #[arg(long = "skip-state-trie-check", default_value_t = false)]
-        /// Skip ethrex has_state_root check during offline verification
-        skip_state_trie_check: bool,
         #[arg(long = "verify-deep", default_value_t = false)]
         /// Run deep verification: receipt existence check for blocks with transactions
         verify_deep: bool,
@@ -484,7 +481,6 @@ impl Subcommand {
                 verify_offline,
                 verify_start_block,
                 verify_end_block,
-                skip_state_trie_check,
                 verify_deep,
                 report_file,
                 blocks_only,
@@ -506,7 +502,6 @@ impl Subcommand {
                     *verify_offline,
                     *verify_start_block,
                     *verify_end_block,
-                    *skip_state_trie_check,
                     *verify_deep,
                     *ethrex_ready,
                     report_file.as_deref(),
@@ -723,16 +718,41 @@ async fn check_ethrex_ready(
     }
 
     // 6. State root valid
+    // Migration stores state at the snapshot base block M (not head block N).
+    // ethrex's regenerate_head_state() walks backward from head to find a block
+    // with valid state, then re-executes forward. We mirror that search here.
     if let Some(header) = &latest_header_inner {
-        match store.has_state_root(header.state_root) {
-            Ok(true) => checks.state_root_valid = "pass".into(),
-            Ok(false) => {
-                checks.state_root_valid =
-                    format!("FAIL: state root {:?} not found in trie", header.state_root);
-                all_pass = false;
+        let mut current = header.clone();
+        let mut found_at: Option<u64> = None;
+        let search_limit = 512u64;
+        for _ in 0..=search_limit {
+            match store.has_state_root(current.state_root) {
+                Ok(true) => {
+                    found_at = Some(current.number);
+                    break;
+                }
+                Ok(false) if current.number == 0 => break,
+                Ok(false) => match store.get_block_header(current.number - 1) {
+                    Ok(Some(parent)) => current = parent,
+                    _ => break,
+                },
+                Err(_) => break,
             }
-            Err(e) => {
-                checks.state_root_valid = format!("FAIL: {e}");
+        }
+        match found_at {
+            Some(n) if n == header.number => {
+                checks.state_root_valid = "pass".into();
+            }
+            Some(n) => {
+                checks.state_root_valid = format!(
+                    "pass (state at #{n}, head #{}, gap={} — ethrex re-executes on startup)",
+                    header.number,
+                    header.number - n
+                );
+            }
+            None => {
+                checks.state_root_valid =
+                    format!("FAIL: no valid state root within {search_limit} blocks of head");
                 all_pass = false;
             }
         }
@@ -780,7 +800,6 @@ async fn verify_geth_to_rocksdb_offline(
     store: &ethrex_storage::Store,
     start_block: u64,
     end_block: u64,
-    skip_state_trie_check: bool,
     verify_deep: bool,
     tui: bool,
     #[cfg(feature = "tui")] tui_tx: &Option<
@@ -800,7 +819,7 @@ async fn verify_geth_to_rocksdb_offline(
                 start_block,
                 end_block,
                 total_blocks,
-                state_trie_check: !skip_state_trie_check,
+                state_trie_check: false,
             })
             .await;
     }
@@ -865,18 +884,6 @@ async fn verify_geth_to_rocksdb_offline(
                             "state root mismatch geth={:?} ethrex={:?}",
                             geth_header.state_root, ethrex_header.state_root
                         ),
-                    });
-                }
-            }
-
-            if !skip_state_trie_check && !store.has_state_root(ethrex_header.state_root)? {
-                mismatches += 1;
-                block_mismatch = true;
-                #[cfg(feature = "tui")]
-                if let Some(tx) = tui_tx {
-                    let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationMismatch {
-                        block_number,
-                        reason: format!("missing state trie root {:?}", ethrex_header.state_root),
                     });
                 }
             }
@@ -1173,7 +1180,6 @@ async fn migrate_geth_to_rocksdb(
     verify_offline: bool,
     verify_start_block: Option<u64>,
     verify_end_block: Option<u64>,
-    skip_state_trie_check: bool,
     verify_deep: bool,
     ethrex_ready: bool,
     report_file: Option<&Path>,
@@ -1236,6 +1242,32 @@ async fn migrate_geth_to_rocksdb(
         retries_performed += a.saturating_sub(1);
         v
     })?;
+
+    // Phase 2b: Read snapshot base state root from Geth DB.
+    // go-ethereum's "SnapshotRoot" key holds the state root of the flat snapshot base
+    // layer (block M, M <= head N). Account/storage data we read corresponds to block M.
+    let snapshot_state_root: Option<ethrex_common::H256> = match geth_reader.read_snapshot_root() {
+        Ok(Some(root)) => {
+            if !tui {
+                eprintln!("[snapshot] base state_root={root:?} (head=#{last_source_block})");
+            }
+            Some(root)
+        }
+        Ok(None) => {
+            if !tui {
+                eprintln!(
+                    "[snapshot] WARNING: SnapshotRoot not found, will verify against head block"
+                );
+            }
+            None
+        }
+        Err(e) => {
+            if !tui {
+                eprintln!("[snapshot] WARNING: failed to read SnapshotRoot: {e}");
+            }
+            None
+        }
+    };
 
     // Phase 3: Open (or create) target ethrex RocksDB store
     let genesis = genesis_path
@@ -1649,6 +1681,7 @@ async fn migrate_geth_to_rocksdb(
                 &geth_reader,
                 &new_store,
                 last_source_block,
+                snapshot_state_root,
                 tui,
                 &started_at,
                 #[cfg(feature = "tui")]
@@ -1670,7 +1703,6 @@ async fn migrate_geth_to_rocksdb(
                 &new_store,
                 verify_start,
                 verify_end,
-                skip_state_trie_check,
                 verify_deep,
                 tui,
                 #[cfg(feature = "tui")]
@@ -1816,12 +1848,15 @@ async fn migrate_geth_to_rocksdb(
 /// builds per-account storage tries and a global state trie, then commits
 /// all trie nodes to ethrex's RocksDB trie tables.
 ///
-/// The computed state root is verified against the head block header.
+/// The computed state root is verified against `snapshot_state_root` (the Geth
+/// snapshot base layer's state root read from the `"SnapshotRoot"` key).
+/// Falls back to the head block's state_root if snapshot root is unavailable.
 #[allow(clippy::too_many_arguments)]
 async fn migrate_state_to_rocksdb(
     geth_reader: &crate::readers::geth_db::GethBlockReader,
     store: &ethrex_storage::Store,
     head_block_number: u64,
+    snapshot_state_root: Option<ethrex_common::H256>,
     tui: bool,
     started_at: &Instant,
     #[cfg(feature = "tui")] tui_tx: &Option<
@@ -1840,18 +1875,31 @@ async fn migrate_state_to_rocksdb(
         0x5d, 0x85, 0xa4, 0x70,
     ];
 
-    // Read head block header for state_root verification
-    let head_header = store
-        .get_block_header(head_block_number)?
-        .ok_or_else(|| eyre::eyre!("Head block #{head_block_number} header not found"))?;
-    let expected_state_root = head_header.state_root;
+    // Determine expected state root:
+    // - Use SnapshotRoot (snapshot base layer state_root) if available.
+    //   The snapshot account/storage data corresponds to this root, NOT the head block.
+    // - Fall back to head block's state_root (will likely mismatch if snapshots lag).
+    let expected_state_root = if let Some(root) = snapshot_state_root {
+        root
+    } else {
+        store
+            .get_block_header(head_block_number)?
+            .ok_or_else(|| eyre::eyre!("Head block #{head_block_number} header not found"))?
+            .state_root
+    };
 
     // Count accounts for progress tracking
     let total_accounts = geth_reader.count_account_snapshots().unwrap_or(0);
 
     if !tui {
+        let source = if snapshot_state_root.is_some() {
+            "SnapshotRoot"
+        } else {
+            "head block"
+        };
         eprintln!(
-            "[state] Starting state migration ({total_accounts} accounts, expected root={expected_state_root:?})"
+            "[state] Starting state migration ({total_accounts} accounts)\n\
+             [state] expected_state_root={expected_state_root:?} (source: {source})"
         );
     }
 
