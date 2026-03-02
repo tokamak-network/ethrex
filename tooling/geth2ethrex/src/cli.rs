@@ -578,6 +578,7 @@ struct OfflineVerificationSummary {
     end_block: u64,
     checked_blocks: u64,
     mismatches: u64,
+    body_checks_passed: u64,
 }
 
 fn resolve_verify_range(
@@ -624,6 +625,7 @@ async fn verify_geth_to_rocksdb_offline(
     let started = Instant::now();
     let mut mismatches = 0u64;
     let mut checked = 0u64;
+    let mut body_checks_passed = 0u64;
 
     #[cfg(feature = "tui")]
     if let Some(tx) = tui_tx {
@@ -712,6 +714,57 @@ async fn verify_geth_to_rocksdb_offline(
                     });
                 }
             }
+
+            // Body verification: compare transaction count between Geth and ethrex
+            let geth_body = geth_reader
+                .read_block_body(block_number, geth_hash)
+                .map_err(|e| {
+                    eyre::eyre!("verify #{block_number}: cannot read geth body: {e}")
+                })?;
+            let ethrex_body = store.get_block_body(block_number).await?;
+
+            match (&geth_body, &ethrex_body) {
+                (Some(gb), Some(eb)) => {
+                    if gb.transactions.len() != eb.transactions.len() {
+                        mismatches += 1;
+                        block_mismatch = true;
+                        #[cfg(feature = "tui")]
+                        if let Some(tx) = tui_tx {
+                            let _ = tx.try_send(
+                                crate::tui::event::ProgressEvent::VerificationMismatch {
+                                    block_number,
+                                    reason: format!(
+                                        "body tx count mismatch geth={} ethrex={}",
+                                        gb.transactions.len(),
+                                        eb.transactions.len()
+                                    ),
+                                },
+                            );
+                        }
+                    } else {
+                        body_checks_passed += 1;
+                    }
+                }
+                (Some(_), None) => {
+                    mismatches += 1;
+                    block_mismatch = true;
+                    #[cfg(feature = "tui")]
+                    if let Some(tx) = tui_tx {
+                        let _ = tx.try_send(
+                            crate::tui::event::ProgressEvent::VerificationMismatch {
+                                block_number,
+                                reason: "ethrex body missing".into(),
+                            },
+                        );
+                    }
+                }
+                (None, Some(_)) => {
+                    // Geth body not available (e.g. ancient not accessible), skip
+                }
+                (None, None) => {
+                    // Both missing, skip
+                }
+            }
         }
 
         checked += 1;
@@ -762,6 +815,7 @@ async fn verify_geth_to_rocksdb_offline(
         end_block,
         checked_blocks: checked,
         mismatches,
+        body_checks_passed,
     })
 }
 
@@ -902,6 +956,7 @@ fn verify_geth_to_lmdb_offline(
         end_block,
         checked_blocks: checked,
         mismatches,
+        body_checks_passed: 0, // LMDB verification does not check bodies yet
     })
 }
 
@@ -1509,8 +1564,9 @@ async fn migrate_geth_to_rocksdb(
         emit_report(&report, json, report_file)?;
         if let Some(summary) = verification_summary {
             println!(
-                "Offline verification passed: checked {} block(s) in #{}..=#{}.",
-                summary.checked_blocks, summary.start_block, summary.end_block
+                "Offline verification passed: checked {} block(s) in #{}..=#{} (body checks passed: {}).",
+                summary.checked_blocks, summary.start_block, summary.end_block,
+                summary.body_checks_passed
             );
         }
     }
@@ -2322,8 +2378,9 @@ async fn migrate_geth_to_lmdb(
         emit_report(&report, json, report_file)?;
         if let Some(summary) = verification_summary {
             println!(
-                "Offline verification passed: checked {} block(s) in #{}..=#{}.",
-                summary.checked_blocks, summary.start_block, summary.end_block
+                "Offline verification passed: checked {} block(s) in #{}..=#{} (body checks passed: {}).",
+                summary.checked_blocks, summary.start_block, summary.end_block,
+                summary.body_checks_passed
             );
         }
     }
