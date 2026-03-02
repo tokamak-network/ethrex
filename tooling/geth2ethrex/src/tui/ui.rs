@@ -12,13 +12,13 @@ pub fn draw(frame: &mut Frame, app: &MigrationApp) {
     let area = frame.area();
 
     let chunks = Layout::vertical([
-        Constraint::Length(3), // 제목
-        Constraint::Length(4), // 경로 정보
-        Constraint::Length(3), // 프로그레스 게이지
-        Constraint::Length(3), // 속도/ETA/경과
-        Constraint::Length(3), // 배치/재시도/스킵 통계
-        Constraint::Min(5),    // 로그
-        Constraint::Length(1), // 도움말
+        Constraint::Length(3), // Title
+        Constraint::Length(4), // Path info
+        Constraint::Length(3), // Progress gauge
+        Constraint::Length(3), // Speed / ETA / elapsed
+        Constraint::Length(3), // Batch/retry/skip stats
+        Constraint::Min(5),    // Log
+        Constraint::Length(1), // Help
     ])
     .split(area);
 
@@ -33,15 +33,15 @@ pub fn draw(frame: &mut Frame, app: &MigrationApp) {
 
 fn draw_title(frame: &mut Frame, app: &MigrationApp, area: Rect) {
     let (status_label, status_color) = match app.status {
-        MigrationStatus::Waiting => ("대기 중", Color::Yellow),
-        MigrationStatus::Running => ("실행 중", Color::Green),
-        MigrationStatus::Completed => ("완료", Color::Cyan),
-        MigrationStatus::Failed => ("오류", Color::Red),
+        MigrationStatus::Waiting => ("Waiting", Color::Yellow),
+        MigrationStatus::Running => ("Running", Color::Green),
+        MigrationStatus::Completed => ("Completed", Color::Cyan),
+        MigrationStatus::Failed => ("Failed", Color::Red),
     };
 
     let title = Line::from(vec![
         Span::styled(
-            "geth2ethrex 마이그레이션",
+            "geth2ethrex Migration",
             Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
@@ -60,38 +60,41 @@ fn draw_title(frame: &mut Frame, app: &MigrationApp, area: Rect) {
 
 fn draw_info(frame: &mut Frame, app: &MigrationApp, area: Rect) {
     let db_type = if app.db_type.is_empty() {
-        "감지 중...".to_string()
+        "Detecting...".to_string()
     } else {
         app.db_type.clone()
     };
 
+    // Aggressive truncation: fit to available width minus labels
+    let available_width = area.width.saturating_sub(20) as usize;
+
     let source = if app.source_path.is_empty() {
         "-".to_string()
     } else {
-        truncate_path(&app.source_path, 60)
+        truncate_path(&app.source_path, available_width.min(50))
     };
 
     let target = if app.target_path.is_empty() {
         "-".to_string()
     } else {
-        truncate_path(&app.target_path, 60)
+        truncate_path(&app.target_path, available_width.min(50))
     };
 
     let lines = vec![
         Line::from(vec![
-            Span::styled("소스: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("Source: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(&source),
             Span::raw("  "),
             Span::styled(format!("[{db_type}]"), Style::default().fg(Color::Yellow)),
         ]),
         Line::from(vec![
-            Span::styled("대상: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("Target: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(&target),
         ]),
         Line::from(vec![
-            Span::styled("범위: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("Range: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(if app.end_block == 0 {
-                "계획 중...".to_string()
+                "Planning...".to_string()
             } else {
                 format!(
                     "#{} ~ #{}",
@@ -102,7 +105,7 @@ fn draw_info(frame: &mut Frame, app: &MigrationApp, area: Rect) {
         ]),
     ];
 
-    let block = Block::default().borders(Borders::ALL).title("경로 정보");
+    let block = Block::default().borders(Borders::ALL).title("Paths");
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
 }
@@ -112,10 +115,10 @@ fn draw_gauge(frame: &mut Frame, app: &MigrationApp, area: Rect) {
     let pct = (ratio * 100.0) as u16;
 
     let label = if app.end_block == 0 {
-        "대기 중...".to_string()
+        "Waiting...".to_string()
     } else {
         format!(
-            "블록 #{} / #{} ({pct}%)",
+            "Block #{} / #{} ({pct}%)",
             fmt_num(app.current_block),
             fmt_num(app.end_block)
         )
@@ -128,7 +131,7 @@ fn draw_gauge(frame: &mut Frame, app: &MigrationApp, area: Rect) {
     };
 
     let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title("진행률"))
+        .block(Block::default().borders(Borders::ALL).title("Progress"))
         .gauge_style(Style::default().fg(gauge_color))
         .ratio(ratio)
         .label(label);
@@ -138,49 +141,49 @@ fn draw_gauge(frame: &mut Frame, app: &MigrationApp, area: Rect) {
 
 fn draw_speed(frame: &mut Frame, app: &MigrationApp, area: Rect) {
     let speed_str = if app.blocks_per_sec > 0.0 {
-        format!("{:.0} 블록/초", app.blocks_per_sec)
+        format!("{:.0} blocks/s", app.blocks_per_sec)
     } else {
         "-".to_string()
     };
 
     let eta_str = match app.eta {
         Some(d) if d == std::time::Duration::ZERO && app.status == MigrationStatus::Completed => {
-            "완료".to_string()
+            "Done".to_string()
         }
-        Some(d) => format!("약 {}", format_duration(d)),
+        Some(d) => format!("~{}", format_duration(d)),
         None => "-".to_string(),
     };
 
     let elapsed_str = format_duration(app.elapsed);
 
     let line = Line::from(vec![
-        Span::styled("속도: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("Speed: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(&speed_str),
         Span::raw("    "),
         Span::styled("ETA: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(&eta_str),
         Span::raw("    "),
-        Span::styled("경과: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("Elapsed: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(&elapsed_str),
     ]);
 
-    let block = Block::default().borders(Borders::ALL).title("속도");
+    let block = Block::default().borders(Borders::ALL).title("Speed");
     let paragraph = Paragraph::new(line).block(block);
     frame.render_widget(paragraph, area);
 }
 
 fn draw_stats(frame: &mut Frame, app: &MigrationApp, area: Rect) {
     let line = Line::from(vec![
-        Span::styled("배치: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("Batch: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(format!("{}/{}", app.batch_number, app.total_batches)),
         Span::raw("    "),
         Span::styled(
-            "가져온 블록: ",
+            "Imported: ",
             Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::raw(fmt_num(app.imported_blocks)),
         Span::raw("    "),
-        Span::styled("재시도: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("Retries: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(
             app.retries_performed.to_string(),
             Style::default().fg(if app.retries_performed > 0 {
@@ -190,7 +193,7 @@ fn draw_stats(frame: &mut Frame, app: &MigrationApp, area: Rect) {
             }),
         ),
         Span::raw("    "),
-        Span::styled("스킵: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("Skipped: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(
             app.skipped_blocks.to_string(),
             Style::default().fg(if app.skipped_blocks > 0 {
@@ -201,32 +204,58 @@ fn draw_stats(frame: &mut Frame, app: &MigrationApp, area: Rect) {
         ),
     ]);
 
-    let block = Block::default().borders(Borders::ALL).title("통계");
+    let block = Block::default().borders(Borders::ALL).title("Stats");
     let paragraph = Paragraph::new(line).block(block);
     frame.render_widget(paragraph, area);
 }
 
 fn draw_log(frame: &mut Frame, app: &MigrationApp, area: Rect) {
-    let items: Vec<ListItem> = app
-        .log_lines
+    let width = area.width.saturating_sub(3) as usize; // Account for borders
+    let max_lines = area.height.saturating_sub(2) as usize;
+
+    // Filter logs: if multiple "Account batch" logs exist, keep only the latest
+    let mut filtered_logs: Vec<String> = Vec::new();
+    let mut has_account_batch = false;
+
+    for line in app.log_lines.iter().rev() {
+        if line.contains("[state] Account batch:") {
+            // Skip duplicate account batch logs, keep only first (latest) one
+            if has_account_batch {
+                continue;
+            }
+            has_account_batch = true;
+        }
+        filtered_logs.push(line.clone());
+        if filtered_logs.len() >= max_lines {
+            break;
+        }
+    }
+
+    // Truncate long lines to fit display width
+    let items: Vec<ListItem> = filtered_logs
         .iter()
-        .rev()
-        .take(area.height.saturating_sub(2) as usize)
-        .map(|line| ListItem::new(Line::from(line.as_str())))
+        .map(|line| {
+            let truncated = if line.len() > width {
+                format!("{}…", &line[..width.saturating_sub(1)])
+            } else {
+                line.clone()
+            };
+            ListItem::new(Line::from(truncated))
+        })
         .collect();
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("로그 (최신순)");
+        .title("Log (newest first)");
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
 }
 
 fn draw_help(frame: &mut Frame, app: &MigrationApp, area: Rect) {
     let text = if app.is_finished() {
-        "  q: 종료"
+        "  q: quit"
     } else {
-        "  Ctrl+C: 중단 (터미널 자동 복원)"
+        "  Ctrl+C: stop (terminal auto-restores)"
     };
 
     let paragraph = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));

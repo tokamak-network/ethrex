@@ -93,7 +93,7 @@ impl MigrationApp {
                 self.current_block = start_block.saturating_sub(1);
                 self.status = MigrationStatus::Running;
                 self.push_log(format!(
-                    "마이그레이션 시작: #{start_block}..=#{end_block} ({total} 블록)"
+                    "Migration started: #{start_block}..=#{end_block} ({total} blocks)"
                 ));
             }
 
@@ -135,7 +135,7 @@ impl MigrationApp {
                 };
 
                 self.push_log(format!(
-                    "배치 #{batch_number}/{total_batches} 완료 ({blocks_in_batch} 블록, 현재 #{current_block})"
+                    "Batch #{batch_number}/{total_batches} completed ({blocks_in_batch} blocks, current #{current_block})"
                 ));
             }
 
@@ -144,7 +144,7 @@ impl MigrationApp {
                 reason,
             } => {
                 self.skipped_blocks += 1;
-                self.push_log(format!("경고: 블록 #{block_number} 스킵 — {reason}"));
+                self.push_log(format!("Warning: skipped block #{block_number} - {reason}"));
             }
 
             ProgressEvent::Completed {
@@ -160,7 +160,7 @@ impl MigrationApp {
                 self.retries_performed = retries_performed;
                 self.eta = Some(Duration::ZERO);
                 let msg = format!(
-                    "완료! {imported_blocks} 블록 마이그레이션 (스킵: {skipped_blocks}, 소요: {})",
+                    "Completed! Migrated {imported_blocks} blocks (skipped: {skipped_blocks}, elapsed: {})",
                     format_duration(elapsed)
                 );
                 self.push_log(msg.clone());
@@ -169,15 +169,13 @@ impl MigrationApp {
 
             ProgressEvent::Error { message } => {
                 self.status = MigrationStatus::Failed;
-                let msg = format!("오류: {message}");
+                let msg = format!("Error: {message}");
                 self.push_log(msg.clone());
                 self.final_message = Some(msg);
             }
 
             ProgressEvent::StatePhaseStarted { total_accounts } => {
-                self.push_log(format!(
-                    "[state] 상태 마이그레이션 시작 ({total_accounts} 계정)"
-                ));
+                self.push_log(format!("[state] State migration started ({total_accounts} accounts)"));
             }
 
             ProgressEvent::AccountBatchCompleted {
@@ -191,9 +189,7 @@ impl MigrationApp {
                 } else {
                     0.0
                 };
-                self.push_log(format!(
-                    "[state] 계정 배치: {processed}/{total} ({pct:.1}%)"
-                ));
+                self.push_log(format!("[state] Account batch: {processed}/{total} ({pct:.1}%)"));
             }
 
             ProgressEvent::StatePhaseCompleted {
@@ -206,7 +202,7 @@ impl MigrationApp {
             } => {
                 self.elapsed = elapsed;
                 self.push_log(format!(
-                    "[state] 완료: {accounts} 계정, {storage_slots} 슬롯, {code_entries} 코드"
+                    "[state] Completed: {accounts} accounts, {storage_slots} slots, {code_entries} code entries"
                 ));
             }
 
@@ -216,9 +212,7 @@ impl MigrationApp {
                 total_blocks,
                 state_trie_check: _,
             } => {
-                self.push_log(format!(
-                    "[verify] 검증 시작: {total_blocks} 블록"
-                ));
+                self.push_log(format!("[verify] Verification started: {total_blocks} blocks"));
             }
 
             ProgressEvent::VerificationProgress {
@@ -235,7 +229,7 @@ impl MigrationApp {
                 };
                 if checked % 100 == 0 {
                     self.push_log(format!(
-                        "[verify] {checked}/{total} ({pct:.1}%), 불일치: {mismatches}"
+                        "[verify] {checked}/{total} ({pct:.1}%), mismatches: {mismatches}"
                     ));
                 }
             }
@@ -244,9 +238,7 @@ impl MigrationApp {
                 block_number,
                 reason,
             } => {
-                self.push_log(format!(
-                    "[verify] 불일치 #{block_number}: {reason}"
-                ));
+                self.push_log(format!("[verify] Mismatch #{block_number}: {reason}"));
             }
 
             ProgressEvent::VerificationCompleted {
@@ -256,11 +248,9 @@ impl MigrationApp {
             } => {
                 self.elapsed = elapsed;
                 let msg = if mismatches == 0 {
-                    format!("[verify] 완료: {checked} 블록 검증 (일치함)")
+                    format!("[verify] Completed: verified {checked} blocks (all matched)")
                 } else {
-                    format!(
-                        "[verify] 완료: {checked} 블록 중 {mismatches}개 불일치"
-                    )
+                    format!("[verify] Completed: {mismatches} mismatches across {checked} blocks")
                 };
                 self.push_log(msg.clone());
                 if self.final_message.is_none() {
@@ -299,11 +289,11 @@ impl MigrationApp {
 pub fn format_duration(d: Duration) -> String {
     let secs = d.as_secs();
     if secs < 60 {
-        format!("{secs}초")
+        format!("{secs}s")
     } else if secs < 3600 {
-        format!("{}분 {}초", secs / 60, secs % 60)
+        format!("{}m {}s", secs / 60, secs % 60)
     } else {
-        format!("{}시간 {}분", secs / 3600, (secs % 3600) / 60)
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     }
 }
 
@@ -486,10 +476,10 @@ mod tests {
 
     #[test]
     fn format_duration_displays_correctly() {
-        assert_eq!(format_duration(Duration::from_secs(0)), "0초");
-        assert_eq!(format_duration(Duration::from_secs(45)), "45초");
-        assert_eq!(format_duration(Duration::from_secs(90)), "1분 30초");
-        assert_eq!(format_duration(Duration::from_secs(3661)), "1시간 1분");
+        assert_eq!(format_duration(Duration::from_secs(0)), "0s");
+        assert_eq!(format_duration(Duration::from_secs(45)), "45s");
+        assert_eq!(format_duration(Duration::from_secs(90)), "1m 30s");
+        assert_eq!(format_duration(Duration::from_secs(3661)), "1h 1m");
     }
 
     #[test]
