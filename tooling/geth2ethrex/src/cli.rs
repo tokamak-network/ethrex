@@ -621,10 +621,38 @@ async fn check_ethrex_ready(
         state_root_valid: String::new(),
     };
 
-    // 1. metadata.json existence check
+    // 1. metadata.json existence + schema_version check
     let metadata_path = target_path.join("metadata.json");
     if metadata_path.exists() {
-        checks.metadata_json = "pass".into();
+        match std::fs::read_to_string(&metadata_path) {
+            Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
+                Ok(json) => match json.get("schema_version").and_then(|v| v.as_u64()) {
+                    Some(v) if v == ethrex_storage::STORE_SCHEMA_VERSION => {
+                        checks.metadata_json = format!("pass (schema_version={v})");
+                    }
+                    Some(v) => {
+                        checks.metadata_json = format!(
+                            "FAIL: schema_version mismatch (found={v}, expected={})",
+                            ethrex_storage::STORE_SCHEMA_VERSION,
+                        );
+                        all_pass = false;
+                    }
+                    None => {
+                        checks.metadata_json =
+                            "FAIL: schema_version field missing or invalid".into();
+                        all_pass = false;
+                    }
+                },
+                Err(e) => {
+                    checks.metadata_json = format!("FAIL: invalid JSON: {e}");
+                    all_pass = false;
+                }
+            },
+            Err(e) => {
+                checks.metadata_json = format!("FAIL: cannot read metadata.json: {e}");
+                all_pass = false;
+            }
+        }
     } else {
         checks.metadata_json = "FAIL: metadata.json not found".into();
         all_pass = false;

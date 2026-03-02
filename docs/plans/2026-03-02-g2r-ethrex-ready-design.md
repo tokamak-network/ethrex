@@ -46,21 +46,29 @@
 #### 2.2 New: Default Verification (`--verify-offline`)
 | Check | Method | Purpose |
 |-------|--------|---------|
-| Body hash | Geth body → RLP → hash vs ethrex body hash | Tx data corruption |
-| Transactions root | Build trie from ethrex body.txs → root vs header.txs_root | Tx missing/order error |
+| Body tx count | Geth body tx count vs ethrex body tx count | Tx 누락/중복 감지 |
+
+> **Future work**: Body RLP hash 비교, transactions root trie 재구성 검증은 미구현. 현재는 트랜잭션 수 비교만 수행.
 
 #### 2.3 New: Deep Verification (`--verify-deep`)
 All default checks plus:
 | Check | Method | Purpose |
 |-------|--------|---------|
-| Receipts root | Build trie from receipts → root vs header.receipts_root | Receipt corruption |
-| Contract code sampling | Random N accounts → code_hash → keccak256 recompute | Bytecode corruption |
-| Tx location spot check | Random N tx hashes → TRANSACTION_LOCATIONS → block match | Index accuracy |
+| Receipt existence | 트랜잭션이 있는 블록에서 모든 receipt 존재 여부 확인 (`get_receipt()`) | Receipt 누락 감지 |
+
+> **Future work**: Receipts root trie 재구성 검증, contract code sampling (code_hash → keccak256 재계산), tx location spot check는 미구현.
 
 #### 2.4 Reporting
-Extended `OfflineVerificationSummary` with per-check pass/fail counts:
+`OfflineVerificationSummary` 구조체: `start_block`, `end_block`, `checked_blocks`, `mismatches`, `body_checks_passed`.
+
+진행 중 출력:
 ```
-[verify] 1000/5000 (20%) body_ok=1000 receipt_ok=1000 code_sampled=50/50 mismatches=0
+[verify] 1000/5000 ( 20.0%) mismatches=0 elapsed=  12.3s rate= 81.30/s
+```
+
+완료 후 요약:
+```
+Offline verification passed: checked 5000 block(s) in #0..=#4999 (body checks passed: 5000).
 ```
 
 ### Section 3: ethrex Startup Compatibility Check
@@ -91,7 +99,7 @@ Post-migration smoke test:
 ```
 
 #### 3.3 Opt-out
-`--no-ethrex-ready` to skip this check.
+`--ethrex-ready false` to skip this check.
 
 ## Non-Goals
 - LevelDB reader implementation (separate task)
