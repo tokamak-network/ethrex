@@ -720,6 +720,9 @@ fn decode_single_stored_receipt(
         Decoder::new(data).map_err(|e| format!("failed to decode stored receipt: {e}"))?;
 
     // status: RLP-encoded bool — success = 0x01, failure = 0x80 (empty bytes)
+    // NOTE: Pre-Byzantium receipts store a 32-byte state root hash in this field.
+    // This implementation only supports post-Byzantium status encoding.
+    // For Mainnet blocks < 4,370,000 this will return an error.
     let (succeeded, decoder): (bool, _) = decoder
         .decode_field("status")
         .map_err(|e| format!("failed to decode receipt status: {e}"))?;
