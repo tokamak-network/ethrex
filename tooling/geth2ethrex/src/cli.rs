@@ -1329,8 +1329,9 @@ async fn migrate_geth_to_rocksdb(
         // User explicitly specified --from-block, use it
         Some(explicit_from_block)
     } else if last_known_block == 0 {
-        // Initial migration: start from merge block to skip PoW era blocks
-        merge_netsplit_block
+        // Initial migration: start from block before merge to ensure parent header exists
+        // (merge block's parent must be present for chain continuity validation)
+        merge_netsplit_block.map(|mb| mb.saturating_sub(1))
     } else {
         // Resume migration: continue from where we left off
         None
