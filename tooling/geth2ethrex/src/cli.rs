@@ -84,6 +84,9 @@ pub enum Subcommand {
         #[arg(long = "from-block")]
         /// Start block migration from this block number (auto-detects merge block if unset)
         from_block: Option<u64>,
+        #[arg(long = "ethrex-ready", default_value_t = true, action = clap::ArgAction::Set)]
+        /// Run ethrex startup compatibility check after migration
+        ethrex_ready: bool,
     },
     #[command(
         name = "geth2lmdb",
@@ -486,6 +489,7 @@ impl Subcommand {
                 report_file,
                 blocks_only,
                 from_block,
+                ethrex_ready,
             } => {
                 // TUI is on by default when compiled with the `tui` feature,
                 // unless JSON output is requested.
@@ -504,6 +508,7 @@ impl Subcommand {
                     *verify_end_block,
                     *skip_state_trie_check,
                     *verify_deep,
+                    *ethrex_ready,
                     report_file.as_deref(),
                     use_tui,
                     *blocks_only,
@@ -584,6 +589,133 @@ struct OfflineVerificationSummary {
     checked_blocks: u64,
     mismatches: u64,
     body_checks_passed: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct EthrexReadyReport {
+    ethrex_ready: bool,
+    checks: EthrexReadyChecks,
+}
+
+#[derive(Debug, Serialize)]
+struct EthrexReadyChecks {
+    metadata_json: String,
+    latest_block_number: String,
+    latest_header: String,
+    chain_config: String,
+    genesis_block: String,
+    state_root_valid: String,
+}
+
+async fn check_ethrex_ready(
+    store: &ethrex_storage::Store,
+    target_path: &std::path::Path,
+) -> EthrexReadyReport {
+    let mut all_pass = true;
+    let mut checks = EthrexReadyChecks {
+        metadata_json: String::new(),
+        latest_block_number: String::new(),
+        latest_header: String::new(),
+        chain_config: String::new(),
+        genesis_block: String::new(),
+        state_root_valid: String::new(),
+    };
+
+    // 1. metadata.json existence check
+    let metadata_path = target_path.join("metadata.json");
+    if metadata_path.exists() {
+        checks.metadata_json = "pass".into();
+    } else {
+        checks.metadata_json = "FAIL: metadata.json not found".into();
+        all_pass = false;
+    }
+
+    // 2. Latest block number — use get_latest_block_number
+    let latest_block_result = store.get_latest_block_number().await;
+    let latest_block_number = match &latest_block_result {
+        Ok(num) => {
+            checks.latest_block_number = format!("pass (block {num})");
+            Some(*num)
+        }
+        Err(e) => {
+            checks.latest_block_number = format!("FAIL: {e}");
+            all_pass = false;
+            None
+        }
+    };
+
+    // 3. Latest header loadable
+    let latest_header = latest_block_number.and_then(|num| store.get_block_header(num).ok());
+    match &latest_header {
+        Some(Some(_)) => checks.latest_header = "pass".into(),
+        Some(None) => {
+            checks.latest_header = "FAIL: latest header not found".into();
+            all_pass = false;
+        }
+        None => {
+            checks.latest_header = "FAIL: could not load latest header".into();
+            all_pass = false;
+        }
+    }
+    // Flatten for later use
+    let latest_header_inner = latest_header.and_then(|h| h);
+
+    // 4. ChainConfig
+    let config = store.get_chain_config();
+    checks.chain_config = format!("pass (chain_id={})", config.chain_id);
+
+    // 5. Genesis block
+    match store.get_canonical_block_hash(0).await {
+        Ok(Some(genesis_hash)) => {
+            let header_ok = store
+                .get_block_header(0)
+                .map(|h| h.is_some())
+                .unwrap_or(false);
+            let body_ok = store
+                .get_block_body(0)
+                .await
+                .map(|b| b.is_some())
+                .unwrap_or(false);
+            if header_ok && body_ok {
+                checks.genesis_block = format!("pass ({genesis_hash:?})");
+            } else {
+                checks.genesis_block =
+                    "FAIL: genesis hash exists but header/body missing".into();
+                all_pass = false;
+            }
+        }
+        Ok(None) => {
+            checks.genesis_block = "FAIL: no canonical hash for block 0".into();
+            all_pass = false;
+        }
+        Err(e) => {
+            checks.genesis_block = format!("FAIL: {e}");
+            all_pass = false;
+        }
+    }
+
+    // 6. State root valid
+    if let Some(header) = &latest_header_inner {
+        match store.has_state_root(header.state_root) {
+            Ok(true) => checks.state_root_valid = "pass".into(),
+            Ok(false) => {
+                checks.state_root_valid =
+                    format!("FAIL: state root {:?} not found in trie", header.state_root);
+                all_pass = false;
+            }
+            Err(e) => {
+                checks.state_root_valid = format!("FAIL: {e}");
+                all_pass = false;
+            }
+        }
+    } else {
+        checks.state_root_valid = "SKIP: no latest header".into();
+    }
+
+    EthrexReadyReport {
+        ethrex_ready: all_pass,
+        checks,
+    }
 }
 
 fn resolve_verify_range(
@@ -1015,6 +1147,7 @@ async fn migrate_geth_to_rocksdb(
     verify_end_block: Option<u64>,
     skip_state_trie_check: bool,
     verify_deep: bool,
+    ethrex_ready: bool,
     report_file: Option<&Path>,
     tui: bool,
     blocks_only: bool,
@@ -1609,6 +1742,40 @@ async fn migrate_geth_to_rocksdb(
                 summary.checked_blocks, summary.start_block, summary.end_block,
                 summary.body_checks_passed
             );
+        }
+    }
+
+    // ethrex-ready startup compatibility check
+    if ethrex_ready {
+        let ready_report = check_ethrex_ready(&new_store, target_storage).await;
+        if json {
+            let json_str = serde_json::to_string_pretty(&ready_report).unwrap_or_default();
+            eprintln!("{json_str}");
+        } else {
+            eprintln!(
+                "[ethrex-ready] {}",
+                if ready_report.ethrex_ready {
+                    "PASS"
+                } else {
+                    "FAIL"
+                }
+            );
+            for (name, result) in [
+                ("metadata_json", &ready_report.checks.metadata_json),
+                (
+                    "latest_block_number",
+                    &ready_report.checks.latest_block_number,
+                ),
+                ("latest_header", &ready_report.checks.latest_header),
+                ("chain_config", &ready_report.checks.chain_config),
+                ("genesis_block", &ready_report.checks.genesis_block),
+                ("state_root_valid", &ready_report.checks.state_root_valid),
+            ] {
+                eprintln!("  {name}: {result}");
+            }
+        }
+        if !ready_report.ethrex_ready {
+            return Err(eyre::eyre!("ethrex-ready check failed"));
         }
     }
 
