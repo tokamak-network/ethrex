@@ -292,8 +292,7 @@ fn build_sp1_guest_program(name: &str) {
     );
 
     let elf_path = format!("{out_dir}/{elf_name}");
-    let elf = std::fs::read(&elf_path)
-        .unwrap_or_else(|_| panic!("could not read {name} elf file"));
+    let elf = std::fs::read(&elf_path).unwrap_or_else(|_| panic!("could not read {name} elf file"));
     let prover = ProverClient::from_env();
     let (_, vk) = prover.setup(&elf);
 

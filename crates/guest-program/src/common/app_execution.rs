@@ -333,7 +333,9 @@ pub fn execute_app_circuit<C: AppCircuit>(
 /// can mint ETH, so we simply credit the recipient's balance.
 fn handle_privileged_tx(state: &mut AppState, tx: &Transaction) -> Result<(), AppCircuitError> {
     let value = tx.value();
-    if !value.is_zero() && let TxKind::Call(to) = tx.to() {
+    if !value.is_zero()
+        && let TxKind::Call(to) = tx.to()
+    {
         // Credit the recipient. For deposits via bridge, the balance
         // is minted (not transferred from sender).
         state.credit_balance(to, value)?;
