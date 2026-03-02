@@ -839,6 +839,9 @@ async fn verify_geth_to_rocksdb_offline(
         });
     }
 
+    let chain_config = store.get_chain_config();
+    let merge_netsplit_block = chain_config.merge_netsplit_block;
+
     for block_number in start_block..=end_block {
         let mut block_mismatch = false;
 
@@ -854,17 +857,26 @@ async fn verify_geth_to_rocksdb_offline(
             .await?
             .ok_or_else(|| eyre::eyre!("verify #{block_number}: missing ethrex canonical hash"))?;
 
+        // Skip canonical hash check for PoW blocks (before merge)
+        // because we normalized difficulty=0, which changes the block hash
+        let is_pow_block = merge_netsplit_block
+            .map(|merge_block| block_number < merge_block)
+            .unwrap_or(false);
+
         if geth_hash != ethrex_hash {
-            mismatches += 1;
-            block_mismatch = true;
-            #[cfg(feature = "tui")]
-            if let Some(tx) = tui_tx {
-                let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationMismatch {
-                    block_number,
-                    reason: format!(
-                        "canonical hash mismatch geth={geth_hash:?} ethrex={ethrex_hash:?}"
-                    ),
-                });
+            // Only report mismatch if not a PoW block (expected difference)
+            if !is_pow_block {
+                mismatches += 1;
+                block_mismatch = true;
+                #[cfg(feature = "tui")]
+                if let Some(tx) = tui_tx {
+                    let _ = tx.try_send(crate::tui::event::ProgressEvent::VerificationMismatch {
+                        block_number,
+                        reason: format!(
+                            "canonical hash mismatch geth={geth_hash:?} ethrex={ethrex_hash:?}"
+                        ),
+                    });
+                }
             }
         } else {
             let geth_header = geth_reader
