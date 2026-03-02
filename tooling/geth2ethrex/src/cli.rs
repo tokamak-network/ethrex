@@ -1314,8 +1314,8 @@ async fn migrate_geth_to_rocksdb(
                             batch_canonical.clone(),
                             last_num,
                             last_hash,
-                            None,
-                            None,
+                            Some(last_num),
+                            Some(last_num),
                         )
                         .await
                         .wrap_err("Cannot apply forkchoice update for batch")
