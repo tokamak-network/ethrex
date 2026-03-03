@@ -19,7 +19,7 @@ const VERIFICATION_PROGRESS_INTERVAL: u64 = 10;
 #[allow(clippy::upper_case_acronyms)]
 #[derive(ClapParser)]
 #[command(
-    name = "migrations",
+    name = "geth-db-migrate",
     author = "Lambdaclass",
     about = "ethrex migration tools"
 )]
@@ -31,11 +31,11 @@ pub struct CLI {
 #[derive(ClapSubcommand)]
 pub enum Subcommand {
     #[command(
-        name = "geth2rocksdb",
+        name = "to-rocksdb",
         visible_alias = "g2r",
         about = "Migrate Geth chaindata (LevelDB/Pebble) to ethrex RocksDB"
     )]
-    Geth2Rocksdb {
+    ToRocksdb {
         #[arg(long = "source")]
         /// Path to Geth chaindata directory (LevelDB or Pebble)
         geth_chaindata: PathBuf,
@@ -89,11 +89,11 @@ pub enum Subcommand {
         ethrex_ready: bool,
     },
     #[command(
-        name = "geth2lmdb",
+        name = "to-lmdb",
         visible_alias = "g2l",
         about = "Migrate Geth chaindata (Pebble) to py-ethclient LMDB format"
     )]
-    Geth2Lmdb {
+    ToLmdb {
         #[arg(long = "source")]
         /// Path to Geth chaindata directory (Pebble)
         geth_chaindata: PathBuf,
@@ -457,28 +457,28 @@ fn emit_report(report: &MigrationReport, json: bool, report_file: Option<&Path>)
 impl Subcommand {
     pub fn json_output(&self) -> bool {
         match self {
-            Self::Geth2Rocksdb { json, .. } => *json,
-            Self::Geth2Lmdb { json, .. } => *json,
+            Self::ToRocksdb { json, .. } => *json,
+            Self::ToLmdb { json, .. } => *json,
         }
     }
 
     pub fn retry_attempts(&self) -> u32 {
         match self {
-            Self::Geth2Rocksdb { retry_attempts, .. } => *retry_attempts,
-            Self::Geth2Lmdb { .. } => MAX_RETRY_ATTEMPTS,
+            Self::ToRocksdb { retry_attempts, .. } => *retry_attempts,
+            Self::ToLmdb { .. } => MAX_RETRY_ATTEMPTS,
         }
     }
 
     pub fn report_file(&self) -> Option<&Path> {
         match self {
-            Self::Geth2Rocksdb { report_file, .. } => report_file.as_deref(),
-            Self::Geth2Lmdb { report_file, .. } => report_file.as_deref(),
+            Self::ToRocksdb { report_file, .. } => report_file.as_deref(),
+            Self::ToLmdb { report_file, .. } => report_file.as_deref(),
         }
     }
 
     pub async fn run(&self) -> Result<()> {
         match self {
-            Self::Geth2Rocksdb {
+            Self::ToRocksdb {
                 geth_chaindata,
                 target_storage,
                 genesis_path,
@@ -523,7 +523,7 @@ impl Subcommand {
                 )
                 .await
             }
-            Self::Geth2Lmdb {
+            Self::ToLmdb {
                 geth_chaindata,
                 lmdb_path,
                 dry_run,

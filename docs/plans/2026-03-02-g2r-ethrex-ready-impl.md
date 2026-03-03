@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Make `geth2ethrex g2r` migration output directly loadable by `ethrex --datadir`, enabling P2P sync resume and RPC queries on Sepolia.
+**Goal:** Make `geth-db-migrate g2r` migration output directly loadable by `ethrex --datadir`, enabling P2P sync resume and RPC queries on Sepolia.
 
-**Architecture:** Three layers of changes — (1) receipt migration to fill the critical data gap, (2) finalized/safe block metadata, (3) enhanced verification and ethrex-ready smoke test. All changes are in `tooling/geth2ethrex/` except reading ethrex Store types.
+**Architecture:** Three layers of changes — (1) receipt migration to fill the critical data gap, (2) finalized/safe block metadata, (3) enhanced verification and ethrex-ready smoke test. All changes are in `tooling/geth-db-migrate/` except reading ethrex Store types.
 
 **Tech Stack:** Rust, ethrex-rlp, ethrex-storage Store API, ethrex-common types (Receipt, TxType, Log)
 
@@ -63,8 +63,8 @@ pub async fn forkchoice_update(&self, ..., safe: Option<BlockNumber>, finalized:
 ## Task 1: Implement Geth Receipt Decoding
 
 **Files:**
-- Modify: `tooling/geth2ethrex/src/readers/geth_db.rs:625-629` (decode_stored_receipts stub)
-- Test: `tooling/geth2ethrex/src/readers/geth_db.rs` (tests module at bottom)
+- Modify: `tooling/geth-db-migrate/src/readers/geth_db.rs:625-629` (decode_stored_receipts stub)
+- Test: `tooling/geth-db-migrate/src/readers/geth_db.rs` (tests module at bottom)
 
 ### Step 1: Write the failing test for receipt decoding
 
@@ -99,7 +99,7 @@ fn decode_stored_receipts_single_legacy() {
 
 ### Step 2: Run test to verify it fails
 
-Run: `cargo test -p geth2ethrex decode_stored_receipts_single_legacy`
+Run: `cargo test -p geth-db-migrate decode_stored_receipts_single_legacy`
 Expected: FAIL — `assert_eq!(receipts.len(), 1)` fails because stub returns empty Vec
 
 ### Step 3: Implement decode_stored_receipts
@@ -152,7 +152,7 @@ pub fn decode_stored_receipts(
 
 ### Step 4: Run test to verify it passes
 
-Run: `cargo test -p geth2ethrex decode_stored_receipts_single_legacy`
+Run: `cargo test -p geth-db-migrate decode_stored_receipts_single_legacy`
 Expected: PASS
 
 ### Step 5: Add more receipt test cases
@@ -225,7 +225,7 @@ fn decode_stored_receipts_empty_block() {
 
 ### Step 6: Run all receipt tests
 
-Run: `cargo test -p geth2ethrex decode_stored_receipts`
+Run: `cargo test -p geth-db-migrate decode_stored_receipts`
 Expected: All PASS
 
 ### Step 7: Add `read_receipts` method to GethBlockReader
@@ -277,8 +277,8 @@ pub fn read_receipts(
 ### Step 8: Commit
 
 ```bash
-git add tooling/geth2ethrex/src/readers/geth_db.rs
-git commit -m "feat(geth2ethrex): implement Geth stored receipt decoding and reading"
+git add tooling/geth-db-migrate/src/readers/geth_db.rs
+git commit -m "feat(geth-db-migrate): implement Geth stored receipt decoding and reading"
 ```
 
 ---
@@ -286,7 +286,7 @@ git commit -m "feat(geth2ethrex): implement Geth stored receipt decoding and rea
 ## Task 2: Add Receipt Writing to g2r Migration
 
 **Files:**
-- Modify: `tooling/geth2ethrex/src/cli.rs:1240-1315` (block migration loop)
+- Modify: `tooling/geth-db-migrate/src/cli.rs:1240-1315` (block migration loop)
 
 ### Step 1: Read and store receipts alongside blocks
 
@@ -335,14 +335,14 @@ At the top of `cli.rs`, ensure `ethrex_common::types::Receipt` is importable (li
 
 ### Step 5: Build and verify compilation
 
-Run: `cargo build -p geth2ethrex`
+Run: `cargo build -p geth-db-migrate`
 Expected: Compiles without errors
 
 ### Step 6: Commit
 
 ```bash
-git add tooling/geth2ethrex/src/cli.rs
-git commit -m "feat(geth2ethrex): add receipt migration to g2r block import loop"
+git add tooling/geth-db-migrate/src/cli.rs
+git commit -m "feat(geth-db-migrate): add receipt migration to g2r block import loop"
 ```
 
 ---
@@ -350,7 +350,7 @@ git commit -m "feat(geth2ethrex): add receipt migration to g2r block import loop
 ## Task 3: Set Finalized/Safe Block Number
 
 **Files:**
-- Modify: `tooling/geth2ethrex/src/cli.rs:1272-1289` (forkchoice_update call)
+- Modify: `tooling/geth-db-migrate/src/cli.rs:1272-1289` (forkchoice_update call)
 
 ### Step 1: Change forkchoice_update to pass safe/finalized
 
@@ -370,14 +370,14 @@ This sets both `SafeBlockNumber` and `FinalizedBlockNumber` to the last block in
 
 ### Step 2: Build and verify
 
-Run: `cargo build -p geth2ethrex`
+Run: `cargo build -p geth-db-migrate`
 Expected: Compiles
 
 ### Step 3: Commit
 
 ```bash
-git add tooling/geth2ethrex/src/cli.rs
-git commit -m "fix(geth2ethrex): set finalized and safe block numbers during g2r migration"
+git add tooling/geth-db-migrate/src/cli.rs
+git commit -m "fix(geth-db-migrate): set finalized and safe block numbers during g2r migration"
 ```
 
 ---
@@ -385,7 +385,7 @@ git commit -m "fix(geth2ethrex): set finalized and safe block numbers during g2r
 ## Task 4: Enhance Verification — Body Check
 
 **Files:**
-- Modify: `tooling/geth2ethrex/src/cli.rs:612-766` (verify_geth_to_rocksdb_offline function)
+- Modify: `tooling/geth-db-migrate/src/cli.rs:612-766` (verify_geth_to_rocksdb_offline function)
 
 ### Step 1: Add body hash verification to existing verification loop
 
@@ -444,14 +444,14 @@ Track `body_checks_passed` in the loop and include in the summary.
 
 ### Step 3: Build and run existing tests
 
-Run: `cargo build -p geth2ethrex && cargo test -p geth2ethrex`
+Run: `cargo build -p geth-db-migrate && cargo test -p geth-db-migrate`
 Expected: Compiles, all unit tests pass
 
 ### Step 4: Commit
 
 ```bash
-git add tooling/geth2ethrex/src/cli.rs
-git commit -m "feat(geth2ethrex): add body verification to offline verification"
+git add tooling/geth-db-migrate/src/cli.rs
+git commit -m "feat(geth-db-migrate): add body verification to offline verification"
 ```
 
 ---
@@ -459,7 +459,7 @@ git commit -m "feat(geth2ethrex): add body verification to offline verification"
 ## Task 5: Add `--verify-deep` Flag
 
 **Files:**
-- Modify: `tooling/geth2ethrex/src/cli.rs` (CLI struct + verification function)
+- Modify: `tooling/geth-db-migrate/src/cli.rs` (CLI struct + verification function)
 
 ### Step 1: Add --verify-deep CLI argument
 
@@ -503,11 +503,11 @@ if verify_deep {
 
 ### Step 4: Build, test, commit
 
-Run: `cargo build -p geth2ethrex && cargo test -p geth2ethrex`
+Run: `cargo build -p geth-db-migrate && cargo test -p geth-db-migrate`
 
 ```bash
-git add tooling/geth2ethrex/src/cli.rs
-git commit -m "feat(geth2ethrex): add --verify-deep flag for receipt and code verification"
+git add tooling/geth-db-migrate/src/cli.rs
+git commit -m "feat(geth-db-migrate): add --verify-deep flag for receipt and code verification"
 ```
 
 ---
@@ -515,7 +515,7 @@ git commit -m "feat(geth2ethrex): add --verify-deep flag for receipt and code ve
 ## Task 6: Add ethrex-Ready Smoke Test
 
 **Files:**
-- Modify: `tooling/geth2ethrex/src/cli.rs` (new function + CLI flag + integration)
+- Modify: `tooling/geth-db-migrate/src/cli.rs` (new function + CLI flag + integration)
 
 ### Step 1: Add --ethrex-ready / --no-ethrex-ready CLI flags
 
@@ -667,11 +667,11 @@ if ethrex_ready {
 
 ### Step 4: Build, test, commit
 
-Run: `cargo build -p geth2ethrex && cargo test -p geth2ethrex`
+Run: `cargo build -p geth-db-migrate && cargo test -p geth-db-migrate`
 
 ```bash
-git add tooling/geth2ethrex/src/cli.rs
-git commit -m "feat(geth2ethrex): add ethrex-ready startup compatibility check"
+git add tooling/geth-db-migrate/src/cli.rs
+git commit -m "feat(geth-db-migrate): add ethrex-ready startup compatibility check"
 ```
 
 ---
@@ -689,7 +689,7 @@ Fix metadata.json and tx locations entries to reflect "already handled" status.
 
 ```bash
 git add docs/plans/2026-03-02-g2r-ethrex-ready-design.md
-git commit -m "docs(geth2ethrex): update design doc with corrected gap analysis"
+git commit -m "docs(geth-db-migrate): update design doc with corrected gap analysis"
 ```
 
 ---
@@ -698,12 +698,12 @@ git commit -m "docs(geth2ethrex): update design doc with corrected gap analysis"
 
 ### Step 1: Run all unit tests
 
-Run: `cargo test -p geth2ethrex`
+Run: `cargo test -p geth-db-migrate`
 Expected: All tests pass (existing 42+ new receipt tests)
 
 ### Step 2: Build release binary
 
-Run: `cargo build --release --manifest-path tooling/geth2ethrex/Cargo.toml`
+Run: `cargo build --release --manifest-path tooling/geth-db-migrate/Cargo.toml`
 Expected: Builds successfully
 
 ### Step 3: Final commit (if any fixups needed)

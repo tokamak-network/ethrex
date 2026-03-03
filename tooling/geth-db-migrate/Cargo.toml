@@ -1,5 +1,5 @@
 [package]
-name = "geth2ethrex"
+name = "geth-db-migrate"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

@@ -1,6 +1,6 @@
 # Geth Database Compatibility Guide
 
-This document explains how `geth2ethrex` handles different Geth database backends (LevelDB and Pebble).
+This document explains how `geth-db-migrate` handles different Geth database backends (LevelDB and Pebble).
 
 ## Background
 
@@ -9,13 +9,13 @@ Geth (go-ethereum) has used two different database backends over its history:
 - **LevelDB** (Geth v1.9 and earlier)
 - **Pebble** (Geth v1.10+ default, `--db.engine=pebble`)
 
-The `geth2ethrex` tool can read both formats and migrate them to ethrex's RocksDB storage.
+The `geth-db-migrate` tool can read both formats and migrate them to ethrex's RocksDB storage.
 
 ---
 
 ## Database Type Detection
 
-`geth2ethrex` automatically detects the database type by inspecting the chaindata directory:
+`geth-db-migrate` automatically detects the database type by inspecting the chaindata directory:
 
 ### Detection Logic (in order)
 
@@ -67,8 +67,8 @@ The `geth2ethrex` tool can read both formats and migrate them to ethrex's RocksD
 
 **Usage**:
 ```rust
-use geth2ethrex::readers::pebble::PebbleReader;
-use geth2ethrex::readers::KeyValueReader;
+use geth-db-migrate::readers::pebble::PebbleReader;
+use geth-db-migrate::readers::KeyValueReader;
 use std::path::Path;
 
 let chaindata = Path::new("/path/to/geth/chaindata");
@@ -93,7 +93,7 @@ if let Some(value) = reader.get(key)? {
 
 ## Compatibility Matrix
 
-| Geth Version | Default DB | geth2ethrex Support |
+| Geth Version | Default DB | geth-db-migrate Support |
 |--------------|------------|---------------------|
 | v1.9.x and earlier | LevelDB | ⚠️ Not yet (planned) |
 | v1.10.0 – v1.14.x | Pebble | ✅ Yes (via RocksDB) |
@@ -116,7 +116,7 @@ This exports the blockchain to an RLP-encoded file.
 ### Step 2: Import into ethrex
 
 ```bash
-geth2ethrex import-rlp \
+geth-db-migrate import-rlp \
   --input /tmp/blocks.rlp \
   --target /path/to/ethrex/storage
 ```
@@ -156,10 +156,10 @@ Not yet implemented. Use Geth export as a workaround.
 
 ## Testing Your Database
 
-To verify that `geth2ethrex` can read your Geth chaindata:
+To verify that `geth-db-migrate` can read your Geth chaindata:
 
 ```bash
-geth2ethrex verify-read --chaindata /path/to/geth/chaindata
+geth-db-migrate verify-read --chaindata /path/to/geth/chaindata
 ```
 
 This command:

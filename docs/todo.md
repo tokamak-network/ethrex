@@ -388,11 +388,11 @@ Evaluate current `ethrex` against three product ideas and rewrite `docs/develope
 
 ---
 
-## Task Checklist (2026-02-28) - geth2ethrex TUI 종료 동기화 버그 수정
+## Task Checklist (2026-02-28) - geth-db-migrate TUI 종료 동기화 버그 수정
 
 ### Goal
 
-`tooling/geth2ethrex`에서 마이그레이션 완료/오류 시 TUI 태스크가 비동기로 유실되어 종료 화면이 불안정한 문제를 수정한다.
+`tooling/geth-db-migrate`에서 마이그레이션 완료/오류 시 TUI 태스크가 비동기로 유실되어 종료 화면이 불안정한 문제를 수정한다.
 
 ### Plan
 
@@ -404,15 +404,15 @@ Evaluate current `ethrex` against three product ideas and rewrite `docs/develope
 
 #### What changed
 
-- Updated: `tooling/geth2ethrex/src/cli.rs`
+- Updated: `tooling/geth-db-migrate/src/cli.rs`
 - Updated: `docs/todo.md`
 - Added: `docs/lessons.md`
 
 #### Verification run
 
-- `cargo fmt --manifest-path tooling/geth2ethrex/Cargo.toml`
-- `cargo check --manifest-path tooling/geth2ethrex/Cargo.toml`
-- `cargo test --manifest-path tooling/geth2ethrex/Cargo.toml --lib --bins --tests`
+- `cargo fmt --manifest-path tooling/geth-db-migrate/Cargo.toml`
+- `cargo check --manifest-path tooling/geth-db-migrate/Cargo.toml`
+- `cargo test --manifest-path tooling/geth-db-migrate/Cargo.toml --lib --bins --tests`
 
 #### Verification not run
 
@@ -430,23 +430,23 @@ Sepolia 0..1000 블록 기준으로 Geth -> ethrex 마이그레이션 상태(EOA
 
 - [x] Python 스크립트 경로 제거 및 Rust example 기반으로 대체
 - [x] 블록/계정/토큰/증명(`eth_getProof`) 비교 + 실시간 진행률 출력 구현
-- [x] 사용 문서(`tooling/geth2ethrex/USAGE.md`) 실행 예시를 Rust 명령으로 갱신
+- [x] 사용 문서(`tooling/geth-db-migrate/USAGE.md`) 실행 예시를 Rust 명령으로 갱신
 - [x] 컴파일 검증 실행
 
 ### Review
 
 #### What changed
 
-- Added: `tooling/geth2ethrex/examples/compare_state_migration.rs`
-- Updated: `tooling/geth2ethrex/Cargo.toml`
-- Updated: `tooling/geth2ethrex/USAGE.md`
-- Deleted: `tooling/geth2ethrex/scripts/compare_state_migration.py`
+- Added: `tooling/geth-db-migrate/examples/compare_state_migration.rs`
+- Updated: `tooling/geth-db-migrate/Cargo.toml`
+- Updated: `tooling/geth-db-migrate/USAGE.md`
+- Deleted: `tooling/geth-db-migrate/scripts/compare_state_migration.py`
 - Updated: `docs/todo.md`
 - Updated: `docs/lessons.md`
 
 #### Verification run
 
-- `cargo check --manifest-path tooling/geth2ethrex/Cargo.toml --example compare_state_migration --no-default-features`
+- `cargo check --manifest-path tooling/geth-db-migrate/Cargo.toml --example compare_state_migration --no-default-features`
 
 #### Verification not run
 
@@ -472,15 +472,15 @@ Sepolia 0..1000 블록 기준으로 Geth -> ethrex 마이그레이션 상태(EOA
 
 #### What changed
 
-- Updated: `tooling/geth2ethrex/examples/compare_state_migration.rs`
-- Updated: `tooling/geth2ethrex/USAGE.md`
-- Updated: `tooling/geth2ethrex/Cargo.toml`
+- Updated: `tooling/geth-db-migrate/examples/compare_state_migration.rs`
+- Updated: `tooling/geth-db-migrate/USAGE.md`
+- Updated: `tooling/geth-db-migrate/Cargo.toml`
 - Updated: `docs/todo.md`
 - Updated: `docs/lessons.md`
 
 #### Verification run
 
-- `cargo check --manifest-path tooling/geth2ethrex/Cargo.toml --example compare_state_migration --no-default-features`
+- `cargo check --manifest-path tooling/geth-db-migrate/Cargo.toml --example compare_state_migration --no-default-features`
 
 #### Verification not run
 

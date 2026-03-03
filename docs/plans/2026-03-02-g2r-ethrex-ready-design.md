@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-02
 **Target**: Sepolia testnet
-**Goal**: `geth2ethrex g2r` 마이그레이션 후 `ethrex --datadir <path>`로 바로 실행 가능하게 만들기
+**Goal**: `geth-db-migrate g2r` 마이그레이션 후 `ethrex --datadir <path>`로 바로 실행 가능하게 만들기
 **Expected behavior**: P2P 싱크 재개 + RPC 서버 (과거 데이터 조회) 모두 가능
 
 ## Background

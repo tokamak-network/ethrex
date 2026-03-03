@@ -1,17 +1,17 @@
-# geth2ethrex
+# geth-db-migrate
 
-English documentation for `geth2ethrex`.
+English documentation for `geth-db-migrate`.
 
 - Korean guide: [README_kor.md](./README_kor.md)
 
-`geth2ethrex` migrates Geth chaindata into other execution-client database formats.
+`geth-db-migrate` migrates Geth chaindata into other execution-client database formats.
 
 ## Supported Paths
 
 | Command | Source | Target | Status |
 |---|---|---|---|
-| `g2r` (`geth2rocksdb`) | Geth Pebble | ethrex RocksDB | Blocks + State + Verification |
-| `g2l` (`geth2lmdb`) | Geth Pebble | py-ethclient LMDB | Blocks + State + Verification |
+| `g2r` (`to-rocksdb`) | Geth Pebble | ethrex RocksDB | Blocks + State + Verification |
+| `g2l` (`to-lmdb`) | Geth Pebble | py-ethclient LMDB | Blocks + State + Verification |
 
 > LevelDB can be detected but full read support is currently limited.
 
@@ -20,15 +20,15 @@ English documentation for `geth2ethrex`.
 ### g2r: Geth -> ethrex RocksDB
 
 ```bash
-cargo build --release --manifest-path tooling/geth2ethrex/Cargo.toml
+cargo build --release --manifest-path tooling/geth-db-migrate/Cargo.toml
 
-geth2ethrex g2r \
+geth-db-migrate g2r \
   --source /path/to/geth/chaindata \
   --target /path/to/ethrex/storage \
   --genesis genesis.json \
   --dry-run
 
-geth2ethrex g2r \
+geth-db-migrate g2r \
   --source /path/to/geth/chaindata \
   --target /path/to/ethrex/storage \
   --genesis genesis.json
@@ -37,12 +37,12 @@ geth2ethrex g2r \
 ### g2l: Geth -> py-ethclient LMDB
 
 ```bash
-geth2ethrex g2l \
+geth-db-migrate g2l \
   --source /path/to/geth/chaindata \
   --target /path/to/lmdb/output \
   --dry-run
 
-geth2ethrex g2l \
+geth-db-migrate g2l \
   --source /path/to/geth/chaindata \
   --target /path/to/lmdb/output
 ```
@@ -82,7 +82,7 @@ Each block is checked for:
 
 ```bash
 # Verify specific block range only
-geth2ethrex g2r \
+geth-db-migrate g2r \
   --source /path/to/geth/chaindata \
   --target /path/to/rocksdb \
   --genesis genesis.json \
@@ -90,7 +90,7 @@ geth2ethrex g2r \
   --verify-end-block 1001000
 
 # Skip verification for speed
-geth2ethrex g2r \
+geth-db-migrate g2r \
   --source /path/to/geth/chaindata \
   --target /path/to/rocksdb \
   --genesis genesis.json \
@@ -150,8 +150,8 @@ Use `--json` for machine-readable output. Add `--report-file` to append JSONL re
 ## Build & Test
 
 ```bash
-cargo build --release --manifest-path tooling/geth2ethrex/Cargo.toml
-cargo test --manifest-path tooling/geth2ethrex/Cargo.toml
+cargo build --release --manifest-path tooling/geth-db-migrate/Cargo.toml
+cargo test --manifest-path tooling/geth-db-migrate/Cargo.toml
 ```
 
 ## Full Documentation

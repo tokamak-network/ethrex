@@ -15,13 +15,13 @@ fn unique_test_path(suffix: &str) -> PathBuf {
 
 #[test]
 fn emits_json_failure_payload_for_runtime_error() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old");
     let new_path = unique_test_path("new");
 
     let output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -55,7 +55,7 @@ fn emits_json_failure_payload_for_runtime_error() {
 }
 
 fn run_and_expect_clap_validation_error(args: &[&str], expected_flag: &str) {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
 
     let output = Command::new(bin)
         .args(args)
@@ -73,10 +73,10 @@ fn run_and_expect_clap_validation_error(args: &[&str], expected_flag: &str) {
 
 #[test]
 fn help_command_succeeds_and_lists_core_flags() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
 
     let output = Command::new(bin)
-        .args(["geth2lmdb", "--help"])
+        .args(["to-lmdb", "--help"])
         .output()
         .expect("failed to execute migrations binary");
 
@@ -93,13 +93,13 @@ fn help_command_succeeds_and_lists_core_flags() {
 
 #[test]
 fn continue_on_error_flag_is_accepted() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-continue-on-error");
     let new_path = unique_test_path("new-continue-on-error");
 
     let output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -127,13 +127,13 @@ fn continue_on_error_flag_is_accepted() {
 
 #[test]
 fn from_block_flag_is_accepted() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-from-block");
     let new_path = unique_test_path("new-from-block");
 
     let output = Command::new(bin)
         .args([
-            "geth2rocksdb",
+            "to-rocksdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -164,13 +164,13 @@ fn from_block_flag_is_accepted() {
 
 #[test]
 fn map_size_gb_flag_is_accepted() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-map-size-gb");
     let new_path = unique_test_path("new-map-size-gb");
 
     let output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -199,13 +199,13 @@ fn map_size_gb_flag_is_accepted() {
 
 #[test]
 fn skip_receipts_flag_is_accepted() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-skip-receipts");
     let new_path = unique_test_path("new-skip-receipts");
 
     let output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -228,11 +228,11 @@ fn skip_receipts_flag_is_accepted() {
 
 #[test]
 fn blocks_only_and_include_state_flags_work() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
 
     let output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             "nonexistent_source",
             "--target",
@@ -254,7 +254,7 @@ fn blocks_only_and_include_state_flags_work() {
 fn clap_validation_failure_reports_retry_attempts_error() {
     run_and_expect_clap_validation_error(
         &[
-            "geth2rocksdb",
+            "to-rocksdb",
             "--source",
             "source",
             "--target",
@@ -271,7 +271,7 @@ fn clap_validation_failure_reports_retry_attempts_error() {
 fn clap_validation_failure_reports_retry_base_delay_error() {
     run_and_expect_clap_validation_error(
         &[
-            "geth2rocksdb",
+            "to-rocksdb",
             "--source",
             "source",
             "--target",
@@ -286,14 +286,14 @@ fn clap_validation_failure_reports_retry_base_delay_error() {
 
 #[test]
 fn report_file_captures_json_failure_output() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-report-json");
     let new_path = unique_test_path("new-report-json");
     let report_path = unique_test_path("report-json").join("migration.jsonl");
 
     let output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -339,7 +339,7 @@ fn report_file_captures_json_failure_output() {
 
 #[test]
 fn report_file_appends_across_multiple_json_failures() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-report-append");
     let new_path = unique_test_path("new-report-append");
     let report_path = unique_test_path("report-append").join("migration.jsonl");
@@ -348,7 +348,7 @@ fn report_file_appends_across_multiple_json_failures() {
     for _ in 0..2 {
         let output = Command::new(bin)
             .args([
-                "geth2lmdb",
+                "to-lmdb",
                 "--source",
                 old_path.to_string_lossy().as_ref(),
                 "--target",
@@ -403,7 +403,7 @@ fn report_file_appends_across_multiple_json_failures() {
 
 #[test]
 fn report_file_creates_parent_directories_for_json_failure() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-report-parent-dirs");
     let new_path = unique_test_path("new-report-parent-dirs");
     let report_root = unique_test_path("report-parent-dirs");
@@ -411,7 +411,7 @@ fn report_file_creates_parent_directories_for_json_failure() {
 
     let output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -453,7 +453,7 @@ fn report_file_creates_parent_directories_for_json_failure() {
 
 #[test]
 fn report_file_creates_parent_directories_for_human_failure() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-report-parent-dirs-human");
     let new_path = unique_test_path("new-report-parent-dirs-human");
     let report_root = unique_test_path("report-parent-dirs-human");
@@ -461,7 +461,7 @@ fn report_file_creates_parent_directories_for_human_failure() {
 
     let output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -503,7 +503,7 @@ fn report_file_creates_parent_directories_for_human_failure() {
 
 #[test]
 fn report_file_appends_across_multiple_human_failures() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-report-append-human");
     let new_path = unique_test_path("new-report-append-human");
     let report_path = unique_test_path("report-append-human").join("migration.log");
@@ -511,7 +511,7 @@ fn report_file_appends_across_multiple_human_failures() {
     for run in 1..=2 {
         let output = Command::new(bin)
             .args([
-                "geth2lmdb",
+                "to-lmdb",
                 "--source",
                 old_path.to_string_lossy().as_ref(),
                 "--target",
@@ -560,14 +560,14 @@ fn report_file_appends_across_multiple_human_failures() {
 
 #[test]
 fn report_file_preserves_append_order_across_json_then_human_runs() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-report-mixed");
     let new_path = unique_test_path("new-report-mixed");
     let report_path = unique_test_path("report-mixed").join("migration.log");
 
     let json_output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -582,7 +582,7 @@ fn report_file_preserves_append_order_across_json_then_human_runs() {
 
     let human_output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -620,14 +620,14 @@ fn report_file_preserves_append_order_across_json_then_human_runs() {
 
 #[test]
 fn report_file_preserves_append_order_across_human_then_json_runs() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-report-mixed-reverse");
     let new_path = unique_test_path("new-report-mixed-reverse");
     let report_path = unique_test_path("report-mixed-reverse").join("migration.log");
 
     let human_output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -646,7 +646,7 @@ fn report_file_preserves_append_order_across_human_then_json_runs() {
 
     let json_output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -696,14 +696,14 @@ fn report_file_preserves_append_order_across_human_then_json_runs() {
 
 #[test]
 fn report_file_preserves_append_order_across_json_human_json_runs() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-report-mixed-jhj");
     let new_path = unique_test_path("new-report-mixed-jhj");
     let report_path = unique_test_path("report-mixed-jhj").join("migration.log");
 
     let json_output_1 = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -718,7 +718,7 @@ fn report_file_preserves_append_order_across_json_human_json_runs() {
 
     let human_output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -732,7 +732,7 @@ fn report_file_preserves_append_order_across_json_human_json_runs() {
 
     let json_output_2 = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",
@@ -782,14 +782,14 @@ fn report_file_preserves_append_order_across_json_human_json_runs() {
 
 #[test]
 fn report_file_captures_human_failure_output() {
-    let bin = env!("CARGO_BIN_EXE_geth2ethrex");
+    let bin = env!("CARGO_BIN_EXE_geth-db-migrate");
     let old_path = unique_test_path("old-report-human");
     let new_path = unique_test_path("new-report-human");
     let report_path = unique_test_path("report-human").join("migration.log");
 
     let output = Command::new(bin)
         .args([
-            "geth2lmdb",
+            "to-lmdb",
             "--source",
             old_path.to_string_lossy().as_ref(),
             "--target",

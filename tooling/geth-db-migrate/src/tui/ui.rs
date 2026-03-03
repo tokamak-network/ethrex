@@ -41,7 +41,7 @@ fn draw_title(frame: &mut Frame, app: &MigrationApp, area: Rect) {
 
     let title = Line::from(vec![
         Span::styled(
-            "geth2ethrex Migration",
+            "Geth DB Migration",
             Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),

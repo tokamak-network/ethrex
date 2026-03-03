@@ -44,7 +44,7 @@ pub trait KeyValueReader {
 /// # Example
 /// ```no_run
 /// use std::path::Path;
-/// use geth2ethrex::readers::open_geth_reader;
+/// use geth_db_migrate::readers::open_geth_reader;
 ///
 /// let chaindata = Path::new("/path/to/geth/chaindata");
 /// let reader = open_geth_reader(chaindata).unwrap();

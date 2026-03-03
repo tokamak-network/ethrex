@@ -48,7 +48,7 @@ impl PebbleReader {
     /// # Example
     /// ```no_run
     /// use std::path::Path;
-    /// use geth2ethrex::readers::pebble::PebbleReader;
+    /// use geth_db_migrate::readers::pebble::PebbleReader;
     ///
     /// let chaindata = Path::new("/path/to/geth/chaindata");
     /// let reader = PebbleReader::open(chaindata).unwrap();

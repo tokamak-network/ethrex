@@ -2,7 +2,7 @@ use ethrex_storage::Store;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let storage_path = "./geth2ethrex/data/ethrex/storage";
+    let storage_path = "./geth-db-migrate/data/ethrex/storage";
     let store = Store::new(storage_path, ethrex_storage::EngineType::RocksDB)?;
 
     // Get the latest block number

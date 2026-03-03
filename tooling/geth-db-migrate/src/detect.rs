@@ -49,7 +49,7 @@ pub enum DetectError {
 /// # Example
 /// ```no_run
 /// use std::path::Path;
-/// use geth2ethrex::detect::{detect_geth_db_type, GethDbType};
+/// use geth_db_migrate::detect::{detect_geth_db_type, GethDbType};
 ///
 /// let chaindata = Path::new("/path/to/geth/chaindata");
 /// match detect_geth_db_type(chaindata) {
