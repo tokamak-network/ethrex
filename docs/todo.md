@@ -385,3 +385,103 @@ Evaluate current `ethrex` against three product ideas and rewrite `docs/develope
 #### Verification not run
 
 - `mdbook build` 미실행
+
+---
+
+## Task Checklist (2026-02-28) - geth2ethrex TUI 종료 동기화 버그 수정
+
+### Goal
+
+`tooling/geth2ethrex`에서 마이그레이션 완료/오류 시 TUI 태스크가 비동기로 유실되어 종료 화면이 불안정한 문제를 수정한다.
+
+### Plan
+
+- [x] TUI spawn/종료 경로 점검
+- [x] `JoinHandle` 추적 및 완료/오류 시 명시적 `await` 처리
+- [x] 포맷/빌드/테스트 검증
+
+### Review
+
+#### What changed
+
+- Updated: `tooling/geth2ethrex/src/cli.rs`
+- Updated: `docs/todo.md`
+- Added: `docs/lessons.md`
+
+#### Verification run
+
+- `cargo fmt --manifest-path tooling/geth2ethrex/Cargo.toml`
+- `cargo check --manifest-path tooling/geth2ethrex/Cargo.toml`
+- `cargo test --manifest-path tooling/geth2ethrex/Cargo.toml --lib --bins --tests`
+
+#### Verification not run
+
+- 실제 운영 chaindata 기반 end-to-end TUI 수동 검증은 미실행
+
+---
+
+## Task Checklist (2026-03-02) - 마이그레이션 상태 비교 스크립트 Rust 전환
+
+### Goal
+
+Sepolia 0..1000 블록 기준으로 Geth -> ethrex 마이그레이션 상태(EOA/CA/assets/storage 관련 증거)를 실시간으로 비교하는 도구를, 추가 Python 툴체인 없이 Rust 예제로 제공한다.
+
+### Plan
+
+- [x] Python 스크립트 경로 제거 및 Rust example 기반으로 대체
+- [x] 블록/계정/토큰/증명(`eth_getProof`) 비교 + 실시간 진행률 출력 구현
+- [x] 사용 문서(`tooling/geth2ethrex/USAGE.md`) 실행 예시를 Rust 명령으로 갱신
+- [x] 컴파일 검증 실행
+
+### Review
+
+#### What changed
+
+- Added: `tooling/geth2ethrex/examples/compare_state_migration.rs`
+- Updated: `tooling/geth2ethrex/Cargo.toml`
+- Updated: `tooling/geth2ethrex/USAGE.md`
+- Deleted: `tooling/geth2ethrex/scripts/compare_state_migration.py`
+- Updated: `docs/todo.md`
+- Updated: `docs/lessons.md`
+
+#### Verification run
+
+- `cargo check --manifest-path tooling/geth2ethrex/Cargo.toml --example compare_state_migration --no-default-features`
+
+#### Verification not run
+
+- 실제 Sepolia 노드(geth/ethrex) 엔드포인트 대상 end-to-end 실행은 현재 환경에서 미실행
+
+---
+
+## Task Checklist (2026-03-02) - compare_state_migration 오프라인 전용 전환
+
+### Goal
+
+마이그레이션 결과 검증 예제(`compare_state_migration`)를 RPC 의존 없이 오프라인(DB-to-DB) 검증만 수행하도록 전환한다.
+
+### Plan
+
+- [x] RPC 기반 비교 로직 제거
+- [x] `--source/--target/--genesis` 기반 오프라인 검증 로직 구현
+- [x] block canonical hash/header hash/stateRoot 비교 및 state trie 존재성 옵션 체크 추가
+- [x] USAGE 문서 예시/옵션을 오프라인 기준으로 갱신
+- [x] 예제 컴파일 검증
+
+### Review
+
+#### What changed
+
+- Updated: `tooling/geth2ethrex/examples/compare_state_migration.rs`
+- Updated: `tooling/geth2ethrex/USAGE.md`
+- Updated: `tooling/geth2ethrex/Cargo.toml`
+- Updated: `docs/todo.md`
+- Updated: `docs/lessons.md`
+
+#### Verification run
+
+- `cargo check --manifest-path tooling/geth2ethrex/Cargo.toml --example compare_state_migration --no-default-features`
+
+#### Verification not run
+
+- 실제 대용량 소스/타겟 DB를 사용한 장시간 end-to-end 검증 실행은 미실행

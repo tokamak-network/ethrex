@@ -1900,27 +1900,41 @@ async fn migrate_geth_to_rocksdb(
 /// Returns the actual value bytes (after stripping RLP prefix if present).
 fn decode_storage_value(raw: &[u8]) -> Vec<u8> {
     if raw.is_empty() {
+        // Empty raw value remains empty (will be filtered out later)
         return vec![];
     }
 
-    if raw.len() <= 32 {
-        return raw.to_vec();
-    }
-
-    // Value > 32 bytes: check for RLP string prefix
-    // RLP: 0x80 + len for strings of length 1..55
-    // e.g. 0xa0 = 0x80 + 32, means "32-byte string follows"
-    let first = raw[0];
-    if first > 0x80 && first <= 0xb7 {
-        let str_len = (first - 0x80) as usize;
-        // Valid RLP string with stated length matching actual length
-        if raw.len() == 1 + str_len {
-            return raw[1..].to_vec();
+    let decoded = if raw.len() <= 32 {
+        // Values <= 32 bytes are stored as-is (compact trimmed)
+        // Restore leading zeros by padding to 32 bytes
+        let mut padded = vec![0u8; 32 - raw.len()];
+        padded.extend_from_slice(raw);
+        padded
+    } else {
+        // Value > 32 bytes: check for RLP string prefix
+        // RLP: 0x80 + len for strings of length 1..55
+        // e.g. 0xa0 = 0x80 + 32, means "32-byte string follows"
+        let first = raw[0];
+        if first > 0x80 && first <= 0xb7 {
+            let str_len = (first - 0x80) as usize;
+            // Valid RLP string with stated length matching actual length
+            if raw.len() == 1 + str_len && str_len <= 32 {
+                // RLP decoded value, pad to 32 bytes
+                let decoded_bytes = &raw[1..];
+                let mut padded = vec![0u8; 32 - decoded_bytes.len()];
+                padded.extend_from_slice(decoded_bytes);
+                padded
+            } else {
+                // Fallback: treat as-is, truncate to 32 bytes
+                raw[..32.min(raw.len())].to_vec()
+            }
+        } else {
+            // Not RLP encoded, treat as-is, truncate to 32 bytes
+            raw[..32.min(raw.len())].to_vec()
         }
-    }
+    };
 
-    // Fallback: return as-is (may be malformed or different format)
-    raw.to_vec()
+    decoded
 }
 
 ///
@@ -2021,10 +2035,11 @@ async fn migrate_state_to_rocksdb(
                     }
                     // Geth snapshot stores storage values as compact trimmed bytes
                     // or RLP-encoded byte strings. Decode to extract actual bytes,
-                    // then store as-is (ethrex storage trie expects raw bytes).
+                    // restoring leading zeros to 32 bytes for storage slot values.
                     let decoded = decode_storage_value(&raw_value);
-                    // Skip zero/empty values (same as Geth)
-                    if !decoded.is_empty() && decoded != vec![0u8] {
+                    // Insert ALL non-empty values into storage trie
+                    // (Geth snapshot doesn't store zero values, so this is already filtered)
+                    if !decoded.is_empty() {
                         storage_trie.insert(
                             slot_hash.as_bytes().to_vec(),
                             decoded,
@@ -2106,6 +2121,12 @@ async fn migrate_state_to_rocksdb(
     // Commit the entire state trie to DB
     state_trie.commit()?;
     let computed_state_root = state_trie.hash_no_commit();
+
+    // Diagnostic: Verify that state root can be immediately read back after commit
+    let can_read_root = store.has_state_root(computed_state_root).unwrap_or(false);
+    if !tui {
+        eprintln!("[state] After commit: can read root back = {can_read_root}");
+    }
 
     // Verify state root
     if computed_state_root != expected_state_root {
