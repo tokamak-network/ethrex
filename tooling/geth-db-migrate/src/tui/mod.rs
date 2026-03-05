@@ -59,7 +59,7 @@ pub async fn run_tui(mut rx: mpsc::Receiver<ProgressEvent>) {
     let mut terminal = match enter_tui() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("TUI 초기화 실패: {e}");
+            eprintln!("TUI initialization failed: {e}");
             return;
         }
     };
@@ -71,7 +71,7 @@ pub async fn run_tui(mut rx: mpsc::Receiver<ProgressEvent>) {
     loop {
         // Draw frame
         if let Err(e) = terminal.draw(|f| ui::draw(f, &app)) {
-            eprintln!("TUI 렌더 오류: {e}");
+            eprintln!("TUI render error: {e}");
             break;
         }
 
@@ -81,12 +81,8 @@ pub async fn run_tui(mut rx: mpsc::Receiver<ProgressEvent>) {
                 match maybe_event {
                     Some(ev) => app.handle_event(ev),
                     None => {
-                        // Channel closed — migration finished. Wait for 'q'.
-                        if !app.is_finished() {
-                            app.handle_event(ProgressEvent::Error {
-                                message: "채널이 예기치 않게 닫혔습니다.".into(),
-                            });
-                        }
+                        // Channel closed. This can happen on normal shutdown as well,
+                        // so don't force an error state here.
                         // Redraw final state then wait for quit key.
                         let _ = terminal.draw(|f| ui::draw(f, &app));
                         wait_for_quit(&mut terminal, &mut event_stream).await;

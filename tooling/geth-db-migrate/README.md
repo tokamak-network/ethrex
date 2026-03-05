@@ -51,15 +51,18 @@ geth-db-migrate g2l \
 
 Both commands run these phases:
 
-1. **Block migration** (header/body/receipts in batches) - **default, always runs**
-2. **State migration** (accounts/storage/code) - **optional, use `--include-state` to enable**
-3. **Offline verification** (canonical hash, header hash, state root)
+1. **Block migration** (header/body/receipts in batches) - **always runs**
+2. **State migration** (accounts/storage/code) - **default, runs unless `--blocks-only`**
+3. **State catch-up** (g2r only, re-executes blocks to materialize head state) - **default, use `--state-catch-up false` to skip**
+4. **Offline verification** (canonical hash, header hash, state root)
+5. **ethrex-ready check** (g2r only, validates startup compatibility) - **default, use `--ethrex-ready false` to skip**
 
 ### Default Behavior
 
-By default, only **block migration** runs (`--blocks-only=true`). This is stable and fully verified.
+By default, **both block and state migration** run (`--blocks-only=false`).
+For `g2r`, **state catch-up to head** is also enabled by default (`--state-catch-up=true`).
 
-**State migration is optional** (`--include-state` flag) and recommended only for advanced users, as it requires Geth snapshot compatibility for correct storage trie reconstruction.
+Use `--blocks-only` when you want faster block-only migration and intentionally skip account/storage/code.
 
 ## Offline Verification
 
@@ -116,13 +119,15 @@ Use `--json` for machine-readable output. Add `--report-file` to append JSONL re
 ```text
 --source --target --genesis [required]
 --dry-run
---blocks-only (default: true)
+--blocks-only (default: false)
 --include-state (default: false, experimental)
+--state-catch-up (default: true)
 --from-block
+--ethrex-ready (default: true)
 --verify-offline
 --verify-start-block
 --verify-end-block
---skip-state-trie-check
+--verify-deep
 --json
 --report-file
 --retry-attempts
@@ -135,7 +140,7 @@ Use `--json` for machine-readable output. Add `--report-file` to append JSONL re
 ```text
 --source --target [required]
 --dry-run
---blocks-only (default: true)
+--blocks-only (default: false)
 --include-state (default: false, experimental)
 --map-size-gb
 --skip-receipts
@@ -157,3 +162,4 @@ cargo test --manifest-path tooling/geth-db-migrate/Cargo.toml
 ## Full Documentation
 
 For the full detailed guide (currently Korean), see [README_kor.md](./README_kor.md).
+

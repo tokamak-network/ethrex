@@ -75,8 +75,8 @@ pub enum Subcommand {
         #[arg(long = "verify-deep", default_value_t = false)]
         /// Run deep verification: receipt existence check for blocks with transactions
         verify_deep: bool,
-        #[arg(long = "blocks-only", default_value_t = true)]
-        /// Only migrate block data (skip state: accounts, storage, code). Default: true
+        #[arg(long = "blocks-only", default_value_t = false)]
+        /// Only migrate block data (skip state: accounts, storage, code). Default: false
         blocks_only: bool,
         #[arg(long = "include-state", default_value_t = false)]
         /// Include state migration (accounts, storage, code). Experimental; requires Geth snapshot compatibility
@@ -87,6 +87,9 @@ pub enum Subcommand {
         #[arg(long = "ethrex-ready", default_value_t = true, action = clap::ArgAction::Set)]
         /// Run ethrex startup compatibility check after migration
         ethrex_ready: bool,
+        #[arg(long = "state-catch-up", default_value_t = true, action = clap::ArgAction::Set)]
+        /// Re-execute from last available state root to head inside migration to materialize head state
+        state_catch_up: bool,
     },
     #[command(
         name = "to-lmdb",
@@ -109,8 +112,8 @@ pub enum Subcommand {
         #[arg(long = "report-file")]
         /// Optional path to append emitted reports
         report_file: Option<PathBuf>,
-        #[arg(long = "blocks-only", default_value_t = true)]
-        /// Only migrate block data (skip state: accounts, storage, code). Default: true
+        #[arg(long = "blocks-only", default_value_t = false)]
+        /// Only migrate block data (skip state: accounts, storage, code). Default: false
         blocks_only: bool,
         #[arg(long = "include-state", default_value_t = false)]
         /// Include state migration (accounts, storage, code). Experimental; requires Geth snapshot compatibility
@@ -496,6 +499,7 @@ impl Subcommand {
                 include_state,
                 from_block,
                 ethrex_ready,
+                state_catch_up,
             } => {
                 // Override blocks_only if include_state is true
                 let blocks_only = *blocks_only && !*include_state;
@@ -520,6 +524,7 @@ impl Subcommand {
                     use_tui,
                     blocks_only,
                     *from_block,
+                    *state_catch_up,
                 )
                 .await
             }
@@ -622,6 +627,7 @@ struct EthrexReadyChecks {
 async fn check_ethrex_ready(
     store: &ethrex_storage::Store,
     target_path: &std::path::Path,
+    blocks_only: bool,
 ) -> EthrexReadyReport {
     let mut all_pass = true;
     let mut checks = EthrexReadyChecks {
@@ -718,9 +724,12 @@ async fn check_ethrex_ready(
                 .unwrap_or(false);
             if header_ok && body_ok {
                 checks.genesis_block = format!("pass ({genesis_hash:?})");
+            } else if header_ok {
+                checks.genesis_block = format!(
+                    "pass ({genesis_hash:?}, header present, body missing - tolerated)"
+                );
             } else {
-                checks.genesis_block =
-                    "FAIL: genesis hash exists but header/body missing".into();
+                checks.genesis_block = "FAIL: genesis hash exists but header missing".into();
                 all_pass = false;
             }
         }
@@ -738,38 +747,24 @@ async fn check_ethrex_ready(
     // Migration stores state at the snapshot base block M (not head block N).
     // ethrex's regenerate_head_state() walks backward from head to find a block
     // with valid state, then re-executes forward. We mirror that search here.
-    if let Some(header) = &latest_header_inner {
-        let mut current = header.clone();
-        let mut found_at: Option<u64> = None;
-        let search_limit = 512u64;
-        for _ in 0..=search_limit {
-            match store.has_state_root(current.state_root) {
-                Ok(true) => {
-                    found_at = Some(current.number);
-                    break;
-                }
-                Ok(false) if current.number == 0 => break,
-                Ok(false) => match store.get_block_header(current.number - 1) {
-                    Ok(Some(parent)) => current = parent,
-                    _ => break,
-                },
-                Err(_) => break,
-            }
-        }
-        match found_at {
-            Some(n) if n == header.number => {
+    // In blocks-only mode no state is migrated, so skip this check.
+    if blocks_only {
+        checks.state_root_valid = "SKIP: blocks-only migration (no state migrated)".into();
+    } else if let Some(header) = &latest_header_inner {
+        match find_latest_persisted_ancestor_block(store, header.number) {
+            Ok(n) if n == header.number => {
                 checks.state_root_valid = "pass".into();
             }
-            Some(n) => {
-                checks.state_root_valid = format!(
-                    "pass (state at #{n}, head #{}, gap={} — ethrex re-executes on startup)",
-                    header.number,
-                    header.number - n
-                );
+            Ok(n) => {
+                let (ok, message) = evaluate_state_root_gap(header.number, n);
+                checks.state_root_valid = message;
+                if !ok {
+                    all_pass = false;
+                }
             }
-            None => {
+            Err(_) => {
                 checks.state_root_valid =
-                    format!("FAIL: no valid state root within {search_limit} blocks of head");
+                    "FAIL: no valid state root found from head to genesis".into();
                 all_pass = false;
             }
         }
@@ -780,6 +775,46 @@ async fn check_ethrex_ready(
     EthrexReadyReport {
         ethrex_ready: all_pass,
         checks,
+    }
+}
+
+const MAX_STATE_REEXEC_GAP: u64 = 65_536;
+
+fn has_persisted_state_root(
+    store: &ethrex_storage::Store,
+    state_root: ethrex_common::H256,
+) -> Result<bool> {
+    use ethrex_rlp::decode::RLPDecode;
+    use ethrex_trie::{EMPTY_TRIE_HASH, Nibbles, Node};
+
+    if state_root == *EMPTY_TRIE_HASH {
+        return Ok(true);
+    }
+
+    let trie = store.open_direct_state_trie(state_root)?;
+    let Some(root) = trie.db().get(Nibbles::default())? else {
+        return Ok(false);
+    };
+    let root_hash = Node::decode(&root)?.compute_hash().finalize();
+    Ok(state_root == root_hash)
+}
+
+fn evaluate_state_root_gap(head: u64, found_at: u64) -> (bool, String) {
+    let gap = head.saturating_sub(found_at);
+    if gap > MAX_STATE_REEXEC_GAP {
+        (
+            false,
+            format!(
+                "FAIL: state at #{found_at}, head #{head}, gap={gap} exceeds max allowed {MAX_STATE_REEXEC_GAP}; snapshot base too stale for safe startup re-execution"
+            ),
+        )
+    } else {
+        (
+            true,
+            format!(
+                "pass (state at #{found_at}, head #{head}, gap={gap} — ethrex re-executes on startup)"
+            ),
+        )
     }
 }
 
@@ -1213,6 +1248,7 @@ async fn migrate_geth_to_rocksdb(
     tui: bool,
     blocks_only: bool,
     from_block: Option<u64>,
+    state_catch_up: bool,
 ) -> Result<()> {
     use crate::detect::{GethDbType, detect_geth_db_type};
     use crate::readers::open_geth_block_reader;
@@ -1401,7 +1437,7 @@ async fn migrate_geth_to_rocksdb(
     #[cfg(not(feature = "tui"))]
     {
         if tui {
-            eprintln!("--tui 플래그를 사용하려면 --features tui 로 빌드하세요.");
+            eprintln!("Build with --features tui to use the --tui flag.");
         }
     }
 
@@ -1482,7 +1518,7 @@ async fn migrate_geth_to_rocksdb(
                     Err(error) if continue_on_error => {
                         skipped_blocks += 1;
                         #[cfg(feature = "tui")]
-                        let reason = format!("canonical hash 없음: {error:#}");
+                        let reason = format!("canonical hash missing: {error:#}");
                         if !tui {
                             eprintln!(
                                 "Warning: skipping block #{block_number} (no canonical hash): {error:#}"
@@ -1526,7 +1562,7 @@ async fn migrate_geth_to_rocksdb(
                     Err(error) if continue_on_error => {
                         skipped_blocks += 1;
                         #[cfg(feature = "tui")]
-                        let reason = format!("블록 읽기 실패: {error:#}");
+                        let reason = format!("block read failed: {error:#}");
                         if !tui {
                             eprintln!(
                                 "Warning: skipping block #{block_number} after read failure: {error:#}"
@@ -1728,6 +1764,17 @@ async fn migrate_geth_to_rocksdb(
                 &tui_tx,
             )
             .await?;
+
+            if state_catch_up {
+                catch_up_head_state_to_target(
+                    &new_store,
+                    tui,
+                    &started_at,
+                    #[cfg(feature = "tui")]
+                    &tui_tx,
+                )
+                .await?;
+            }
         }
 
         if verify_offline {
@@ -1771,25 +1818,31 @@ async fn migrate_geth_to_rocksdb(
         if let Some(tx) = tui_tx.take() {
             match &final_result {
                 Ok(()) if total_imported > 0 => {
-                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Completed {
-                        imported_blocks: total_imported,
-                        skipped_blocks,
-                        elapsed: started_at.elapsed(),
-                        retries_performed,
-                    });
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Completed {
+                            imported_blocks: total_imported,
+                            skipped_blocks,
+                            elapsed: started_at.elapsed(),
+                            retries_performed,
+                        })
+                        .await;
                 }
                 Ok(()) => {
-                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Error {
-                        message: format!(
-                            "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
-                            plan.start_block, plan.end_block
-                        ),
-                    });
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Error {
+                            message: format!(
+                                "Migration could not import any block in range #{}..=#{} (continue_on_error={continue_on_error})",
+                                plan.start_block, plan.end_block
+                            ),
+                        })
+                        .await;
                 }
                 Err(e) => {
-                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Error {
-                        message: format!("{e:#}"),
-                    });
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Error {
+                            message: format!("{e:#}"),
+                        })
+                        .await;
                 }
             }
             // Drop tx — TUI will detect channel close and wait for 'q'.
@@ -1841,7 +1894,7 @@ async fn migrate_geth_to_rocksdb(
 
     // ethrex-ready startup compatibility check
     if ethrex_ready {
-        let ready_report = check_ethrex_ready(&new_store, target_storage).await;
+        let ready_report = check_ethrex_ready(&new_store, target_storage, blocks_only).await;
         if json {
             let json_str = serde_json::to_string_pretty(&ready_report).unwrap_or_default();
             eprintln!("{json_str}");
@@ -1904,37 +1957,64 @@ fn decode_storage_value(raw: &[u8]) -> Vec<u8> {
         return vec![];
     }
 
-    let decoded = if raw.len() <= 32 {
-        // Values <= 32 bytes are stored as-is (compact trimmed)
-        // Restore leading zeros by padding to 32 bytes
-        let mut padded = vec![0u8; 32 - raw.len()];
-        padded.extend_from_slice(raw);
-        padded
-    } else {
-        // Value > 32 bytes: check for RLP string prefix
-        // RLP: 0x80 + len for strings of length 1..55
-        // e.g. 0xa0 = 0x80 + 32, means "32-byte string follows"
-        let first = raw[0];
-        if first > 0x80 && first <= 0xb7 {
-            let str_len = (first - 0x80) as usize;
-            // Valid RLP string with stated length matching actual length
-            if raw.len() == 1 + str_len && str_len <= 32 {
-                // RLP decoded value, pad to 32 bytes
-                let decoded_bytes = &raw[1..];
-                let mut padded = vec![0u8; 32 - decoded_bytes.len()];
-                padded.extend_from_slice(decoded_bytes);
-                padded
-            } else {
-                // Fallback: treat as-is, truncate to 32 bytes
-                raw[..32.min(raw.len())].to_vec()
-            }
-        } else {
-            // Not RLP encoded, treat as-is, truncate to 32 bytes
-            raw[..32.min(raw.len())].to_vec()
-        }
-    };
+    // Canonical RLP empty string.
+    if raw.len() == 1 && raw[0] == 0x80 {
+        return vec![];
+    }
 
-    decoded
+    // Check for RLP string prefix first.
+    // Some Geth snapshots store compact values with a short RLP prefix (e.g. 0x81..0x9f).
+    // RLP: 0x80 + len for strings of length 1..55
+    // e.g. 0xa0 = 0x80 + 32, means "32-byte string follows"
+    let first = raw[0];
+    if first > 0x80 && first <= 0xb7 {
+        let str_len = (first - 0x80) as usize;
+        // Valid RLP string with stated length matching actual length
+        if raw.len() == 1 + str_len && str_len <= 32 {
+            return raw[1..].to_vec();
+        }
+    }
+
+    // Long-form RLP string: 0xb7 + len_of_len, followed by len bytes.
+    if first > 0xb7 && first <= 0xbf {
+        let len_of_len = (first - 0xb7) as usize;
+        if raw.len() > len_of_len {
+            let mut str_len: usize = 0;
+            for b in &raw[1..=len_of_len] {
+                str_len = (str_len << 8) | (*b as usize);
+            }
+            let payload_start = 1 + len_of_len;
+            if raw.len() == payload_start + str_len && str_len <= 32 {
+                return raw[payload_start..].to_vec();
+            }
+        }
+    }
+
+    if raw.len() <= 32 {
+        // Keep compact big-endian bytes as-is when not RLP-wrapped.
+        return raw.to_vec();
+    }
+
+    // Fallback: use bytes as-is (truncated for defensive handling of malformed entries).
+    raw[..32.min(raw.len())].to_vec()
+}
+
+fn ensure_state_migration_consistency(
+    storage_root_mismatches: u64,
+    computed_state_root: ethrex_common::H256,
+    expected_state_root: ethrex_common::H256,
+) -> Result<()> {
+    if storage_root_mismatches > 0 {
+        return Err(eyre::eyre!(
+            "state migration produced {storage_root_mismatches} storage root mismatches; refusing to continue"
+        ));
+    }
+    if computed_state_root != expected_state_root {
+        return Err(eyre::eyre!(
+            "state migration state root mismatch: computed={computed_state_root:?}, expected={expected_state_root:?}"
+        ));
+    }
+    Ok(())
 }
 
 ///
@@ -1953,7 +2033,7 @@ async fn migrate_state_to_rocksdb(
         tokio::sync::mpsc::Sender<crate::tui::event::ProgressEvent>,
     >,
 ) -> Result<()> {
-    use ethrex_common::types::{AccountState, Code};
+    use ethrex_common::{U256, types::{AccountState, Code}};
     use ethrex_rlp::encode::RLPEncode;
     use ethrex_trie::EMPTY_TRIE_HASH;
 
@@ -2040,9 +2120,12 @@ async fn migrate_state_to_rocksdb(
                     // Insert ALL non-empty values into storage trie
                     // (Geth snapshot doesn't store zero values, so this is already filtered)
                     if !decoded.is_empty() {
+                        // Match ethrex execution path encoding:
+                        // storage trie values are inserted as RLP(U256).
+                        let storage_value = U256::from_big_endian(&decoded);
                         storage_trie.insert(
                             slot_hash.as_bytes().to_vec(),
-                            decoded,
+                            storage_value.encode_to_vec(),
                         )?;
                         account_slot_count += 1;
                         total_storage_slots += 1;
@@ -2123,18 +2206,20 @@ async fn migrate_state_to_rocksdb(
     let computed_state_root = state_trie.hash_no_commit();
 
     // Diagnostic: Verify that state root can be immediately read back after commit
-    let can_read_root = store.has_state_root(computed_state_root).unwrap_or(false);
+    let can_read_root = has_persisted_state_root(store, computed_state_root).unwrap_or(false);
     if !tui {
         eprintln!("[state] After commit: can read root back = {can_read_root}");
     }
 
-    // Verify state root
-    if computed_state_root != expected_state_root {
-        eprintln!(
-            "[state] WARNING: State root mismatch! computed={computed_state_root:?} expected={expected_state_root:?}"
-        );
-        eprintln!("[state] The migration completed but the state trie may be inconsistent.");
-    } else if !tui {
+    // Enforce strict consistency. If mismatches slip through here, ethrex may
+    // later fail during startup re-execution with inconsistent state updates.
+    ensure_state_migration_consistency(
+        storage_root_mismatches,
+        computed_state_root,
+        expected_state_root,
+    )?;
+
+    if !tui {
         eprintln!("[state] State root verified: {computed_state_root:?}");
     }
 
@@ -2157,6 +2242,161 @@ async fn migrate_state_to_rocksdb(
     }
 
     Ok(())
+}
+
+/// Re-executes blocks from the last persisted state root to head so the
+/// migrated DB has materialized head state before ethrex startup.
+async fn catch_up_head_state_to_target(
+    store: &ethrex_storage::Store,
+    tui: bool,
+    started_at: &Instant,
+    #[cfg(feature = "tui")] _tui_tx: &Option<
+        tokio::sync::mpsc::Sender<crate::tui::event::ProgressEvent>,
+    >,
+) -> Result<()> {
+    use ethrex_blockchain::{Blockchain, BlockchainOptions};
+    use std::sync::Arc;
+    use tokio::time::sleep;
+
+    // Re-execute an additional window before the latest persisted root.
+    // This helps path-based storage advance disk-persisted layers far enough
+    // even when some blocks do not create a new diff layer.
+    // Observed startup regeneration gaps can exceed 128 due to unchanged-root blocks.
+    // Use a wider warmup window so persisted ancestors advance close enough to head.
+    const CATCH_UP_WARMUP_BLOCKS: u64 = 2048;
+
+    let head_block_number = store.get_latest_block_number().await?;
+    let latest_persisted_block =
+        find_latest_persisted_ancestor_block(store, head_block_number)?;
+    let mut start_block = latest_persisted_block;
+    let warmup_floor = latest_persisted_block.saturating_sub(CATCH_UP_WARMUP_BLOCKS);
+    if warmup_floor < latest_persisted_block {
+        let mut scan_number = latest_persisted_block;
+        while scan_number > warmup_floor {
+            let candidate_number = scan_number - 1;
+            let Some(candidate_header) = store.get_block_header(candidate_number)? else {
+                break;
+            };
+            if has_persisted_state_root(store, candidate_header.state_root)? {
+                start_block = candidate_number;
+            }
+            scan_number = candidate_number;
+        }
+    }
+
+    if start_block == head_block_number {
+        if !tui {
+            eprintln!("[state-catch-up] head state already materialized at #{head_block_number}");
+        }
+        return Ok(());
+    }
+
+    if !tui {
+        eprintln!(
+            "[state-catch-up] re-executing blocks #{}..=#{} ({} blocks; latest persisted at #{latest_persisted_block})",
+            start_block + 1,
+            head_block_number,
+            head_block_number - start_block
+        );
+    }
+
+    let blockchain: Arc<Blockchain> =
+        Blockchain::new(store.clone(), BlockchainOptions::default()).into();
+
+    const PROGRESS_BATCH: u64 = 1_000;
+    for block_number in (start_block + 1)..=head_block_number {
+        let block = store
+            .get_block_by_number(block_number)
+            .await?
+            .ok_or_else(|| eyre::eyre!("missing block #{block_number} during state catch-up"))?;
+        blockchain
+            .add_block_pipeline(block)
+            .map_err(|e| eyre::eyre!("state catch-up failed at block #{block_number}: {e}"))?;
+
+        if !tui && block_number % PROGRESS_BATCH == 0 {
+            let processed = block_number - start_block;
+            let total = head_block_number - start_block;
+            let pct = (processed as f64 * 100.0) / total.max(1) as f64;
+            eprintln!(
+                "[state-catch-up] {processed}/{total} ({pct:.1}%) elapsed={:.1}s",
+                started_at.elapsed().as_secs_f64()
+            );
+        }
+    }
+
+    let head_header = store.get_block_header(head_block_number)?.ok_or_else(|| {
+        eyre::eyre!("head block header #{head_block_number} missing after catch-up")
+    })?;
+    if !store.has_state_root(head_header.state_root)? {
+        return Err(eyre::eyre!(
+            "state catch-up completed but head state_root is not materialized at #{head_block_number}"
+        ));
+    }
+
+    // `add_block_pipeline` returns after in-memory layer update; disk persistence can still be in flight.
+    // Keep the process alive briefly so the background trie updater can flush pending layers.
+    const PERSIST_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
+    const PERSIST_DRAIN_POLL: Duration = Duration::from_millis(200);
+    const TARGET_PERSIST_GAP: u64 = 128;
+    let drain_started = Instant::now();
+    let mut best_persisted = 0_u64;
+    loop {
+        let persisted = find_latest_persisted_ancestor_block(store, head_block_number)?;
+        if persisted > best_persisted {
+            best_persisted = persisted;
+            if !tui {
+                let gap = head_block_number.saturating_sub(best_persisted);
+                eprintln!(
+                    "[state-catch-up] persistence advanced: persisted=#{} gap={gap}",
+                    best_persisted
+                );
+            }
+        }
+
+        let gap = head_block_number.saturating_sub(best_persisted);
+        if gap <= TARGET_PERSIST_GAP || drain_started.elapsed() >= PERSIST_DRAIN_TIMEOUT {
+            break;
+        }
+        sleep(PERSIST_DRAIN_POLL).await;
+    }
+
+    // Path-based storage may keep latest layers in memory and persist a nearby ancestor root.
+    // Validate startup safety by enforcing the persisted state gap bound.
+    // `best_persisted` was already updated by the drain loop above.
+    let (gap_ok, gap_msg) = evaluate_state_root_gap(head_block_number, best_persisted);
+    if !gap_ok {
+        return Err(eyre::eyre!(
+            "state catch-up completed but persisted state root is too stale: {gap_msg}"
+        ));
+    }
+
+    if !tui {
+        eprintln!(
+            "[state-catch-up] completed up to head #{head_block_number} (persisted ancestor at #{best_persisted}; {gap_msg})",
+        );
+    }
+    Ok(())
+}
+
+fn find_latest_persisted_ancestor_block(
+    store: &ethrex_storage::Store,
+    head_block_number: u64,
+) -> Result<u64> {
+    let mut current = store
+        .get_block_header(head_block_number)?
+        .ok_or_else(|| eyre::eyre!("head block header #{head_block_number} missing"))?;
+    while !has_persisted_state_root(store, current.state_root)? {
+        if current.number == 0 {
+            return Err(eyre::eyre!(
+                "no persisted state root found from head to genesis"
+            ));
+        }
+        let parent_number = current.number - 1;
+        current = store.get_block_header(parent_number)?.ok_or_else(|| {
+            eyre::eyre!("missing parent header #{parent_number} while locating persisted state root")
+        })?;
+    }
+    Ok(current.number)
 }
 
 /// Migrates Geth chaindata (Pebble) to py-ethclient LMDB format.
@@ -2194,7 +2434,7 @@ async fn migrate_geth_to_lmdb(
     let started_at = Instant::now();
 
     // Phase 1: Detect and open Geth reader
-    let db_type = detect_geth_db_type(geth_chaindata).wrap_err("Geth DB 타입 감지 실패")?;
+    let db_type = detect_geth_db_type(geth_chaindata).wrap_err("Failed to detect Geth DB type")?;
 
     let db_type_str = match db_type {
         GethDbType::Pebble => "Pebble",
@@ -2210,16 +2450,16 @@ async fn migrate_geth_to_lmdb(
     }
 
     let geth_reader = open_geth_block_reader(geth_chaindata)
-        .map_err(|e| eyre::eyre!("Geth chaindata 열기 실패: {e}"))?;
+        .map_err(|e| eyre::eyre!("Failed to open Geth chaindata: {e}"))?;
 
     // Read Geth head block number
     let head_hash = geth_reader
         .read_head_block_hash()
-        .map_err(|e| eyre::eyre!("Geth head 블록 해시 읽기 실패: {e}"))?;
+        .map_err(|e| eyre::eyre!("Failed to read Geth head block hash: {e}"))?;
 
     let last_source_block = geth_reader
         .read_block_number(head_hash)
-        .map_err(|e| eyre::eyre!("Geth head 블록 번호 읽기 실패: {e}"))?;
+        .map_err(|e| eyre::eyre!("Failed to read Geth head block number: {e}"))?;
 
     let plan = MigrationPlan {
         start_block: 0,
@@ -2257,7 +2497,7 @@ async fn migrate_geth_to_lmdb(
     // Create LMDB writer
     let map_size_bytes = (map_size_gb as usize) * 1024 * 1024 * 1024;
     let lmdb = LmdbWriter::create(lmdb_path, map_size_bytes)
-        .map_err(|e| eyre::eyre!("LMDB 생성 실패 ({}): {e}", lmdb_path.display()))?;
+        .map_err(|e| eyre::eyre!("Failed to create LMDB ({}): {e}", lmdb_path.display()))?;
 
     // Optionally start TUI dashboard
     #[cfg(feature = "tui")]
@@ -2299,7 +2539,7 @@ async fn migrate_geth_to_lmdb(
 
             let mut wtxn = lmdb
                 .write_txn()
-                .map_err(|e| eyre::eyre!("LMDB 쓰기 트랜잭션 시작 실패: {e}"))?;
+                .map_err(|e| eyre::eyre!("Failed to start LMDB write transaction: {e}"))?;
 
             let mut blocks_in_batch: u64 = 0;
 
@@ -2311,16 +2551,16 @@ async fn migrate_geth_to_lmdb(
                         continue;
                     }
                     Ok(None) => {
-                        return Err(eyre::eyre!("블록 #{block_number}의 canonical 해시 없음"));
+                        return Err(eyre::eyre!("No canonical hash for block #{block_number}"));
                     }
                     Err(e) if continue_on_error => {
                         skipped_blocks += 1;
-                        eprintln!("경고: 블록 #{block_number} canonical 해시 읽기 실패: {e}");
+                        eprintln!("Warning: failed to read canonical hash for block #{block_number}: {e}");
                         continue;
                     }
                     Err(e) => {
                         return Err(eyre::eyre!(
-                            "블록 #{block_number} canonical 해시 읽기 실패: {e}"
+                            "Failed to read canonical hash for block #{block_number}: {e}"
                         ));
                     }
                 };
@@ -2335,15 +2575,15 @@ async fn migrate_geth_to_lmdb(
                         continue;
                     }
                     Ok(None) => {
-                        return Err(eyre::eyre!("블록 #{block_number} 헤더 없음"));
+                        return Err(eyre::eyre!("Missing header for block #{block_number}"));
                     }
                     Err(e) if continue_on_error => {
                         skipped_blocks += 1;
-                        eprintln!("경고: 블록 #{block_number} 헤더 읽기 실패: {e}");
+                        eprintln!("Warning: failed to read header for block #{block_number}: {e}");
                         continue;
                     }
                     Err(e) => {
-                        return Err(eyre::eyre!("블록 #{block_number} 헤더 읽기 실패: {e}"));
+                        return Err(eyre::eyre!("Failed to read header for block #{block_number}: {e}"));
                     }
                 };
 
@@ -2354,15 +2594,15 @@ async fn migrate_geth_to_lmdb(
                         continue;
                     }
                     Ok(None) => {
-                        return Err(eyre::eyre!("블록 #{block_number} 바디 없음"));
+                        return Err(eyre::eyre!("Missing body for block #{block_number}"));
                     }
                     Err(e) if continue_on_error => {
                         skipped_blocks += 1;
-                        eprintln!("경고: 블록 #{block_number} 바디 읽기 실패: {e}");
+                        eprintln!("Warning: failed to read body for block #{block_number}: {e}");
                         continue;
                     }
                     Err(e) => {
-                        return Err(eyre::eyre!("블록 #{block_number} 바디 읽기 실패: {e}"));
+                        return Err(eyre::eyre!("Failed to read body for block #{block_number}: {e}"));
                     }
                 };
 
@@ -2372,14 +2612,14 @@ async fn migrate_geth_to_lmdb(
 
                 // Write to LMDB
                 lmdb.put_header(&mut wtxn, &block_hash_bytes, &header_rlp)
-                    .map_err(|e| eyre::eyre!("LMDB header 쓰기 실패 #{block_number}: {e}"))?;
+                    .map_err(|e| eyre::eyre!("Failed to write LMDB header for block #{block_number}: {e}"))?;
                 lmdb.put_body(&mut wtxn, &block_hash_bytes, &body_rlp)
-                    .map_err(|e| eyre::eyre!("LMDB body 쓰기 실패 #{block_number}: {e}"))?;
+                    .map_err(|e| eyre::eyre!("Failed to write LMDB body for block #{block_number}: {e}"))?;
                 lmdb.put_canonical(&mut wtxn, block_number, &block_hash_bytes)
-                    .map_err(|e| eyre::eyre!("LMDB canonical 쓰기 실패 #{block_number}: {e}"))?;
+                    .map_err(|e| eyre::eyre!("Failed to write LMDB canonical hash for block #{block_number}: {e}"))?;
                 lmdb.put_header_number(&mut wtxn, block_number, &block_hash_bytes)
                     .map_err(|e| {
-                        eyre::eyre!("LMDB header_numbers 쓰기 실패 #{block_number}: {e}")
+                        eyre::eyre!("Failed to write LMDB header_numbers for block #{block_number}: {e}")
                     })?;
 
                 // Write tx_index entries
@@ -2388,7 +2628,7 @@ async fn migrate_geth_to_lmdb(
                     let tx_hash_bytes: [u8; 32] = tx_hash_h256.0;
                     lmdb.put_tx_index(&mut wtxn, &tx_hash_bytes, &block_hash_bytes, tx_idx as u32)
                         .map_err(|e| {
-                            eyre::eyre!("LMDB tx_index 쓰기 실패 #{block_number} tx {tx_idx}: {e}")
+                            eyre::eyre!("Failed to write LMDB tx_index for block #{block_number} tx {tx_idx}: {e}")
                         })?;
                 }
 
@@ -2422,24 +2662,24 @@ async fn migrate_geth_to_lmdb(
                                 encode_rlp_receipt_list(&items, &mut receipts_rlp);
                                 lmdb.put_receipts(&mut wtxn, &block_hash_bytes, &receipts_rlp)
                                     .map_err(|e| {
-                                        eyre::eyre!("LMDB receipts 쓰기 실패 #{block_number}: {e}")
+                                        eyre::eyre!("Failed to write LMDB receipts for block #{block_number}: {e}")
                                     })?;
                             }
                             Err(e) if continue_on_error => {
-                                eprintln!("경고: 블록 #{block_number} receipt 디코딩 실패: {e}");
+                                eprintln!("Warning: failed to decode receipts for block #{block_number}: {e}");
                             }
                             Err(e) => {
                                 return Err(eyre::eyre!(
-                                    "블록 #{block_number} receipt 디코딩 실패: {e}"
+                                    "Failed to decode receipts for block #{block_number}: {e}"
                                 ));
                             }
                         },
                         Ok(None) => {} // No receipts (e.g., genesis block)
                         Err(e) if continue_on_error => {
-                            eprintln!("경고: 블록 #{block_number} receipt 읽기 실패: {e}");
+                            eprintln!("Warning: failed to read receipts for block #{block_number}: {e}");
                         }
                         Err(e) => {
-                            return Err(eyre::eyre!("블록 #{block_number} receipt 읽기 실패: {e}"));
+                            return Err(eyre::eyre!("Failed to read receipts for block #{block_number}: {e}"));
                         }
                     }
                 }
@@ -2449,10 +2689,10 @@ async fn migrate_geth_to_lmdb(
 
             // Set latest_block in meta
             lmdb.set_latest_block(&mut wtxn, batch_end)
-                .map_err(|e| eyre::eyre!("LMDB meta 쓰기 실패: {e}"))?;
+                .map_err(|e| eyre::eyre!("Failed to write LMDB metadata: {e}"))?;
 
             wtxn.commit()
-                .map_err(|e| eyre::eyre!("LMDB 트랜잭션 커밋 실패: {e}"))?;
+                .map_err(|e| eyre::eyre!("Failed to commit LMDB transaction: {e}"))?;
 
             total_imported += blocks_in_batch;
 
@@ -2502,11 +2742,11 @@ async fn migrate_geth_to_lmdb(
 
             let account_iter = geth_reader
                 .iter_account_snapshots()
-                .map_err(|e| eyre::eyre!("account 스냅샷 순회 실패: {e}"))?;
+                .map_err(|e| eyre::eyre!("Failed to iterate account snapshots: {e}"))?;
 
             let mut wtxn = lmdb
                 .write_txn()
-                .map_err(|e| eyre::eyre!("LMDB 상태 트랜잭션 시작 실패: {e}"))?;
+                .map_err(|e| eyre::eyre!("Failed to start LMDB state transaction: {e}"))?;
 
             for (account_hash, slim_account) in account_iter {
                 let account_hash_bytes: [u8; 32] = account_hash.0;
@@ -2514,7 +2754,7 @@ async fn migrate_geth_to_lmdb(
 
                 // Always write to snap_accounts (hash-keyed)
                 lmdb.put_snap_account(&mut wtxn, &account_hash_bytes, &full_rlp)
-                    .map_err(|e| eyre::eyre!("LMDB snap_accounts 쓰기 실패: {e}"))?;
+                    .map_err(|e| eyre::eyre!("Failed to write LMDB snap_accounts: {e}"))?;
 
                 // Try to resolve preimage for address-keyed accounts DB
                 if let Ok(Some(preimage)) = geth_reader.read_preimage(account_hash) {
@@ -2524,7 +2764,7 @@ async fn migrate_geth_to_lmdb(
                         let computed_hash = keccak256(&address);
                         if computed_hash == account_hash_bytes {
                             lmdb.put_account(&mut wtxn, &address, &full_rlp)
-                                .map_err(|e| eyre::eyre!("LMDB accounts 쓰기 실패: {e}"))?;
+                                .map_err(|e| eyre::eyre!("Failed to write LMDB accounts: {e}"))?;
 
                             // Migrate storage for this account (address-keyed)
                             if let Ok(storage_iter) =
@@ -2540,7 +2780,7 @@ async fn migrate_geth_to_lmdb(
                                         &slot_hash_bytes,
                                         &raw_value,
                                     )
-                                    .map_err(|e| eyre::eyre!("LMDB snap_storage 쓰기 실패: {e}"))?;
+                                    .map_err(|e| eyre::eyre!("Failed to write LMDB snap_storage: {e}"))?;
 
                                     // Try to resolve slot preimage for address-keyed storage
                                     if let Ok(Some(slot_preimage)) =
@@ -2550,12 +2790,12 @@ async fn migrate_geth_to_lmdb(
                                         let slot: [u8; 32] = slot_preimage.try_into().unwrap();
                                         lmdb.put_storage(&mut wtxn, &address, &slot, &raw_value)
                                             .map_err(|e| {
-                                                eyre::eyre!("LMDB storage 쓰기 실패: {e}")
+                                                eyre::eyre!("Failed to write LMDB storage: {e}")
                                             })?;
                                         // P1: original_storage (same data at migration time)
                                         lmdb.put_original_storage(&mut wtxn, &address, &slot, &raw_value)
                                             .map_err(|e| {
-                                                eyre::eyre!("LMDB original_storage 쓰기 실패: {e}")
+                                                eyre::eyre!("Failed to write LMDB original_storage: {e}")
                                             })?;
                                     } else {
                                         slots_without_preimage += 1;
@@ -2580,7 +2820,7 @@ async fn migrate_geth_to_lmdb(
                                 &slot_hash_bytes,
                                 &raw_value,
                             )
-                            .map_err(|e| eyre::eyre!("LMDB snap_storage 쓰기 실패: {e}"))?;
+                            .map_err(|e| eyre::eyre!("Failed to write LMDB snap_storage: {e}"))?;
                             slots_without_preimage += 1;
                             total_storage_slots += 1;
                         }
@@ -2594,7 +2834,7 @@ async fn migrate_geth_to_lmdb(
                     && let Ok(Some(bytecode)) = geth_reader.read_code(slim_account.code_hash)
                 {
                     lmdb.put_code(&mut wtxn, &code_hash_bytes, &bytecode)
-                        .map_err(|e| eyre::eyre!("LMDB code 쓰기 실패: {e}"))?;
+                        .map_err(|e| eyre::eyre!("Failed to write LMDB code: {e}"))?;
                     code_hashes_written.insert(code_hash_bytes);
                     total_code_entries += 1;
                 }
@@ -2604,7 +2844,7 @@ async fn migrate_geth_to_lmdb(
                 // Commit in batches to avoid oversized transactions
                 if processed_accounts.is_multiple_of(STATE_BATCH_SIZE as u64) {
                     wtxn.commit()
-                        .map_err(|e| eyre::eyre!("LMDB 상태 커밋 실패: {e}"))?;
+                        .map_err(|e| eyre::eyre!("Failed to commit LMDB state transaction: {e}"))?;
 
                     #[cfg(feature = "tui")]
                     if let Some(tx) = &tui_tx {
@@ -2617,7 +2857,7 @@ async fn migrate_geth_to_lmdb(
 
                     wtxn = lmdb
                         .write_txn()
-                        .map_err(|e| eyre::eyre!("LMDB 상태 트랜잭션 재시작 실패: {e}"))?;
+                        .map_err(|e| eyre::eyre!("Failed to restart LMDB state transaction: {e}"))?;
                 }
             }
 
@@ -2627,16 +2867,16 @@ async fn migrate_geth_to_lmdb(
                 processed_accounts, total_storage_slots, total_code_entries
             );
             lmdb.set_snap_progress(&mut wtxn, snap_progress.as_bytes())
-                .map_err(|e| eyre::eyre!("LMDB snap_progress 쓰기 실패: {e}"))?;
+                .map_err(|e| eyre::eyre!("Failed to write LMDB snap_progress: {e}"))?;
 
             // Final commit for remaining state data
             wtxn.commit()
-                .map_err(|e| eyre::eyre!("LMDB 최종 상태 커밋 실패: {e}"))?;
+                .map_err(|e| eyre::eyre!("Failed to commit final LMDB state transaction: {e}"))?;
 
             // P2: Warn about preimage misses
             if accounts_without_preimage > 0 || slots_without_preimage > 0 {
                 eprintln!(
-                    "경고: preimage 누락 — 계정: {accounts_without_preimage}, 슬롯: {slots_without_preimage}"
+                    "Warning: missing preimages - accounts: {accounts_without_preimage}, slots: {slots_without_preimage}"
                 );
             }
 
@@ -2661,7 +2901,7 @@ async fn migrate_geth_to_lmdb(
     let final_result: Result<()> = if let Err(err) = migration_result {
         Err(err)
     } else if total_imported == 0 {
-        Err(eyre::eyre!("마이그레이션에서 블록을 가져오지 못했습니다."))
+        Err(eyre::eyre!("Migration could not import any block."))
     } else {
         if verify_offline {
             let (verify_start, verify_end) = resolve_verify_range(
@@ -2722,22 +2962,28 @@ async fn migrate_geth_to_lmdb(
         if let Some(tx) = tui_tx.take() {
             match &final_result {
                 Ok(()) if total_imported > 0 => {
-                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Completed {
-                        imported_blocks: total_imported,
-                        skipped_blocks,
-                        elapsed: started_at.elapsed(),
-                        retries_performed: 0,
-                    });
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Completed {
+                            imported_blocks: total_imported,
+                            skipped_blocks,
+                            elapsed: started_at.elapsed(),
+                            retries_performed: 0,
+                        })
+                        .await;
                 }
                 Ok(()) => {
-                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Error {
-                        message: "마이그레이션에서 블록을 가져오지 못했습니다.".into(),
-                    });
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Error {
+                            message: "Migration could not import any block.".into(),
+                        })
+                        .await;
                 }
                 Err(e) => {
-                    let _ = tx.try_send(crate::tui::event::ProgressEvent::Error {
-                        message: format!("{e:#}"),
-                    });
+                    let _ = tx
+                        .send(crate::tui::event::ProgressEvent::Error {
+                            message: format!("{e:#}"),
+                        })
+                        .await;
                 }
             }
             drop(tx);
@@ -2808,6 +3054,7 @@ const KECCAK_EMPTY_BYTES: [u8; 32] = [
 mod tests {
     use std::{
         fs,
+        path::PathBuf,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -2818,10 +3065,12 @@ mod tests {
     use super::{
         MAX_RETRY_ATTEMPTS, MigrationErrorReport, MigrationPlan, MigrationReport,
         REPORT_SCHEMA_VERSION, RetryFailure, append_report_line, build_migration_error_report,
-        build_migration_plan, classify_error_from_message, classify_error_from_report,
-        classify_io_error_kind, compute_backoff_delay, emit_error_report, emit_report, retry_async,
-        retry_sync,
+        build_migration_plan, check_ethrex_ready, classify_error_from_message,
+        classify_error_from_report, classify_io_error_kind, compute_backoff_delay,
+        emit_error_report, emit_report, retry_async, retry_sync,
     };
+    use ethrex_rlp::encode::RLPEncode;
+    use ethrex_storage::{EngineType, Store, api::tables::BODIES};
     use serde_json::{Value, json};
 
     fn unique_test_path(suffix: &str) -> std::path::PathBuf {
@@ -2830,6 +3079,108 @@ mod tests {
             .expect("clock should be after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("migrations-cli-unit-{suffix}-{nanos}"))
+    }
+
+    fn sepolia_genesis_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../cmd/ethrex/networks/sepolia/genesis.json")
+    }
+
+    #[test]
+    fn decode_storage_value_keeps_compact_bytes_without_left_padding() {
+        let raw = vec![0x01, 0x02, 0x03];
+        let decoded = super::decode_storage_value(&raw);
+        assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn decode_storage_value_decodes_rlp_string_without_left_padding() {
+        let mut raw = vec![0xa0];
+        raw.extend_from_slice(&[0x11; 32]);
+        let decoded = super::decode_storage_value(&raw);
+        assert_eq!(decoded, vec![0x11; 32]);
+    }
+
+    #[test]
+    fn decode_storage_value_decodes_short_rlp_string() {
+        let raw = vec![0x82, 0x12, 0x34];
+        let decoded = super::decode_storage_value(&raw);
+        assert_eq!(decoded, vec![0x12, 0x34]);
+    }
+
+    #[test]
+    fn decode_storage_value_decodes_rlp_empty_string() {
+        let raw = vec![0x80];
+        let decoded = super::decode_storage_value(&raw);
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn decode_storage_value_decodes_long_form_rlp_string() {
+        let mut raw = vec![0xb8, 0x20];
+        raw.extend(std::iter::repeat_n(0x11u8, 32));
+        let decoded = super::decode_storage_value(&raw);
+        assert_eq!(decoded, vec![0x11u8; 32]);
+    }
+
+    #[test]
+    fn ensure_state_migration_consistency_passes_on_exact_match() {
+        let root = ethrex_common::H256::from_low_u64_be(1);
+        let result = super::ensure_state_migration_consistency(0, root, root);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ensure_state_migration_consistency_fails_on_storage_root_mismatch_count() {
+        let root = ethrex_common::H256::from_low_u64_be(1);
+        let err = super::ensure_state_migration_consistency(1, root, root).unwrap_err();
+        assert!(format!("{err}").contains("storage root mismatches"));
+    }
+
+    #[test]
+    fn ensure_state_migration_consistency_fails_on_state_root_mismatch() {
+        let computed = ethrex_common::H256::from_low_u64_be(1);
+        let expected = ethrex_common::H256::from_low_u64_be(2);
+        let err =
+            super::ensure_state_migration_consistency(0, computed, expected).unwrap_err();
+        assert!(format!("{err}").contains("state root mismatch"));
+    }
+
+    #[tokio::test]
+    async fn check_ethrex_ready_tolerates_missing_genesis_body() {
+        let target_path = unique_test_path("ethrex-ready-missing-genesis-body");
+        fs::create_dir_all(&target_path).expect("temp target directory should be created");
+        let genesis_path = sepolia_genesis_path();
+
+        let store = Store::new_from_genesis(
+            &target_path,
+            EngineType::RocksDB,
+            genesis_path.to_str().expect("genesis path should be valid UTF-8"),
+        )
+        .await
+        .expect("store should initialize from genesis");
+
+        let genesis_hash = store
+            .get_canonical_block_hash(0)
+            .await
+            .expect("canonical hash query should succeed")
+            .expect("genesis canonical hash should exist");
+        store
+            .delete(BODIES, genesis_hash.encode_to_vec())
+            .expect("deleting genesis body should succeed");
+
+        let report = check_ethrex_ready(&store, &target_path, true).await;
+        assert!(
+            report.ethrex_ready,
+            "missing genesis body should not fail startup compatibility checks"
+        );
+    }
+
+    #[test]
+    fn evaluate_state_root_gap_rejects_excessive_gap() {
+        let (ok, message) = super::evaluate_state_root_gap(70_000, 0);
+        assert!(!ok);
+        assert!(message.contains("exceeds max allowed"));
     }
 
     #[test]

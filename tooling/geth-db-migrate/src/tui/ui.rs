@@ -213,26 +213,16 @@ fn draw_log(frame: &mut Frame, app: &MigrationApp, area: Rect) {
     let width = area.width.saturating_sub(3) as usize; // Account for borders
     let max_lines = area.height.saturating_sub(2) as usize;
 
-    // Filter logs: if multiple "Account batch" logs exist, keep only the latest
-    let mut filtered_logs: Vec<String> = Vec::new();
-    let mut has_account_batch = false;
-
-    for line in app.log_lines.iter().rev() {
-        if line.contains("[state] Account batch:") {
-            // Skip duplicate account batch logs, keep only first (latest) one
-            if has_account_batch {
-                continue;
-            }
-            has_account_batch = true;
-        }
-        filtered_logs.push(line.clone());
-        if filtered_logs.len() >= max_lines {
-            break;
-        }
-    }
+    let visible_logs: Vec<String> = app
+        .log_lines
+        .iter()
+        .rev()
+        .take(max_lines)
+        .cloned()
+        .collect();
 
     // Truncate long lines to fit display width
-    let items: Vec<ListItem> = filtered_logs
+    let items: Vec<ListItem> = visible_logs
         .iter()
         .map(|line| {
             let truncated = if line.len() > width {
