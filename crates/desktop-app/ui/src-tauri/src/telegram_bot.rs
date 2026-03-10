@@ -16,6 +16,7 @@ use crate::appchain_manager::{AppchainManager, AppchainStatus, StepStatus};
 use crate::deployment_db::{self, DeploymentProxy};
 use crate::pilot_memory::PilotMemory;
 use crate::runner::ProcessRunner;
+use crate::unified_state::UnifiedL2State;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -44,6 +45,7 @@ pub struct TelegramBot {
     appchain_manager: Arc<AppchainManager>,
     runner: Arc<ProcessRunner>,
     memory: Arc<PilotMemory>,
+    unified_state: Arc<UnifiedL2State>,
     chat_history: Mutex<HashMap<i64, Vec<ChatMessage>>>,
     /// Pending destructive actions per chat_id (backend-enforced confirmation)
     pending_confirms: Mutex<HashMap<i64, PendingAction>>,
@@ -103,6 +105,7 @@ impl TelegramBot {
         appchain_manager: Arc<AppchainManager>,
         runner: Arc<ProcessRunner>,
         memory: Arc<PilotMemory>,
+        unified_state: Arc<UnifiedL2State>,
     ) -> Option<Self> {
         let (token, allowed_ids_str, enabled) =
             Self::load_from_file().unwrap_or_else(|| Self::load_from_env());
@@ -124,6 +127,7 @@ impl TelegramBot {
             appchain_manager,
             runner,
             memory,
+            unified_state,
             chat_history: Mutex::new(HashMap::new()),
             pending_confirms: Mutex::new(HashMap::new()),
         })
@@ -163,6 +167,7 @@ impl TelegramBot {
             appchain_manager,
             runner,
             memory,
+            unified_state: Arc::new(UnifiedL2State::new()),
             chat_history: Mutex::new(HashMap::new()),
             pending_confirms: Mutex::new(HashMap::new()),
         }
@@ -409,8 +414,8 @@ impl TelegramBot {
         // Save user message to memory
         self.memory.append_message(chat_id, "user", text);
 
-        // Build context (live = real Docker container state + monitoring + contracts)
-        let deployment_context = build_deployment_context_live().await;
+        // Build context from unified state (cached, no HTTP calls)
+        let unified_context = self.unified_state.to_context_json();
         let pilot_context = self.memory.load_recent_context(chat_id, 20, 20);
 
         // Build chat history for AI
@@ -427,10 +432,8 @@ impl TelegramBot {
         drop(history_lock);
 
         // Build telegram system prompt and call AI
-        let appchain_context = build_appchain_context(&self.appchain_manager);
-        let system_prompt = AiProvider::build_telegram_prompt(
-            &appchain_context,
-            &deployment_context,
+        let system_prompt = AiProvider::build_telegram_prompt_unified(
+            &unified_context,
             &pilot_context,
         );
         let ai_response = match self.ai.chat_with_system_prompt(messages, &system_prompt).await {
@@ -1156,6 +1159,7 @@ pub struct TelegramBotManager {
     appchain_manager: Arc<AppchainManager>,
     runner: Arc<ProcessRunner>,
     memory: Arc<PilotMemory>,
+    unified_state: Arc<UnifiedL2State>,
     notify_config: std::sync::Mutex<Option<NotifyConfig>>,
 }
 
@@ -1171,6 +1175,7 @@ impl TelegramBotManager {
         appchain_manager: Arc<AppchainManager>,
         runner: Arc<ProcessRunner>,
         memory: Arc<PilotMemory>,
+        unified_state: Arc<UnifiedL2State>,
     ) -> Self {
         Self {
             shutdown_tx: std::sync::Mutex::new(None),
@@ -1178,6 +1183,7 @@ impl TelegramBotManager {
             appchain_manager,
             runner,
             memory,
+            unified_state,
             notify_config: std::sync::Mutex::new(None),
         }
     }
@@ -1196,6 +1202,7 @@ impl TelegramBotManager {
             self.appchain_manager.clone(),
             self.runner.clone(),
             self.memory.clone(),
+            self.unified_state.clone(),
         )
         .ok_or("Telegram bot config not found or disabled")?;
 
