@@ -1605,7 +1605,7 @@ async function toolsAction(deployId, action, btnEl) {
         await fetchDetailStatus();
         // Check if tools state changed — clear pending
         const svcs = ['frontend-l1','frontend-l2','bridge-ui'];
-        const anyRunning = (detailStatus?.containers || []).some(c => svcs.includes(c.Service) && c.State === 'running');
+        const anyRunning = (detailStatus?.containers || []).some(c => svcs.includes(c.Service) && (c.State || c.state) === 'running');
         if ((isStart && anyRunning) || (!isStart && !anyRunning)) {
           _toolsPending = null;
           clearTimeout(_toolsPendingTimer);
