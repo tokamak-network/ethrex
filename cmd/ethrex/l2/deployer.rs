@@ -638,12 +638,12 @@ pub async fn deploy_l1_contracts(
         )
     };
 
-    let (contract_addresses, deploy_tx_hashes) =
+    let (contract_addresses, _) =
         deploy_contracts(&eth_client, &opts, &signer).await?;
 
     info!("Initializing contracts");
 
-    let initialize_tx_hashes = initialize_contracts(
+    let _ = initialize_contracts(
         contract_addresses.clone(),
         &eth_client,
         &opts,
