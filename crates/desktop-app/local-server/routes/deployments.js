@@ -358,6 +358,22 @@ router.post("/testnet/estimate-gas", async (req, res) => {
   }
 });
 
+// GET /api/deployments/active/provisions — list currently running provisions
+// NOTE: Must be defined before /:id to avoid route shadowing
+router.get("/active/provisions", (req, res) => {
+  res.json({ provisions: getActiveProvisions() });
+});
+
+// GET /api/deployments/check-image/:slug — check if Docker image exists for a program
+router.get("/check-image/:slug", (req, res) => {
+  try {
+    const image = docker.findImage(req.params.slug);
+    res.json({ exists: !!image, image: image || null });
+  } catch (e) {
+    res.json({ exists: false, image: null });
+  }
+});
+
 // GET /api/deployments/:id — get deployment detail
 router.get("/:id", (req, res) => {
   try {
@@ -776,10 +792,7 @@ router.get("/:id/events/history", (req, res) => {
   }
 });
 
-// GET /api/deployments/active/provisions — list currently running provisions
-router.get("/active/provisions", (req, res) => {
-  res.json({ provisions: getActiveProvisions() });
-});
+// (moved above /:id to avoid route shadowing)
 
 // GET /api/deployments/:id/logs
 router.get("/:id/logs", async (req, res) => {
@@ -889,14 +902,6 @@ router.get("/:id/monitoring", async (req, res) => {
   }
 });
 
-// GET /api/deployments/check-image/:slug — check if Docker image exists for a program
-router.get("/check-image/:slug", (req, res) => {
-  try {
-    const image = docker.findImage(req.params.slug);
-    res.json({ exists: !!image, image: image || null });
-  } catch (e) {
-    res.json({ exists: false, image: null });
-  }
-});
+// (moved above /:id to avoid route shadowing)
 
 module.exports = router;

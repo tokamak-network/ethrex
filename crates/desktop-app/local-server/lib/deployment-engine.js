@@ -28,7 +28,7 @@ const {
   getAppProfile,
 } = require("./compose-generator");
 const { isHealthy } = require("./rpc-client");
-const { updateDeployment, getNextAvailablePorts, getAllDeployments, insertDeployEvent, clearDeployEvents } = require("../db/deployments");
+const { updateDeployment, getDeploymentById, getNextAvailablePorts, getAllDeployments, insertDeployEvent, clearDeployEvents } = require("../db/deployments");
 const { getHostById } = require("../db/hosts");
 const keychain = require("./keychain");
 
@@ -337,6 +337,8 @@ async function provision(deployment) {
     let timelockAddress = null;
     let sp1VerifierAddress = null;
 
+    let envVars = {};
+
     if (hasExistingContracts && !forceRedeploy) {
       // Reuse existing contracts
       emit(id, "phase", { phase: "deploying_contracts", message: `Reusing existing contracts — bridge: ${existingDep.bridge_address}` });
@@ -348,7 +350,7 @@ async function provision(deployment) {
 
       // Try to restore .env from Docker volume for L2 service
       try {
-        const envVars = await docker.extractEnv(projectName, composeFile);
+        envVars = await docker.extractEnv(projectName, composeFile);
         if (envVars.ETHREX_WATCHER_BRIDGE_ADDRESS) bridgeAddress = envVars.ETHREX_WATCHER_BRIDGE_ADDRESS;
       } catch {
         // Use DB values (already set above)
@@ -372,7 +374,6 @@ async function provision(deployment) {
 
       await docker.stopService(projectName, composeFile, "tokamak-app-deployer");
 
-      let envVars = {};
       try {
         envVars = await docker.extractEnv(projectName, composeFile);
       } catch (extractErr) {
@@ -649,7 +650,7 @@ async function provisionTestnet(deployment) {
     checkCancelled(provisionInfo);
 
     // Check if contracts were already deployed for this deployment (e.g. retry after partial failure)
-    const existingDep = require("../db/deployments").getDeploymentById(id);
+    const existingDep = getDeploymentById(id);
     let bridgeAddress = existingDep?.bridge_address || null;
     let proposerAddress = existingDep?.proposer_address || null;
     let timelockAddress = existingDep?.timelock_address || null;
