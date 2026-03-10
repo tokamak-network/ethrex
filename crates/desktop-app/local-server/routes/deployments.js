@@ -285,6 +285,56 @@ router.post("/testnet/resolve-keys", async (req, res) => {
   }
 });
 
+// POST /api/deployments/testnet/estimate-gas — estimate total deployment + operational costs
+router.post("/testnet/estimate-gas", async (req, res) => {
+  try {
+    const { rpcUrl } = req.body;
+    if (!rpcUrl) {
+      return res.status(400).json({ error: "rpcUrl is required" });
+    }
+
+    const rpcCall = makeRpcCaller(rpcUrl);
+    const [gasPriceHex, chainIdHex] = await Promise.all([
+      rpcCall("eth_gasPrice"),
+      rpcCall("eth_chainId"),
+    ]);
+
+    const gasPriceWei = BigInt(gasPriceHex || "0x0");
+    const gasPriceGwei = Number(gasPriceWei) / 1e9;
+    const chainId = parseInt(chainIdHex || "0x0", 16);
+
+    const breakdown = {};
+    let totalGas = 0n;
+    for (const [role, info] of Object.entries(ROLE_GAS_ESTIMATES)) {
+      const gasBI = BigInt(info.gas);
+      const costWei = gasPriceWei * gasBI;
+      const costEth = Number(costWei) / 1e18;
+      totalGas += gasBI;
+      breakdown[role] = {
+        gas: info.gas,
+        label: info.label,
+        detail: info.detail,
+        interval: info.interval || null,
+        costEth: costEth.toFixed(6),
+      };
+    }
+
+    const totalCostWei = gasPriceWei * totalGas;
+    const totalCostEth = Number(totalCostWei) / 1e18;
+
+    res.json({
+      chainId,
+      chainName: CHAIN_NAMES[chainId] || `Chain ${chainId}`,
+      gasPriceGwei: formatGwei(gasPriceGwei),
+      breakdown,
+      totalGas: totalGas.toString(),
+      totalCostEth: totalCostEth.toFixed(6),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/deployments/:id — get deployment detail
 router.get("/:id", (req, res) => {
   try {

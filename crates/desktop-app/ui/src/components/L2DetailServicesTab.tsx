@@ -51,11 +51,12 @@ interface Props {
   actionLoading: boolean
   handleAction: (action: 'start' | 'stop') => void
   onRefresh?: () => void
+  onRetry?: () => void
 }
 
 export default function L2DetailServicesTab({
   l2, ko, containers, products, actionLoading, handleAction,
-  onRefresh,
+  onRefresh, onRetry,
 }: Props) {
   const [toolsLoading, setToolsLoading] = useState(false)
   const [bridgeConfig, setBridgeConfig] = useState<BridgeUIConfig | null>(null)
@@ -259,6 +260,45 @@ export default function L2DetailServicesTab({
           )
         })}
       </div>
+
+      {/* Error Recovery */}
+      {(l2.phase === 'error' || l2.status === 'error') && (
+        <div className="bg-[var(--color-error)]/10 rounded-xl p-3 border border-[var(--color-error)]/30">
+          <div className="flex items-start gap-2">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-error)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0 mt-0.5">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <div className="flex-1 min-w-0">
+              <div className="text-[12px] font-medium text-[var(--color-error)]">
+                {ko ? '배포 중 오류가 발생했습니다' : 'Deployment failed'}
+              </div>
+              {l2.errorMessage && (
+                <div className="text-[11px] text-[var(--color-text-secondary)] mt-0.5 break-words">
+                  {l2.errorMessage}
+                </div>
+              )}
+              {(l2.bridgeAddress || l2.proposerAddress) && (
+                <div className="text-[10px] text-[var(--color-text-secondary)] mt-1">
+                  {ko
+                    ? '일부 컨트랙트가 이미 배포되었습니다. 재시도 시 기존 컨트랙트를 재사용합니다.'
+                    : 'Some contracts were already deployed. Retry will reuse existing contracts.'}
+                </div>
+              )}
+            </div>
+          </div>
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              disabled={actionLoading}
+              className="mt-2 w-full py-2 rounded-xl text-[12px] font-medium bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-[var(--color-accent-text)] transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {actionLoading
+                ? (ko ? '재시도 중...' : 'Retrying...')
+                : (ko ? '배포 재시도' : 'Retry Deployment')}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Actions — show contextual button based on container state */}
       {(() => {

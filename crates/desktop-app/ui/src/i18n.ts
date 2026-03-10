@@ -131,6 +131,10 @@ const translations: Record<Lang, Record<string, string>> = {
     'myl2.wizard.checkingImage': '기존 이미지 확인 중...',
     'myl2.wizard.imageWillReuse': '기존 이미지를 재사용합니다 (빌드 건너뜀)',
     'myl2.wizard.imageWillBuild': '새로 빌드합니다',
+    'myl2.wizard.costBreakdown': '배포 비용 상세',
+    'myl2.wizard.monthlyCost': '월간 운영 비용',
+    'myl2.wizard.oneTimeCost': '일회성 비용',
+    'myl2.wizard.totalCost': '총 예상 비용 (첫 달)',
     // Chat
     'chat.title': 'Appchain Pilot',
     'chat.notConnected': '연결 안됨 - 설정에서 구성하세요',
@@ -378,6 +382,10 @@ const translations: Record<Lang, Record<string, string>> = {
     'myl2.wizard.checkingImage': 'Checking for existing images...',
     'myl2.wizard.imageWillReuse': 'Existing image will be reused (build skipped)',
     'myl2.wizard.imageWillBuild': 'Will build fresh',
+    'myl2.wizard.costBreakdown': 'Cost Breakdown',
+    'myl2.wizard.monthlyCost': 'Monthly operational cost',
+    'myl2.wizard.oneTimeCost': 'One-time cost',
+    'myl2.wizard.totalCost': 'Total estimated cost (first month)',
     // Chat
     'chat.title': 'Appchain Pilot',
     'chat.notConnected': 'Not connected - Configure in Settings',

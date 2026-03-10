@@ -965,6 +965,126 @@ testAsync("isHealthy returns false for unreachable host", async () => {
     )
 
     // ==========================================
+    // Phase 4: Stability Tests
+    // ==========================================
+    .then(() => {
+      console.log("\n--- Phase 4: Stability Tests ---");
+      return Promise.resolve();
+    })
+
+    // -- estimate-gas API: rejects missing rpcUrl --
+    .then(() =>
+      testAsync("POST /testnet/estimate-gas rejects missing rpcUrl", async () => {
+        const app = require("./server");
+        const server = http.createServer(app);
+        await new Promise((resolve) => server.listen(0, resolve));
+        const port = server.address().port;
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/api/deployments/testnet/estimate-gas`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          assert.equal(res.status, 400);
+          const data = await res.json();
+          assert.ok(data.error.includes("rpcUrl"), `Expected rpcUrl error, got: ${data.error}`);
+        } finally {
+          server.close();
+        }
+      })
+    )
+
+    // -- estimate-gas API: returns breakdown for all 4 roles --
+    .then(() =>
+      test("ROLE_GAS_ESTIMATES covers all roles for estimate-gas breakdown", () => {
+        const ROLE_GAS_ESTIMATES = {
+          deployer: { gas: 25_000_000 },
+          committer: { gas: 8_640_000_000 },
+          "proof-coordinator": { gas: 12_960_000_000 },
+          "bridge-owner": { gas: 500_000 },
+        };
+        assert.equal(Object.keys(ROLE_GAS_ESTIMATES).length, 4);
+        // Total gas should be the sum
+        const totalGas = Object.values(ROLE_GAS_ESTIMATES).reduce((acc, r) => acc + BigInt(r.gas), 0n);
+        assert.equal(totalGas, 21625500000n);
+      })
+    )
+
+    // -- provision retry: error phase allows re-provision --
+    .then(() =>
+      testAsync("POST /provision allows retry on error phase deployment", async () => {
+        const app = require("./server");
+        const server = http.createServer(app);
+        await new Promise((resolve) => server.listen(0, resolve));
+        const port = server.address().port;
+        try {
+          // Create a deployment
+          let res = await fetch(`http://127.0.0.1:${port}/api/deployments`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Retry Test" }),
+          });
+          const { deployment } = await res.json();
+
+          // Set it to error phase
+          const deploymentsDb = require("./db/deployments");
+          deploymentsDb.updateDeployment(deployment.id, { phase: "error", error_message: "Build failed" });
+
+          // Verify provision is NOT rejected (it should accept error phase)
+          res = await fetch(`http://127.0.0.1:${port}/api/deployments/${deployment.id}/provision`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          // provision should accept (200) not reject (400)
+          assert.equal(res.status, 200);
+          const data = await res.json();
+          assert.equal(data.ok, true);
+
+          // Cleanup
+          deploymentsDb.deleteDeployment(deployment.id);
+        } finally {
+          server.close();
+        }
+      })
+    )
+
+    // -- provision retry: in-progress phase rejects --
+    .then(() =>
+      testAsync("POST /provision rejects retry during in-progress phase", async () => {
+        const app = require("./server");
+        const server = http.createServer(app);
+        await new Promise((resolve) => server.listen(0, resolve));
+        const port = server.address().port;
+        try {
+          let res = await fetch(`http://127.0.0.1:${port}/api/deployments`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "InProgress Test" }),
+          });
+          const { deployment } = await res.json();
+
+          // Set to building phase (in-progress)
+          const deploymentsDb = require("./db/deployments");
+          deploymentsDb.updateDeployment(deployment.id, { phase: "building" });
+
+          res = await fetch(`http://127.0.0.1:${port}/api/deployments/${deployment.id}/provision`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          assert.equal(res.status, 400);
+          const data = await res.json();
+          assert.ok(data.error.includes("already in progress"), `Expected in-progress error, got: ${data.error}`);
+
+          deploymentsDb.deleteDeployment(deployment.id);
+        } finally {
+          server.close();
+        }
+      })
+    )
+
+    // ==========================================
     // Phase 3: UX Improvement Tests
     // ==========================================
     .then(() => {

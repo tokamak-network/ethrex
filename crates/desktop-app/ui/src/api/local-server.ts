@@ -162,6 +162,17 @@ class LocalServerAPI {
     })
   }
 
+  estimateGas(rpcUrl: string) {
+    return this.fetch<{
+      chainId: number; chainName: string; gasPriceGwei: string
+      breakdown: Record<string, { gas: number; label: string; detail: string; interval: string | null; costEth: string }>
+      totalGas: string; totalCostEth: string
+    }>('/api/deployments/testnet/estimate-gas', {
+      method: 'POST',
+      body: JSON.stringify({ rpcUrl }),
+    })
+  }
+
   checkImage(slug: string) {
     return this.fetch<{ exists: boolean; image: string | null }>(`/api/deployments/check-image/${encodeURIComponent(slug)}`)
   }

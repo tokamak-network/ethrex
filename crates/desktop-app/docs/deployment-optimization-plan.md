@@ -431,13 +431,13 @@ Deployer 잔액: 1.5 ETH ✅ 충분
 | 11 | 빌드 진행률 개선 (단계별 표시) | `SetupProgressView.tsx` | ⏳ (Tauri 전용, 별도 작업 필요) |
 | 12 | Committer/ProofCoord 잔액 소진 경고 | `L2DetailServicesTab.tsx`, API | ✅ |
 
-### Phase 4: 안정성 — 미착수
+### Phase 4: 안정성 — ✅ 완료 (13번 제외)
 
-| # | 작업 | 파일 | 난이도 |
-|---|------|------|--------|
-| 13 | deployer.rs 구조화된 JSON 출력 | `deployer.rs` | 중 |
-| 14 | 부분 배포 복구 UI | `deployment-engine.js`, UI | 상 |
-| 15 | 배포 비용 사전 계산 API | `deployments.js` | 중 |
+| # | 작업 | 파일 | 상태 |
+|---|------|------|------|
+| 13 | deployer.rs 구조화된 JSON 출력 | `deployer.rs` | ⏳ (Rust 변경 필요, 별도 작업) |
+| 14 | 부분 배포 복구 UI | `L2DetailServicesTab.tsx`, `L2DetailView.tsx` | ✅ |
+| 15 | 배포 비용 사전 계산 API | `deployments.js`, `CreateL2Wizard.tsx` | ✅ |
 
 ---
 

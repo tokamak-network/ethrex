@@ -60,6 +60,10 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
   const [forceRebuild, setForceRebuild] = useState(false)
   const [forceRedeploy, setForceRedeploy] = useState(false)
   const [existingImage, setExistingImage] = useState<{ checked: boolean; exists: boolean }>({ checked: false, exists: false })
+  const [gasEstimate, setGasEstimate] = useState<{
+    breakdown: Record<string, { gas: number; label: string; costEth: string; interval: string | null }>
+    totalCostEth: string; gasPriceGwei: string
+  } | null>(null)
 
   const isTestnetOrMainnet = networkMode === 'testnet' || networkMode === 'mainnet'
 
@@ -108,10 +112,15 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
 
   const testRpc = useCallback(async () => {
     setRpcStatus({ state: 'testing' })
+    setGasEstimate(null)
     try {
       const result = await localServerAPI.checkRpc(config.l1Rpc)
       if (result.ok) {
         setRpcStatus({ state: 'ok', chainId: result.chainId, chainName: result.chainName, blockNumber: result.blockNumber })
+        // Auto-fetch gas estimate on successful connection
+        localServerAPI.estimateGas(config.l1Rpc)
+          .then(est => setGasEstimate({ breakdown: est.breakdown, totalCostEth: est.totalCostEth, gasPriceGwei: est.gasPriceGwei }))
+          .catch(() => {})
       } else {
         setRpcStatus({ state: 'error', error: 'Unexpected response' })
       }
@@ -382,6 +391,33 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
                 </div>
               )}
             </div>
+            {/* Gas Cost Breakdown (shown after successful RPC test) */}
+            {isTestnetOrMainnet && gasEstimate && rpcStatus.state === 'ok' && (
+              <div className="bg-[var(--color-bg-sidebar)] rounded-xl p-4 border border-[var(--color-border)]">
+                <h3 className="text-sm font-medium mb-2">{t('myl2.wizard.costBreakdown', lang)}</h3>
+                <div className="space-y-1.5 text-[12px]">
+                  {Object.entries(gasEstimate.breakdown).map(([role, info]) => (
+                    <div key={role} className="flex items-center justify-between">
+                      <div className="flex-1 min-w-0">
+                        <span className="text-[var(--color-text-primary)]">{info.label}</span>
+                        {info.interval && (
+                          <span className="text-[10px] text-[var(--color-text-secondary)] ml-1">({info.interval})</span>
+                        )}
+                      </div>
+                      <span className="font-mono text-[11px] ml-2 flex-shrink-0">~{info.costEth} ETH</span>
+                    </div>
+                  ))}
+                  <div className="border-t border-[var(--color-border)] pt-1.5 mt-1.5 flex justify-between font-medium">
+                    <span>{t('myl2.wizard.totalCost', lang)}</span>
+                    <span className="font-mono text-[11px]">~{gasEstimate.totalCostEth} ETH</span>
+                  </div>
+                  <div className="text-[10px] text-[var(--color-text-secondary)]">
+                    {t('myl2.wizard.gasPrice', lang)}: {gasEstimate.gasPriceGwei} Gwei
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="bg-[var(--color-bg-sidebar)] rounded-xl p-4 border border-[var(--color-border)]">
               <label className="text-[11px] text-[var(--color-text-secondary)] block mb-1">L2 RPC Port</label>
               <input value={config.rpcPort} onChange={e => update('rpcPort', e.target.value)}
