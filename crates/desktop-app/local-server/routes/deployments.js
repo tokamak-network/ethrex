@@ -19,6 +19,7 @@ const docker = require("../lib/docker-local");
 const remote = require("../lib/docker-remote");
 const { getDeploymentDir } = require("../lib/compose-generator");
 const rpc = require("../lib/rpc-client");
+const keychain = require("../lib/keychain");
 const db = require("../db/db");
 const path = require("path");
 const fs = require("fs");
@@ -100,6 +101,33 @@ const ROLE_GAS_ESTIMATES = {
   },
 };
 
+// Shared RPC call helper with 10s timeout
+function makeRpcCaller(rpcUrl) {
+  return async (method, params = []) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const r = await globalThis.fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        signal: controller.signal,
+      });
+      const data = await r.json();
+      if (data.error) throw new Error(data.error.message || "RPC error");
+      return data.result;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+}
+
+const CHAIN_NAMES = { 1: "Ethereum Mainnet", 11155111: "Sepolia", 17000: "Holesky" };
+
+function formatGwei(gasPriceGwei) {
+  return gasPriceGwei < 0.0001 ? gasPriceGwei.toPrecision(4) : gasPriceGwei.toFixed(4);
+}
+
 // POST /api/deployments/testnet/check-balance — check account balance on testnet
 router.post("/testnet/check-balance", async (req, res) => {
   try {
@@ -111,24 +139,7 @@ router.post("/testnet/check-balance", async (req, res) => {
       return res.status(400).json({ error: "Invalid Ethereum address format" });
     }
 
-    const rpcCall = async (method, params = []) => {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
-      try {
-        const r = await globalThis.fetch(rpcUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-          signal: controller.signal,
-        });
-        const data = await r.json();
-        if (data.error) throw new Error(data.error.message || "RPC error");
-        return data.result;
-      } finally {
-        clearTimeout(timeout);
-      }
-    };
-
+    const rpcCall = makeRpcCaller(rpcUrl);
     const [balanceHex, chainIdHex, gasPriceHex] = await Promise.all([
       rpcCall("eth_getBalance", [address, "latest"]),
       rpcCall("eth_chainId"),
@@ -152,13 +163,122 @@ router.post("/testnet/check-balance", async (req, res) => {
       role: role || "deployer",
       balanceEth: balanceEth.toFixed(6),
       chainId,
-      gasPriceGwei: gasPriceGwei < 0.0001 ? gasPriceGwei.toPrecision(4) : gasPriceGwei.toFixed(4),
+      gasPriceGwei: formatGwei(gasPriceGwei),
       estimatedGas,
       gasLabel: roleInfo.label,
       gasDetail: roleInfo.detail,
       interval: roleInfo.interval || null,
       estimatedCostEth: estimatedCostEth.toFixed(6),
       sufficient,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/deployments/testnet/check-rpc — test L1 RPC connectivity
+router.post("/testnet/check-rpc", async (req, res) => {
+  try {
+    const { rpcUrl } = req.body;
+    if (!rpcUrl) {
+      return res.status(400).json({ error: "rpcUrl is required" });
+    }
+
+    const rpcCall = makeRpcCaller(rpcUrl);
+    const [chainIdHex, blockHex] = await Promise.all([
+      rpcCall("eth_chainId"),
+      rpcCall("eth_blockNumber"),
+    ]);
+
+    const chainId = parseInt(chainIdHex || "0x0", 16);
+    const blockNumber = parseInt(blockHex || "0x0", 16);
+    const chainName = CHAIN_NAMES[chainId] || `Chain ${chainId}`;
+
+    res.json({ ok: true, chainId, chainName, blockNumber });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// GET /api/deployments/keychain/accounts — list keychain accounts
+router.get("/keychain/accounts", (req, res) => {
+  try {
+    const accounts = keychain.listAccounts();
+    res.json({ accounts });
+  } catch (e) {
+    res.json({ accounts: [] });
+  }
+});
+
+// POST /api/deployments/testnet/resolve-keys — resolve keychain keys to addresses + balances
+router.post("/testnet/resolve-keys", async (req, res) => {
+  try {
+    const { rpcUrl, deployerKey, committerKey, proofCoordinatorKey, bridgeOwnerKey } = req.body;
+    if (!rpcUrl) {
+      return res.status(400).json({ error: "rpcUrl is required" });
+    }
+
+    const { ethers } = require("ethers");
+
+    const resolveRole = (keychainName, label) => {
+      if (!keychainName) return null;
+      const pk = keychain.getSecret(keychainName);
+      if (!pk) return { error: `Key "${keychainName}" not found in Keychain`, label };
+      try {
+        const wallet = new ethers.Wallet(pk);
+        return { address: wallet.address, label, keychainName };
+      } catch {
+        return { error: `Invalid key format for "${keychainName}"`, label };
+      }
+    };
+
+    const roles = {
+      deployer: resolveRole(deployerKey, "Deployer"),
+      committer: resolveRole(committerKey, "Committer") || resolveRole(deployerKey, "Committer"),
+      proofCoordinator: resolveRole(proofCoordinatorKey, "Proof Coordinator") || resolveRole(deployerKey, "Proof Coordinator"),
+      bridgeOwner: resolveRole(bridgeOwnerKey, "Bridge Owner") || resolveRole(deployerKey, "Bridge Owner"),
+    };
+
+    const errors = Object.values(roles).filter(r => r?.error);
+    if (errors.length > 0) {
+      return res.status(400).json({ error: errors[0].error, roles });
+    }
+
+    // Fetch balances in parallel using BigInt for precision
+    const rpcCall = makeRpcCaller(rpcUrl);
+    const uniqueAddresses = [...new Set(Object.values(roles).map(r => r?.address).filter(Boolean))];
+    const balanceWeis = {};
+    const [gasPriceHex] = await Promise.all([
+      rpcCall("eth_gasPrice"),
+      ...uniqueAddresses.map(async (addr) => {
+        const hex = await rpcCall("eth_getBalance", [addr, "latest"]);
+        balanceWeis[addr] = BigInt(hex || "0x0");
+      }),
+    ]);
+
+    const gasPriceWei = BigInt(gasPriceHex || "0x0");
+    const gasPriceGwei = Number(gasPriceWei) / 1e9;
+
+    // Estimate total deployment cost using BigInt
+    const deployerGas = ROLE_GAS_ESTIMATES.deployer.gas;
+    const estimatedCostWei = gasPriceWei * BigInt(deployerGas);
+    const estimatedCostEth = Number(estimatedCostWei) / 1e18;
+
+    // Enrich roles with balances
+    for (const role of Object.values(roles)) {
+      if (role?.address) {
+        const wei = balanceWeis[role.address] || 0n;
+        role.balance = (Number(wei) / 1e18).toFixed(6);
+      }
+    }
+
+    const deployerWei = roles.deployer?.address ? (balanceWeis[roles.deployer.address] || 0n) : 0n;
+
+    res.json({
+      roles,
+      gasPriceGwei: formatGwei(gasPriceGwei),
+      estimatedDeployCostEth: estimatedCostEth.toFixed(6),
+      deployerSufficient: deployerWei >= estimatedCostWei,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

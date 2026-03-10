@@ -138,6 +138,45 @@ class LocalServerAPI {
     return es
   }
 
+  // Testnet utilities
+  checkRpc(rpcUrl: string) {
+    return this.fetch<{ ok: boolean; chainId: number; chainName: string; blockNumber: number }>('/api/deployments/testnet/check-rpc', {
+      method: 'POST',
+      body: JSON.stringify({ rpcUrl }),
+    })
+  }
+
+  listKeychainAccounts() {
+    return this.fetch<{ accounts: string[] }>('/api/deployments/keychain/accounts')
+  }
+
+  resolveKeys(data: { rpcUrl: string; deployerKey: string; committerKey?: string; proofCoordinatorKey?: string; bridgeOwnerKey?: string }) {
+    return this.fetch<{
+      roles: Record<string, { address: string; balance: string; label: string; error?: string }>
+      gasPriceGwei: string
+      estimatedDeployCostEth: string
+      deployerSufficient: boolean
+    }>('/api/deployments/testnet/resolve-keys', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  checkImage(slug: string) {
+    return this.fetch<{ exists: boolean; image: string | null }>(`/api/deployments/check-image/${encodeURIComponent(slug)}`)
+  }
+
+  checkBalance(data: { rpcUrl: string; address: string; role?: string }) {
+    return this.fetch<{
+      address: string; role: string; balanceEth: string; chainId: number
+      gasPriceGwei: string; estimatedGas: number; gasLabel: string
+      estimatedCostEth: string; sufficient: boolean
+    }>('/api/deployments/testnet/check-balance', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
   // Hosts
   listHosts() {
     return this.fetch<{ hosts: Host[] }>('/api/hosts')

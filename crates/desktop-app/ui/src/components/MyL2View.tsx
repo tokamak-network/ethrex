@@ -69,6 +69,7 @@ export interface L2Config {
   // Testnet fields
   testnetNetwork: string | null  // 'sepolia' | 'holesky' | null
   testnetL1RpcUrl: string | null
+  rawConfig: string | null
 }
 
 function deploymentToL2Config(d: DeploymentFromDB): L2Config {
@@ -115,6 +116,7 @@ function deploymentToL2Config(d: DeploymentFromDB): L2Config {
     l2ChainId: null,
     testnetNetwork: isTestnet ? (testnet.network as string ?? null) : null,
     testnetL1RpcUrl: isTestnet ? (testnet.l1RpcUrl as string ?? null) : null,
+    rawConfig: d.config as string | null,
   }
 }
 
@@ -294,6 +296,7 @@ export default function MyL2View() {
     }
   }
 
+  // @ts-expect-error: Delete handler prepared for future use in deployment list
   const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation()
     if (confirmDeleteId !== id) {

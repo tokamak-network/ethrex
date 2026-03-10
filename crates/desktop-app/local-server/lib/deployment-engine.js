@@ -224,10 +224,14 @@ async function provision(deployment) {
   // Parse config
   let deployDir = null;
   let dumpFixtures = false;
+  let forceRebuild = false;
+  let forceRedeploy = false;
   try {
     const config = deployment.config ? JSON.parse(deployment.config) : {};
     deployDir = config.deployDir || null;
     dumpFixtures = !!config.dumpFixtures;
+    forceRebuild = !!config.forceRebuild;
+    forceRedeploy = !!config.forceRedeploy;
   } catch {}
 
   const { l1Port, l2Port, proofCoordPort, toolsL1ExplorerPort, toolsL2ExplorerPort, toolsBridgeUIPort, toolsDbPort, toolsMetricsPort } = await getNextAvailablePorts();
@@ -257,15 +261,24 @@ async function provision(deployment) {
     const composeContent = generateComposeFile({ programSlug, l1Port, l2Port, proofCoordPort, metricsPort: toolsMetricsPort, projectName, gpu, dumpFixtures });
     composeFile = writeComposeFile(id, composeContent, deployDir);
 
-    emit(id, "phase", { phase: "building", message: "Building Docker images... (this may take several minutes on first run)" });
-    await trackedDockerRun(provisionInfo, () =>
-      docker.buildImages(projectName, composeFile, { DOCKER_ETHREX_WORKDIR: "/usr/local/bin" }, (chunk) => {
-        const lines = chunk.split("\n").filter(Boolean);
-        for (const line of lines) {
-          emit(id, "log", { message: line });
-        }
-      })
-    );
+    // Check for existing image to skip rebuild (unless forceRebuild)
+    const existingImage = !forceRebuild ? docker.findImage(programSlug) : null;
+    if (existingImage && !forceRebuild) {
+      emit(id, "phase", { phase: "building", message: `Docker image found (${existingImage}) — skipping build` });
+      emit(id, "log", { message: `Reusing existing image: ${existingImage}` });
+    } else {
+      emit(id, "phase", { phase: "building", message: forceRebuild
+        ? "Force rebuilding Docker images..."
+        : "Building Docker images... (this may take several minutes on first run)" });
+      await trackedDockerRun(provisionInfo, () =>
+        docker.buildImages(projectName, composeFile, { DOCKER_ETHREX_WORKDIR: "/usr/local/bin" }, (chunk) => {
+          const lines = chunk.split("\n").filter(Boolean);
+          for (const line of lines) {
+            emit(id, "log", { message: line });
+          }
+        }, { forceRebuild })
+      );
+    }
 
     checkCancelled(provisionInfo);
 
@@ -281,56 +294,86 @@ async function provision(deployment) {
     checkCancelled(provisionInfo);
 
     provisionInfo.phase = "deploying_contracts";
-    emit(id, "phase", { phase: "deploying_contracts", message: "Deploying L1 contracts (bridge, proposer, verifier)..." });
     updateDeployment(id, { phase: "deploying_contracts" });
-    const contractLogLines = [];
-    const contractLogFn = (chunk) => {
-      const lines = chunk.split("\n").filter(Boolean);
-      for (const line of lines) {
-        contractLogLines.push(line);
-        emit(id, "log", { message: line });
+
+    // Check for existing contract addresses (skip redeploy when possible)
+    const existingDep = getDeploymentById(id);
+    const hasExistingContracts = existingDep?.bridge_address && existingDep?.proposer_address;
+    let bridgeAddress = null;
+    let proposerAddress = null;
+    let timelockAddress = null;
+    let sp1VerifierAddress = null;
+
+    if (hasExistingContracts && !forceRedeploy) {
+      // Reuse existing contracts
+      emit(id, "phase", { phase: "deploying_contracts", message: `Reusing existing contracts — bridge: ${existingDep.bridge_address}` });
+      emit(id, "log", { message: `Skipping contract deployment: bridge=${existingDep.bridge_address}, proposer=${existingDep.proposer_address}` });
+      bridgeAddress = existingDep.bridge_address;
+      proposerAddress = existingDep.proposer_address;
+      timelockAddress = existingDep.timelock_address;
+      sp1VerifierAddress = existingDep.sp1_verifier_address;
+
+      // Try to restore .env from Docker volume for L2 service
+      try {
+        const envVars = await docker.extractEnv(projectName, composeFile);
+        if (envVars.ETHREX_WATCHER_BRIDGE_ADDRESS) bridgeAddress = envVars.ETHREX_WATCHER_BRIDGE_ADDRESS;
+      } catch {
+        // Use DB values (already set above)
       }
-    };
-    await trackedDockerRun(provisionInfo, () =>
-      docker.deployContracts(projectName, composeFile, { DOCKER_ETHREX_WORKDIR: "/usr/local/bin" }, contractLogFn)
-    );
+    } else {
+      // Deploy contracts
+      emit(id, "phase", { phase: "deploying_contracts", message: forceRedeploy
+        ? "Force redeploying L1 contracts..."
+        : "Deploying L1 contracts (bridge, proposer, verifier)..." });
+      const contractLogLines = [];
+      const contractLogFn = (chunk) => {
+        const lines = chunk.split("\n").filter(Boolean);
+        for (const line of lines) {
+          contractLogLines.push(line);
+          emit(id, "log", { message: line });
+        }
+      };
+      await trackedDockerRun(provisionInfo, () =>
+        docker.deployContracts(projectName, composeFile, { DOCKER_ETHREX_WORKDIR: "/usr/local/bin" }, contractLogFn)
+      );
 
-    await docker.stopService(projectName, composeFile, "tokamak-app-deployer");
+      await docker.stopService(projectName, composeFile, "tokamak-app-deployer");
 
-    let envVars = {};
-    try {
-      envVars = await docker.extractEnv(projectName, composeFile);
-    } catch (extractErr) {
-      emit(id, "log", { message: `Warning: extractEnv failed: ${extractErr.message}, retrying...` });
-      await new Promise(r => setTimeout(r, 3000));
+      let envVars = {};
       try {
         envVars = await docker.extractEnv(projectName, composeFile);
-      } catch (retryErr) {
-        emit(id, "log", { message: `extractEnv retry failed: ${retryErr.message}` });
+      } catch (extractErr) {
+        emit(id, "log", { message: `Warning: extractEnv failed: ${extractErr.message}, retrying...` });
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+          envVars = await docker.extractEnv(projectName, composeFile);
+        } catch (retryErr) {
+          emit(id, "log", { message: `extractEnv retry failed: ${retryErr.message}` });
+        }
       }
-    }
 
-    let bridgeAddress = envVars.ETHREX_WATCHER_BRIDGE_ADDRESS || null;
-    let proposerAddress = envVars.ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS || null;
-    let timelockAddress = envVars.ETHREX_TIMELOCK_ADDRESS || null;
-    let sp1VerifierAddress = envVars.ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS || null;
+      bridgeAddress = envVars.ETHREX_WATCHER_BRIDGE_ADDRESS || null;
+      proposerAddress = envVars.ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS || null;
+      timelockAddress = envVars.ETHREX_TIMELOCK_ADDRESS || null;
+      sp1VerifierAddress = envVars.ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS || null;
 
-    // Fallback: parse addresses from deployer log output (covers case where .env wasn't written)
-    if (!bridgeAddress || !proposerAddress) {
-      const parsed = parseContractAddressesFromLogs(contractLogLines);
-      if (!bridgeAddress && parsed.bridge) bridgeAddress = parsed.bridge;
-      if (!proposerAddress && parsed.proposer) proposerAddress = parsed.proposer;
-      if (!timelockAddress && parsed.timelock) timelockAddress = parsed.timelock;
-      if (!sp1VerifierAddress && parsed.sp1Verifier) sp1VerifierAddress = parsed.sp1Verifier;
-      if (parsed.bridge || parsed.proposer) {
-        emit(id, "log", { message: `Parsed addresses from deployer logs: bridge=${parsed.bridge}, proposer=${parsed.proposer}` });
+      // Fallback: parse addresses from deployer log output
+      if (!bridgeAddress || !proposerAddress) {
+        const parsed = parseContractAddressesFromLogs(contractLogLines);
+        if (!bridgeAddress && parsed.bridge) bridgeAddress = parsed.bridge;
+        if (!proposerAddress && parsed.proposer) proposerAddress = parsed.proposer;
+        if (!timelockAddress && parsed.timelock) timelockAddress = parsed.timelock;
+        if (!sp1VerifierAddress && parsed.sp1Verifier) sp1VerifierAddress = parsed.sp1Verifier;
+        if (parsed.bridge || parsed.proposer) {
+          emit(id, "log", { message: `Parsed addresses from deployer logs: bridge=${parsed.bridge}, proposer=${parsed.proposer}` });
+        }
       }
     }
 
     console.log(`[deployment-engine] contract addresses for ${projectName}: bridge=${bridgeAddress}, proposer=${proposerAddress}, timelock=${timelockAddress}, sp1Verifier=${sp1VerifierAddress}`);
     emit(id, "log", { message: `Contract addresses [${projectName}]: bridge=${bridgeAddress}, proposer=${proposerAddress}, timelock=${timelockAddress}, sp1Verifier=${sp1VerifierAddress}` });
 
-    // Save whatever addresses we got (even partial) so they can be reused on retry
+    // Save addresses so they can be reused on retry
     if (bridgeAddress || proposerAddress) {
       updateDeployment(id, {
         bridge_address: bridgeAddress,
