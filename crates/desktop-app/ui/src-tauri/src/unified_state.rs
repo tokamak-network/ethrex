@@ -361,7 +361,7 @@ pub async fn spawn_state_refresh(
     memory: Arc<PilotMemory>,
     app_handle: tauri::AppHandle,
 ) {
-    // Pipe events to PilotMemory + Tauri frontend events
+    // Pipe events to PilotMemory + Tauri frontend events (separate task)
     let mut event_rx = state.subscribe_events();
     let memory_clone = memory.clone();
     let app_clone = app_handle.clone();
@@ -381,13 +381,11 @@ pub async fn spawn_state_refresh(
         }
     });
 
-    // Periodic refresh loop
-    tokio::spawn(async move {
-        loop {
-            state.do_refresh(&am, &runner).await;
-            tokio::time::sleep(tokio::time::Duration::from_secs(REFRESH_INTERVAL_SECS)).await;
-        }
-    });
+    // Periodic refresh loop (runs directly in this task)
+    loop {
+        state.do_refresh(&am, &runner).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(REFRESH_INTERVAL_SECS)).await;
+    }
 }
 
 // ── Helpers ──
@@ -459,23 +457,39 @@ fn diff_and_emit(
                     });
                 }
 
-                // Health change (deployment only)
-                if let (Some(old_h), Some(new_h)) = (&old_item.health, &new_item.health) {
-                    if old_h.l1_healthy != new_h.l1_healthy || old_h.l2_healthy != new_h.l2_healthy
-                    {
+                // Health change detection
+                match (&old_item.health, &new_item.health) {
+                    (Some(old_h), Some(new_h)) => {
+                        if old_h.l1_healthy != new_h.l1_healthy || old_h.l2_healthy != new_h.l2_healthy {
+                            let _ = tx.send(L2Event {
+                                event_type: "health_changed".to_string(),
+                                l2_id: new_item.id.clone(),
+                                l2_name: new_item.name.clone(),
+                                source_type: format!("{:?}", new_item.source).to_lowercase(),
+                                detail: format!(
+                                    "L1: {} → {}, L2: {} → {}",
+                                    old_h.l1_healthy, new_h.l1_healthy,
+                                    old_h.l2_healthy, new_h.l2_healthy
+                                ),
+                                timestamp: now.clone(),
+                            });
+                        }
+                    }
+                    (None, Some(new_h)) => {
+                        // Health first appeared (e.g. monitoring became available)
                         let _ = tx.send(L2Event {
                             event_type: "health_changed".to_string(),
                             l2_id: new_item.id.clone(),
                             l2_name: new_item.name.clone(),
                             source_type: format!("{:?}", new_item.source).to_lowercase(),
                             detail: format!(
-                                "L1: {} → {}, L2: {} → {}",
-                                old_h.l1_healthy, new_h.l1_healthy,
-                                old_h.l2_healthy, new_h.l2_healthy
+                                "L1: {}, L2: {} (initial)",
+                                new_h.l1_healthy, new_h.l2_healthy
                             ),
                             timestamp: now.clone(),
                         });
                     }
+                    _ => {}
                 }
             }
             None => {
@@ -923,8 +937,10 @@ mod tests {
         let old = vec![make_deployment("d1", "Deploy", L2Status::Running)]; // no health
         let new = vec![make_deployment_with_health("d1", "Deploy", true, true)]; // health added
         diff_and_emit(&old, &new, &tx);
-        // Health change not emitted when old has no health (no comparison possible)
-        assert!(rx.try_recv().is_err());
+        // Health first appeared → emits health_changed with "(initial)"
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event_type, "health_changed");
+        assert!(event.detail.contains("initial"));
     }
 
     // ── Unit Tests: L2Container ──
@@ -1013,11 +1029,18 @@ mod tests {
         assert_eq!(state.get_all().len(), 2);
         assert!(state.get_by_id("a1").is_none());
 
+        // d1 health appeared (None→Some) → health_changed with "(initial)"
         let e4 = rx.try_recv().unwrap();
-        assert_eq!(e4.l2_id, "a1");
-        assert_eq!(e4.event_type, "deleted");
+        assert_eq!(e4.l2_id, "d1");
+        assert_eq!(e4.event_type, "health_changed");
+        assert!(e4.detail.contains("initial"));
 
-        assert!(rx.try_recv().is_err()); // d1 had no health before, so no health_changed
+        // a1 deleted
+        let e5 = rx.try_recv().unwrap();
+        assert_eq!(e5.l2_id, "a1");
+        assert_eq!(e5.event_type, "deleted");
+
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
