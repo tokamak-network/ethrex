@@ -235,6 +235,40 @@ function streamLogs(projectName, composeFile, service) {
   return spawn(cmd, cmdArgs, { cwd: ETHREX_ROOT, stdio: "pipe" });
 }
 
+/** Build base tools environment from port config */
+function buildToolsEnv(toolsPorts) {
+  const env = {
+    TOOLS_L1_EXPLORER_PORT: String(toolsPorts.toolsL1ExplorerPort || 8083),
+    TOOLS_L2_EXPLORER_PORT: String(toolsPorts.toolsL2ExplorerPort || 8082),
+    TOOLS_BRIDGE_UI_PORT: String(toolsPorts.toolsBridgeUIPort || 3000),
+    TOOLS_DB_PORT: String(toolsPorts.toolsDbPort || 7432),
+    TOOLS_L1_RPC_PORT: String(toolsPorts.l1Port || 8545),
+    TOOLS_L2_RPC_PORT: String(toolsPorts.l2Port || 1729),
+    TOOLS_METRICS_PORT: String(toolsPorts.toolsMetricsPort || 3702),
+  };
+  // External L1 config (testnet/mainnet)
+  if (toolsPorts.l1RpcUrl) env.L1_RPC_URL = toolsPorts.l1RpcUrl;
+  if (toolsPorts.l1ChainId) env.L1_CHAIN_ID = String(toolsPorts.l1ChainId);
+  if (toolsPorts.l1ExplorerUrl) env.L1_EXPLORER_URL = toolsPorts.l1ExplorerUrl;
+  if (toolsPorts.l1NetworkName) env.L1_NETWORK_NAME = toolsPorts.l1NetworkName;
+  if (toolsPorts.l2ChainId) env.L2_CHAIN_ID = String(toolsPorts.l2ChainId);
+  if (toolsPorts.isExternalL1) env.IS_EXTERNAL_L1 = 'true';
+  return env;
+}
+
+/** Build docker compose up args, selecting L2-only services for external L1 */
+function buildToolsUpArgs(toolsCompose, toolsPorts) {
+  const upArgs = ["compose", "-f", toolsCompose];
+  if (toolsPorts.skipL1Explorer) {
+    upArgs.push("--profile", "external-l1");
+    upArgs.push("up", "-d");
+    upArgs.push("frontend-l2", "backend-l2", "db", "db-init", "redis-db", "function-selectors-l2", "bridge-ui", "proxy-l2-only");
+  } else {
+    upArgs.push("up", "-d");
+  }
+  return upArgs;
+}
+
 /** Start support tools (Blockscout, Bridge UI, Dashboard) using the existing tools compose file */
 async function startTools(envVars, toolsPorts = {}) {
   const l2Dir = path.resolve(ETHREX_ROOT, "crates/l2");
@@ -251,24 +285,7 @@ async function startTools(envVars, toolsPorts = {}) {
     .join("\n");
   fs.writeFileSync(envPath, envLines + "\n");
 
-  // Environment variables for dynamic tool ports
-  const toolsEnv = {
-    TOOLS_L1_EXPLORER_PORT: String(toolsPorts.toolsL1ExplorerPort || 8083),
-    TOOLS_L2_EXPLORER_PORT: String(toolsPorts.toolsL2ExplorerPort || 8082),
-    TOOLS_BRIDGE_UI_PORT: String(toolsPorts.toolsBridgeUIPort || 3000),
-    TOOLS_DB_PORT: String(toolsPorts.toolsDbPort || 7432),
-    TOOLS_L1_RPC_PORT: String(toolsPorts.l1Port || 8545),
-    TOOLS_L2_RPC_PORT: String(toolsPorts.l2Port || 1729),
-    TOOLS_METRICS_PORT: String(toolsPorts.toolsMetricsPort || 3702),
-  };
-
-  // External L1 config (testnet/mainnet)
-  if (toolsPorts.l1RpcUrl) toolsEnv.L1_RPC_URL = toolsPorts.l1RpcUrl;
-  if (toolsPorts.l1ChainId) toolsEnv.L1_CHAIN_ID = String(toolsPorts.l1ChainId);
-  if (toolsPorts.l1ExplorerUrl) toolsEnv.L1_EXPLORER_URL = toolsPorts.l1ExplorerUrl;
-  if (toolsPorts.l1NetworkName) toolsEnv.L1_NETWORK_NAME = toolsPorts.l1NetworkName;
-  if (toolsPorts.l2ChainId) toolsEnv.L2_CHAIN_ID = String(toolsPorts.l2ChainId);
-  if (toolsPorts.isExternalL1) toolsEnv.IS_EXTERNAL_L1 = 'true';
+  const toolsEnv = buildToolsEnv(toolsPorts);
 
   // Build bridge UI image
   await new Promise((resolve, reject) => {
@@ -287,16 +304,7 @@ async function startTools(envVars, toolsPorts = {}) {
   });
 
   // Start tools (optionally skip L1 explorer for external L1)
-  const upArgs = ["compose", "-f", toolsCompose];
-  if (toolsPorts.skipL1Explorer) {
-    // Activate external-l1 profile for L2-only proxy
-    upArgs.push("--profile", "external-l1");
-    upArgs.push("up", "-d");
-    // Start only L2-related services + L2-only proxy
-    upArgs.push("frontend-l2", "backend-l2", "db", "db-init", "redis-db", "function-selectors-l2", "bridge-ui", "proxy-l2-only");
-  } else {
-    upArgs.push("up", "-d");
-  }
+  const upArgs = buildToolsUpArgs(toolsCompose, toolsPorts);
   await new Promise((resolve, reject) => {
     const proc = spawn("docker", upArgs, {
       cwd: l2Dir,
@@ -364,23 +372,7 @@ async function restartTools(envVars, toolsPorts = {}) {
     .join("\n");
   fs.writeFileSync(envPath, envLines + "\n");
 
-  const toolsEnv = {
-    TOOLS_L1_EXPLORER_PORT: String(toolsPorts.toolsL1ExplorerPort || 8083),
-    TOOLS_L2_EXPLORER_PORT: String(toolsPorts.toolsL2ExplorerPort || 8082),
-    TOOLS_BRIDGE_UI_PORT: String(toolsPorts.toolsBridgeUIPort || 3000),
-    TOOLS_DB_PORT: String(toolsPorts.toolsDbPort || 7432),
-    TOOLS_L1_RPC_PORT: String(toolsPorts.l1Port || 8545),
-    TOOLS_L2_RPC_PORT: String(toolsPorts.l2Port || 1729),
-    TOOLS_METRICS_PORT: String(toolsPorts.toolsMetricsPort || 3702),
-  };
-
-  // External L1 config (testnet/mainnet)
-  if (toolsPorts.l1RpcUrl) toolsEnv.L1_RPC_URL = toolsPorts.l1RpcUrl;
-  if (toolsPorts.l1ChainId) toolsEnv.L1_CHAIN_ID = String(toolsPorts.l1ChainId);
-  if (toolsPorts.l1ExplorerUrl) toolsEnv.L1_EXPLORER_URL = toolsPorts.l1ExplorerUrl;
-  if (toolsPorts.l1NetworkName) toolsEnv.L1_NETWORK_NAME = toolsPorts.l1NetworkName;
-  if (toolsPorts.l2ChainId) toolsEnv.L2_CHAIN_ID = String(toolsPorts.l2ChainId);
-  if (toolsPorts.isExternalL1) toolsEnv.IS_EXTERNAL_L1 = 'true';
+  const toolsEnv = buildToolsEnv(toolsPorts);
 
   // Stop existing tools
   await new Promise((resolve) => {
@@ -394,15 +386,7 @@ async function restartTools(envVars, toolsPorts = {}) {
   });
 
   // Start without build
-  const restartUpArgs = ["compose", "-f", toolsCompose];
-  if (toolsPorts.skipL1Explorer) {
-    // Activate external-l1 profile for L2-only proxy
-    restartUpArgs.push("--profile", "external-l1");
-    restartUpArgs.push("up", "-d");
-    restartUpArgs.push("frontend-l2", "backend-l2", "db", "db-init", "redis-db", "function-selectors-l2", "bridge-ui", "proxy-l2-only");
-  } else {
-    restartUpArgs.push("up", "-d");
-  }
+  const restartUpArgs = buildToolsUpArgs(toolsCompose, toolsPorts);
   await new Promise((resolve, reject) => {
     const proc = spawn("docker", restartUpArgs, {
       cwd: l2Dir,

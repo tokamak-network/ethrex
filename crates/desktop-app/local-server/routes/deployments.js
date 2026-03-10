@@ -23,6 +23,23 @@ const db = require("../db/db");
 const path = require("path");
 const fs = require("fs");
 
+/** Build external L1 config props from deployment config (DRY helper for start/restart tools) */
+function getExternalL1Config(deployment) {
+  const depConfig = deployment.config ? JSON.parse(deployment.config) : {};
+  const isExternal = depConfig.mode === 'testnet';
+  const testnetCfg = depConfig.testnet || {};
+  return {
+    skipL1Explorer: isExternal,
+    ...(isExternal && {
+      l1RpcUrl: testnetCfg.l1RpcUrl,
+      l1ChainId: testnetCfg.l1ChainId,
+      l1ExplorerUrl: testnetCfg.l1ExplorerUrl,
+      l1NetworkName: testnetCfg.network,
+      isExternalL1: true,
+    }),
+  };
+}
+
 // ==========================================
 // CRUD (local — no auth required)
 // ==========================================
@@ -398,9 +415,6 @@ router.post("/:id/service/:service/start", async (req, res) => {
       // Tools use separate compose — start all tools together (they depend on each other)
       const composeFile = path.join(getDeploymentDir(deployment.id, deployment.deploy_dir), "docker-compose.yaml");
       const envVars = await docker.extractEnv(deployment.docker_project, composeFile);
-      const depConfig = deployment.config ? JSON.parse(deployment.config) : {};
-      const isExternal = depConfig.mode === 'testnet';
-      const testnetCfg = depConfig.testnet || {};
       await docker.startTools(envVars, {
         toolsL1ExplorerPort: deployment.tools_l1_explorer_port,
         toolsL2ExplorerPort: deployment.tools_l2_explorer_port,
@@ -409,14 +423,7 @@ router.post("/:id/service/:service/start", async (req, res) => {
         l1Port: deployment.l1_port,
         l2Port: deployment.l2_port,
         toolsMetricsPort: deployment.tools_metrics_port,
-        skipL1Explorer: isExternal,
-        ...(isExternal && {
-          l1RpcUrl: testnetCfg.l1RpcUrl,
-          l1ChainId: testnetCfg.l1ChainId,
-          l1ExplorerUrl: testnetCfg.l1ExplorerUrl,
-          l1NetworkName: testnetCfg.network,
-          isExternalL1: true,
-        }),
+        ...getExternalL1Config(deployment),
       });
       return res.json({ ok: true, message: `Tools started` });
     }
@@ -469,9 +476,6 @@ router.post("/:id/restart-tools", async (req, res) => {
       if (deployment.proposer_address) envVars.ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS = deployment.proposer_address;
     }
 
-    const depConfig = deployment.config ? JSON.parse(deployment.config) : {};
-    const isExternal = depConfig.mode === 'testnet';
-    const testnetCfg = depConfig.testnet || {};
     const toolsPorts = {
       toolsL1ExplorerPort: deployment.tools_l1_explorer_port,
       toolsL2ExplorerPort: deployment.tools_l2_explorer_port,
@@ -480,14 +484,7 @@ router.post("/:id/restart-tools", async (req, res) => {
       toolsMetricsPort: deployment.tools_metrics_port,
       l1Port: deployment.l1_port,
       l2Port: deployment.l2_port,
-      skipL1Explorer: isExternal,
-      ...(isExternal && {
-        l1RpcUrl: testnetCfg.l1RpcUrl,
-        l1ChainId: testnetCfg.l1ChainId,
-        l1ExplorerUrl: testnetCfg.l1ExplorerUrl,
-        l1NetworkName: testnetCfg.network,
-        isExternalL1: true,
-      }),
+      ...getExternalL1Config(deployment),
     };
 
     await docker.restartTools(envVars, toolsPorts);

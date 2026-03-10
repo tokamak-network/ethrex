@@ -32,6 +32,23 @@ const { updateDeployment, getNextAvailablePorts, getAllDeployments, insertDeploy
 const { getHostById } = require("../db/hosts");
 const keychain = require("./keychain");
 
+/** Build external L1 config props from deployment config (DRY helper for start/restart tools) */
+function getExternalL1Config(deployment) {
+  const depConfig = deployment.config ? JSON.parse(deployment.config) : {};
+  const isExternal = depConfig.mode === 'testnet';
+  const testnetCfg = depConfig.testnet || {};
+  return {
+    skipL1Explorer: isExternal,
+    ...(isExternal && {
+      l1RpcUrl: testnetCfg.l1RpcUrl,
+      l1ChainId: testnetCfg.l1ChainId,
+      l1ExplorerUrl: testnetCfg.l1ExplorerUrl,
+      l1NetworkName: testnetCfg.network,
+      isExternalL1: true,
+    }),
+  };
+}
+
 // Active deployments event emitters (keyed by deployment ID)
 const deploymentEvents = new Map();
 
@@ -995,9 +1012,6 @@ async function startDeployment(deployment) {
   // Also start tools (Explorer, Bridge UI, Dashboard) if they were provisioned
   try {
     const envVars = await docker.extractEnv(deployment.docker_project, composeFile);
-    const startConfig = deployment.config ? JSON.parse(deployment.config) : {};
-    const isExternal = startConfig.mode === 'testnet';
-    const testnetCfg = startConfig.testnet || {};
     await docker.startTools(envVars, {
       toolsL1ExplorerPort: deployment.tools_l1_explorer_port,
       toolsL2ExplorerPort: deployment.tools_l2_explorer_port,
@@ -1006,15 +1020,7 @@ async function startDeployment(deployment) {
       l1Port: deployment.l1_port,
       l2Port: deployment.l2_port,
       toolsMetricsPort: deployment.tools_metrics_port,
-      skipL1Explorer: isExternal,
-      // External L1 metadata
-      ...(isExternal && {
-        l1RpcUrl: testnetCfg.l1RpcUrl,
-        l1ChainId: testnetCfg.l1ChainId,
-        l1ExplorerUrl: testnetCfg.l1ExplorerUrl,
-        l1NetworkName: testnetCfg.network,
-        isExternalL1: true,
-      }),
+      ...getExternalL1Config(deployment),
     });
   } catch (e) {
     console.log(`[start] Tools start skipped: ${e.message}`);

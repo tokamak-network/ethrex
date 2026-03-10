@@ -728,7 +728,13 @@
           const l1Exp = CONFIG.l1_explorer || 'http://localhost:8083';
           const l2Exp = CONFIG.l2_explorer || 'http://localhost:8082';
           document.getElementById('linkL1Explorer').href = l1Exp;
-          const l1ExpLabel = isExternalL1 ? l1NetworkName + ' Explorer' : 'Blockscout :' + new URL(l1Exp).port;
+          let l1ExpLabel = 'Blockscout';
+          try {
+            l1ExpLabel = isExternalL1 ? l1NetworkName + ' Explorer' : 'Blockscout :' + new URL(l1Exp).port;
+          } catch (e) {
+            console.warn('Could not parse L1 explorer URL for label:', l1Exp);
+            if (isExternalL1) l1ExpLabel = l1NetworkName + ' Explorer';
+          }
           document.getElementById('linkL1Explorer').querySelector('.quick-link-sub').textContent = l1ExpLabel;
           document.getElementById('linkL2Explorer').href = l2Exp;
           document.getElementById('linkL2Explorer').querySelector('.quick-link-sub').textContent = 'Blockscout :' + new URL(l2Exp).port;

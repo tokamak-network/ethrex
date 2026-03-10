@@ -6,18 +6,14 @@
 # IS_EXTERNAL_L1 is auto-detected from L1_RPC_URL presence but can be overridden.
 
 # Determine L1 RPC URL
-if [ -n "${L1_RPC_URL:-}" ]; then
-  L1_RPC_RESOLVED="${L1_RPC_URL}"
-else
-  L1_RPC_RESOLVED="http://localhost:${TOOLS_L1_RPC_PORT:-8545}"
-fi
+L1_RPC_RESOLVED="${L1_RPC_URL:-http://localhost:${TOOLS_L1_RPC_PORT:-8545}}"
 
 # Determine L1 Explorer URL
-if [ -n "${L1_EXPLORER_URL:-}" ]; then
-  L1_EXPLORER_RESOLVED="${L1_EXPLORER_URL}"
-else
-  L1_EXPLORER_RESOLVED="http://localhost:${TOOLS_L1_EXPLORER_PORT:-8083}"
-fi
+L1_EXPLORER_RESOLVED="${L1_EXPLORER_URL:-http://localhost:${TOOLS_L1_EXPLORER_PORT:-8083}}"
+
+# Sanitize URLs for safe JSON embedding (strip quotes and backslashes)
+L1_RPC_RESOLVED=$(echo "${L1_RPC_RESOLVED}" | tr -d '"\\')
+L1_EXPLORER_RESOLVED=$(echo "${L1_EXPLORER_RESOLVED}" | tr -d '"\\')
 
 # Determine L1 Chain ID (default: 9 for local) — must be numeric
 L1_CHAIN_ID_RESOLVED="${L1_CHAIN_ID:-9}"
