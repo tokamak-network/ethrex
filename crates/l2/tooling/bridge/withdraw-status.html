@@ -711,6 +711,7 @@
     // ── Load all withdrawals ──
     async function loadWithdrawals() {
       const { l1, l2 } = getProviders();
+      if (!l1 || !l2) { console.warn('Providers not available, skipping withdrawal load'); return; }
 
       // Show loading only on first load
       if (allWithdrawals.length === 0) {
