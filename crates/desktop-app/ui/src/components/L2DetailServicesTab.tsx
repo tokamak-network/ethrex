@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { SectionHeader } from './ui-atoms'
 import type { L2Config } from './MyL2View'
 import type { ContainerInfo, Product } from './L2DetailView'
@@ -84,10 +84,13 @@ export default function L2DetailServicesTab({
     finally { setBalanceLoading(false) }
   }, [l2.rawConfig, l2.testnetL1RpcUrl])
 
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(null)
+  useEffect(() => () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current) }, [])
   const copyToClipboard = useCallback((addr: string) => {
     navigator.clipboard.writeText(addr).then(() => {
       setCopiedAddr(addr)
-      setTimeout(() => setCopiedAddr(null), 2000)
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = setTimeout(() => setCopiedAddr(null), 2000)
     }).catch(() => {})
   }, [])
 

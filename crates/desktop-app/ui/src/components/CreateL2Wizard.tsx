@@ -5,6 +5,8 @@ import { localServerAPI } from '../api/local-server'
 
 export type NetworkMode = 'local' | 'testnet' | 'mainnet'
 
+const DEFAULT_PROGRAM_SLUG = 'zk-dex'
+
 interface Props {
   onBack: () => void
   onCreate: (config: Record<string, string>) => void
@@ -104,7 +106,7 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
   const isPublishStep = getStepContent(step) === 'publish'
   useEffect(() => {
     if (isPublishStep && !existingImage.checked) {
-      localServerAPI.checkImage('zk-dex')
+      localServerAPI.checkImage(DEFAULT_PROGRAM_SLUG)
         .then(r => setExistingImage({ checked: true, exists: r.exists }))
         .catch(() => setExistingImage({ checked: true, exists: false }))
     }

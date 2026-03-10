@@ -128,7 +128,7 @@ function cancelProvision(deploymentId) {
  * Returns { bridge, proposer, timelock, sp1Verifier } with whatever was found.
  */
 function parseContractAddressesFromLogs(logLines) {
-  const result = { bridge: null, proposer: null, timelock: null, sp1Verifier: null, sequencerRegistry: null, router: null };
+  const result = { bridge: null, proposer: null, timelock: null, sp1Verifier: null, sequencerRegistry: null, router: null, guestProgramRegistry: null };
 
   // Priority 1: Look for structured JSON output from deployer (DEPLOYER_RESULT_JSON:{...})
   for (const line of logLines) {
@@ -143,6 +143,7 @@ function parseContractAddressesFromLogs(logLines) {
           result.sp1Verifier = data.contracts.SP1Verifier || null;
           result.sequencerRegistry = data.contracts.SequencerRegistry || null;
           result.router = data.contracts.Router || null;
+          result.guestProgramRegistry = data.contracts.GuestProgramRegistry || null;
           return result;
         }
       } catch { /* fall through to legacy parsing */ }
@@ -160,6 +161,7 @@ function parseContractAddressesFromLogs(logLines) {
     else if (line.includes("Timelock deployed")) lastContract = "timelock";
     else if (line.includes("SP1Verifier deployed")) lastContract = "sp1Verifier";
     else if (line.includes("SequencerRegistry deployed")) lastContract = "sequencerRegistry";
+    else if (line.includes("GuestProgramRegistry deployed")) lastContract = "guestProgramRegistry";
     else if (line.includes("Router deployed")) lastContract = "router";
 
     const match = line.match(addressPattern);

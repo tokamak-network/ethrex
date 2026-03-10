@@ -296,8 +296,7 @@ export default function MyL2View() {
     }
   }
 
-  // @ts-expect-error: Delete handler prepared for future use in deployment list
-  const handleDelete = async (e: React.MouseEvent, id: string) => {
+  const _handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation()
     if (confirmDeleteId !== id) {
       setConfirmDeleteId(id)

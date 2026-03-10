@@ -510,7 +510,7 @@ testAsync("isHealthy returns false for unreachable host", async () => {
       test("parseContractAddressesFromLogs: prefers JSON over legacy logs", () => {
         const logs = [
           "tokamak-app-deployer  | CommonBridge deployed:",
-          "tokamak-app-deployer  |   Proxy -> address=0xoldoldoldoldoldoldoldoldoldoldoldoldoldold, tx_hash=0xabc",
+          "tokamak-app-deployer  |   Proxy -> address=0x0000000000000000000000000000000000000001, tx_hash=0xabc",
           'DEPLOYER_RESULT_JSON:{"status":"success","contracts":{"CommonBridge":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","OnChainProposer":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","SP1Verifier":"0xcccccccccccccccccccccccccccccccccccccccc","Timelock":"0xdddddddddddddddddddddddddddddddddddddddd","SequencerRegistry":"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","Router":null}}',
         ];
         const result = parseContractAddressesFromLogs(logs);

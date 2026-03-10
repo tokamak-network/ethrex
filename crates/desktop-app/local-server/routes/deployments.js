@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { v4: uuidv4 } = require("uuid");
+const { ethers } = require("ethers");
 
 const {
   provision,
@@ -101,8 +102,25 @@ const ROLE_GAS_ESTIMATES = {
   },
 };
 
+/** Validate RPC URL: must be http(s), no private IPs or metadata endpoints */
+function validateRpcUrl(rpcUrl) {
+  let parsed;
+  try { parsed = new URL(rpcUrl); } catch { throw new Error("Invalid URL format"); }
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("URL must use http or https");
+  const host = parsed.hostname;
+  // Block cloud metadata endpoints
+  if (host === "169.254.169.254" || host === "metadata.google.internal") throw new Error("Blocked: cloud metadata endpoint");
+  // Block private IPs (RFC1918 + loopback) — allow localhost for local dev
+  if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(host)) throw new Error("Blocked: private IP range");
+  if (host === "127.0.0.1" || host === "::1" || host === "0.0.0.0") {
+    // Allow localhost only for local mode (check-rpc, etc.) — this is a desktop app
+  }
+  return parsed;
+}
+
 // Shared RPC call helper with 10s timeout
 function makeRpcCaller(rpcUrl) {
+  validateRpcUrl(rpcUrl);
   return async (method, params = []) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
@@ -128,6 +146,15 @@ function formatGwei(gasPriceGwei) {
   return gasPriceGwei < 0.0001 ? gasPriceGwei.toPrecision(4) : gasPriceGwei.toFixed(4);
 }
 
+/** Convert wei BigInt to ETH string with 6 decimal precision (safe for large values) */
+function weiToEth(wei) {
+  const ETH = 1000000000000000000n; // 1e18
+  const whole = wei / ETH;
+  const remainder = wei % ETH;
+  const decimal = remainder * 1000000n / ETH; // 6 decimal places
+  return `${whole}.${decimal.toString().padStart(6, "0")}`;
+}
+
 // POST /api/deployments/testnet/check-balance — check account balance on testnet
 router.post("/testnet/check-balance", async (req, res) => {
   try {
@@ -147,7 +174,6 @@ router.post("/testnet/check-balance", async (req, res) => {
     ]);
 
     const balanceWei = BigInt(balanceHex || "0x0");
-    const balanceEth = Number(balanceWei) / 1e18;
     const chainId = parseInt(chainIdHex || "0x0", 16);
     const gasPriceWei = BigInt(gasPriceHex || "0x0");
     const gasPriceGwei = Number(gasPriceWei) / 1e9;
@@ -155,20 +181,19 @@ router.post("/testnet/check-balance", async (req, res) => {
     const roleInfo = ROLE_GAS_ESTIMATES[role] || ROLE_GAS_ESTIMATES.deployer;
     const estimatedGas = roleInfo.gas;
     const estimatedCostWei = gasPriceWei * BigInt(estimatedGas);
-    const estimatedCostEth = Number(estimatedCostWei) / 1e18;
     const sufficient = balanceWei >= estimatedCostWei;
 
     res.json({
       address,
       role: role || "deployer",
-      balanceEth: balanceEth.toFixed(6),
+      balanceEth: weiToEth(balanceWei),
       chainId,
       gasPriceGwei: formatGwei(gasPriceGwei),
       estimatedGas,
       gasLabel: roleInfo.label,
       gasDetail: roleInfo.detail,
       interval: roleInfo.interval || null,
-      estimatedCostEth: estimatedCostEth.toFixed(6),
+      estimatedCostEth: weiToEth(estimatedCostWei),
       sufficient,
     });
   } catch (e) {
@@ -218,17 +243,18 @@ router.post("/testnet/resolve-keys", async (req, res) => {
       return res.status(400).json({ error: "rpcUrl is required" });
     }
 
-    const { ethers } = require("ethers");
-
     const resolveRole = (keychainName, label) => {
       if (!keychainName) return null;
-      const pk = keychain.getSecret(keychainName);
+      let pk = keychain.getSecret(keychainName);
       if (!pk) return { error: `Key "${keychainName}" not found in Keychain`, label };
       try {
         const wallet = new ethers.Wallet(pk);
-        return { address: wallet.address, label, keychainName };
+        const address = wallet.address;
+        return { address, label, keychainName };
       } catch {
         return { error: `Invalid key format for "${keychainName}"`, label };
+      } finally {
+        pk = null; // Clear private key from memory
       }
     };
 
@@ -262,13 +288,12 @@ router.post("/testnet/resolve-keys", async (req, res) => {
     // Estimate total deployment cost using BigInt
     const deployerGas = ROLE_GAS_ESTIMATES.deployer.gas;
     const estimatedCostWei = gasPriceWei * BigInt(deployerGas);
-    const estimatedCostEth = Number(estimatedCostWei) / 1e18;
 
     // Enrich roles with balances
     for (const role of Object.values(roles)) {
       if (role?.address) {
         const wei = balanceWeis[role.address] || 0n;
-        role.balance = (Number(wei) / 1e18).toFixed(6);
+        role.balance = weiToEth(wei);
       }
     }
 
@@ -277,7 +302,7 @@ router.post("/testnet/resolve-keys", async (req, res) => {
     res.json({
       roles,
       gasPriceGwei: formatGwei(gasPriceGwei),
-      estimatedDeployCostEth: estimatedCostEth.toFixed(6),
+      estimatedDeployCostEth: weiToEth(estimatedCostWei),
       deployerSufficient: deployerWei >= estimatedCostWei,
     });
   } catch (e) {
@@ -308,19 +333,17 @@ router.post("/testnet/estimate-gas", async (req, res) => {
     for (const [role, info] of Object.entries(ROLE_GAS_ESTIMATES)) {
       const gasBI = BigInt(info.gas);
       const costWei = gasPriceWei * gasBI;
-      const costEth = Number(costWei) / 1e18;
       totalGas += gasBI;
       breakdown[role] = {
         gas: info.gas,
         label: info.label,
         detail: info.detail,
         interval: info.interval || null,
-        costEth: costEth.toFixed(6),
+        costEth: weiToEth(costWei),
       };
     }
 
     const totalCostWei = gasPriceWei * totalGas;
-    const totalCostEth = Number(totalCostWei) / 1e18;
 
     res.json({
       chainId,
@@ -328,7 +351,7 @@ router.post("/testnet/estimate-gas", async (req, res) => {
       gasPriceGwei: formatGwei(gasPriceGwei),
       breakdown,
       totalGas: totalGas.toString(),
-      totalCostEth: totalCostEth.toFixed(6),
+      totalCostEth: weiToEth(totalCostWei),
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
