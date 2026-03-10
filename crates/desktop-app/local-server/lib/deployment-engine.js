@@ -1102,7 +1102,7 @@ async function destroyDeployment(deployment) {
   const deployDir = getDeploymentDir(deployment.id);
   if (fs.existsSync(deployDir)) fs.rmSync(deployDir, { recursive: true, force: true });
   // Clean up per-deployment tools env file
-  const toolsEnvFile = require("path").join(require("path").resolve(__dirname, "../../.."), "l2", `.deployed-${toolsProject}.env`);
+  const toolsEnvFile = require("path").join(require("path").resolve(__dirname, "../../../.."), "crates/l2", `.deployed-${toolsProject}.env`);
   if (fs.existsSync(toolsEnvFile)) fs.unlinkSync(toolsEnvFile);
   return updateDeployment(deployment.id, {
     phase: "configured", status: "configured",
