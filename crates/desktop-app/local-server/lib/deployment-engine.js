@@ -382,15 +382,27 @@ async function provision(deployment) {
     const composeContent = generateComposeFile({ programSlug, l1Port, l2Port, proofCoordPort, metricsPort: toolsMetricsPort, projectName, gpu, dumpFixtures });
     composeFile = writeComposeFile(id, composeContent, deployDir);
 
-    // Check for existing image to skip rebuild (unless forceRebuild)
-    const existingImage = !forceRebuild ? docker.findImage(programSlug) : null;
-    if (existingImage && !forceRebuild) {
+    // Check for existing images to skip rebuild (unless forceRebuild)
+    // Both L1 and L2 images must exist; partial builds (e.g. L2 done but L1 cancelled) need full rebuild
+    const { execSync } = require("child_process");
+    const l1Tag = `tokamak-appchain:l1-${projectName}`;
+    const l2Tag = `tokamak-appchain:${programSlug}-${projectName}`;
+    let existingImage = null;
+    let hasL1Image = false;
+    let hasL2Image = false;
+    if (!forceRebuild) {
+      existingImage = docker.findImage(programSlug);
+      try { execSync(`docker image inspect "${l1Tag}" --format "{{.Id}}"`, { stdio: "pipe" }); hasL1Image = true; } catch {}
+      try { execSync(`docker image inspect "${l2Tag}" --format "{{.Id}}"`, { stdio: "pipe" }); hasL2Image = true; } catch {}
+    }
+    if (!forceRebuild && hasL1Image && hasL2Image) {
+      // Both project-specific images exist — skip build entirely
+      emit(id, "phase", { phase: "building", message: `Docker images found — skipping build` });
+      emit(id, "log", { message: `Reusing existing images: L1=${l1Tag}, L2=${l2Tag}` });
+    } else if (existingImage && !forceRebuild) {
+      // Shared image exists but project tags missing — tag and skip build
       emit(id, "phase", { phase: "building", message: `Docker image found (${existingImage}) — skipping build` });
       emit(id, "log", { message: `Reusing existing image: ${existingImage}` });
-      // Tag existing image for this project's compose references
-      const { execSync } = require("child_process");
-      const l1Tag = `tokamak-appchain:l1-${projectName}`;
-      const l2Tag = `tokamak-appchain:${programSlug}-${projectName}`;
       try { execSync(`docker tag "${existingImage}" "${l1Tag}"`, { stdio: "pipe" }); } catch {}
       try { execSync(`docker tag "${existingImage}" "${l2Tag}"`, { stdio: "pipe" }); } catch {}
       emit(id, "log", { message: `Tagged as ${l1Tag} and ${l2Tag}` });
@@ -398,10 +410,7 @@ async function provision(deployment) {
       emit(id, "phase", { phase: "building", message: forceRebuild
         ? "Force rebuilding Docker images..."
         : "Building Docker images... (this may take several minutes on first run)" });
-      // Remove existing project-specific images to prevent "already exists" BuildKit error
-      const { execSync } = require("child_process");
-      const l1Tag = `tokamak-appchain:l1-${projectName}`;
-      const l2Tag = `tokamak-appchain:${programSlug}-${projectName}`;
+      // Remove partial project-specific images to prevent "already exists" BuildKit error
       try { execSync(`docker rmi "${l1Tag}" 2>/dev/null`, { stdio: "pipe" }); } catch {}
       try { execSync(`docker rmi "${l2Tag}" 2>/dev/null`, { stdio: "pipe" }); } catch {}
       // Track per-stage progress across parallel Docker builds
