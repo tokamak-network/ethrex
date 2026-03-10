@@ -62,6 +62,7 @@ function resetLaunchForm() {
   const keyEl = document.getElementById('launch-testnet-keychain-key'); if (keyEl) keyEl.value = '';
   const addrEl = document.getElementById('launch-testnet-deployer-addr'); if (addrEl) addrEl.value = '';
   const chainIdEl = document.getElementById('launch-testnet-l1-chainid'); if (chainIdEl) chainIdEl.value = '';
+  const etherscanEl = document.getElementById('launch-testnet-etherscan-key'); if (etherscanEl) etherscanEl.value = '';
   const balEl = document.getElementById('testnet-balance-check'); if (balEl) balEl.innerHTML = '';
   const saveEl = document.getElementById('testnet-save-status'); if (saveEl) saveEl.innerHTML = '';
   // Reset role key selectors
@@ -160,6 +161,7 @@ const TESTNET_STEPS = [
   { phase: 'checking_docker', label: 'Checking Docker' },
   { phase: 'building', label: 'Preparing Docker Images' },
   { phase: 'deploying_contracts', label: 'Deploying L1 Contracts' },
+  { phase: 'verifying_contracts', label: 'Verifying on Etherscan' },
   { phase: 'l2_starting', label: 'Starting L2 Node' },
   { phase: 'starting_prover', label: 'Starting Prover' },
   { phase: 'starting_tools', label: 'Starting Tools (Explorer, Bridge)' },
@@ -183,6 +185,7 @@ const PHASE_ESTIMATES = {
   pulling: { min: 30, max: 180 },
   l1_starting: { min: 5, max: 30 },
   deploying_contracts: { min: 30, max: 120 },
+  verifying_contracts: { min: 10, max: 60 },
   l2_starting: { min: 10, max: 60 },
   starting_prover: { min: 5, max: 15 },
   starting_tools: { min: 10, max: 60 },
@@ -618,6 +621,7 @@ async function saveTestnetSettings() {
           bridgeOwnerKeychainKey: (document.getElementById('launch-testnet-bridge-owner-key')?.value || '').trim() || undefined,
           l1ChainId: netInfo?.chainId || (parseInt(document.getElementById('launch-testnet-l1-chainid')?.value) || undefined),
           network: network === 'custom-l1' ? 'custom' : network,
+          etherscanApiKey: (document.getElementById('launch-testnet-etherscan-key')?.value || '').trim() || undefined,
         },
       },
       rpcUrl: (document.getElementById('launch-testnet-rpc')?.value || '').trim(),
@@ -735,6 +739,7 @@ async function handleLaunchDeploy() {
         bridgeOwnerKeychainKey: (document.getElementById('launch-testnet-bridge-owner-key')?.value || '').trim() || undefined,
         l1ChainId: netInfo.chainId || (parseInt(document.getElementById('launch-testnet-l1-chainid')?.value) || undefined),
         network: network === 'custom-l1' ? 'custom' : network,
+        etherscanApiKey: (document.getElementById('launch-testnet-etherscan-key')?.value || '').trim() || undefined,
       };
       body.rpcUrl = testnetRpc;
     }
@@ -1211,6 +1216,13 @@ async function resumeDeployProgress(id) {
       } else if (currentPhase === 'error') {
         document.getElementById('deploy-error-msg').textContent = statusData.error || dep?.error_message || 'Deployment failed';
         document.getElementById('deploy-error-msg').style.display = 'block';
+        const resumeBtn = document.getElementById('resume-deploy-btn');
+        if (resumeBtn) { resumeBtn.style.display = ''; resumeBtn.dataset.id = id; }
+      } else if (currentPhase === 'stopped') {
+        // Stopped mid-deploy (e.g. contracts deployed but L2 not started)
+        document.getElementById('deploy-info-text').innerHTML = `Deployment <strong>${esc(dep?.name || 'L2')}</strong> was stopped during provisioning.`;
+        const resumeBtn = document.getElementById('resume-deploy-btn');
+        if (resumeBtn) { resumeBtn.style.display = ''; resumeBtn.dataset.id = id; }
       }
     }
   } catch (err) {
@@ -1240,6 +1252,22 @@ async function loadDeployments() {
       return;
     }
 
+    // Reconcile: check live Docker status for deployments with docker_project
+    await Promise.all(list.map(async (d) => {
+      if (!d.docker_project || isDeploying(d.phase)) return;
+      try {
+        const statusRes = await fetch(`${API}/deployments/${d.id}/status`);
+        const statusData = await statusRes.json();
+        const containers = statusData.containers || [];
+        const anyRunning = containers.some(c => (c.State || c.state) === 'running');
+        if (d.phase === 'stopped' && anyRunning) {
+          d.phase = 'running'; d.status = 'active';
+        } else if (d.phase === 'running' && containers.length > 0 && !anyRunning) {
+          d.phase = 'stopped'; d.status = 'configured';
+        }
+      } catch { /* ignore */ }
+    }));
+
     container.innerHTML = `
       <table class="data-table">
         <thead>
@@ -1265,7 +1293,7 @@ function renderDeploymentRow(d) {
   const isExpanded = expandedDeploymentId === d.id;
   const statusClass = d.phase === 'running' ? 'running' : d.phase === 'error' ? 'error'
     : d.phase === 'configured' ? 'configured'
-    : ['building','pulling','l1_starting','deploying_contracts','l2_starting','starting_prover','starting_tools','checking_docker'].includes(d.phase) ? 'building' : 'stopped';
+    : ['building','pulling','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_tools','checking_docker'].includes(d.phase) ? 'building' : 'stopped';
   const rowConfig = d.config ? (typeof d.config === 'string' ? JSON.parse(d.config) : d.config) : {};
   const isTestnet = rowConfig.mode === 'testnet';
   const ports = [!isTestnet && d.l1_port ? `L1:${d.l1_port}` : '', d.l2_port ? `L2:${d.l2_port}` : ''].filter(Boolean).join(' · ') || '-';
@@ -1279,7 +1307,7 @@ function renderDeploymentRow(d) {
           </svg>
         </button>
       </td>
-      <td onclick="${isDeploying(d.phase) ? `resumeDeployProgress('${d.id}')` : (d.phase === 'configured' || d.phase === 'error' || isIncomplete(d)) ? `editConfiguredDeploy('${d.id}')` : `showDeploymentDetail('${d.id}')`}" style="cursor:pointer">
+      <td onclick="${isDeploying(d.phase) ? `resumeDeployProgress('${d.id}')` : isIncomplete(d) && d.docker_project ? `resumeDeployProgress('${d.id}')` : (d.phase === 'configured' || d.phase === 'error' || isIncomplete(d)) ? `editConfiguredDeploy('${d.id}')` : `showDeploymentDetail('${d.id}')`}" style="cursor:pointer">
         <div class="name-cell">
           <div class="icon-box">${esc((d.name || '?').charAt(0))}</div>
           <div>
@@ -1319,13 +1347,13 @@ function renderDeploymentRow(d) {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             </button>` : ''}
           ${isIncomplete(d) ? `
-            <button class="icon-btn" title="Resume Deploy" onclick="event.stopPropagation(); editConfiguredDeploy('${d.id}')" style="color:var(--green-600,#16a34a)">
+            <button class="icon-btn" title="Resume Deploy" onclick="event.stopPropagation(); ${d.docker_project ? `resumeDeployProgress('${d.id}')` : `editConfiguredDeploy('${d.id}')`}" style="color:var(--green-600,#16a34a)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             </button>` : ''}
-          <button class="icon-btn" title="${(d.phase === 'configured' || d.phase === 'error' || isIncomplete(d)) ? 'Edit Settings' : 'Details'}" onclick="event.stopPropagation(); ${(d.phase === 'configured' || d.phase === 'error' || isIncomplete(d)) ? `editConfiguredDeploy('${d.id}')` : `showDeploymentDetail('${d.id}')`}">
+          <button class="icon-btn" title="${(d.phase === 'configured' || d.phase === 'error' || (isIncomplete(d) && !d.docker_project)) ? 'Edit Settings' : 'Details'}" onclick="event.stopPropagation(); ${(d.phase === 'configured' || d.phase === 'error' || (isIncomplete(d) && !d.docker_project)) ? `editConfiguredDeploy('${d.id}')` : `showDeploymentDetail('${d.id}')`}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
-          <button class="icon-btn danger" title="Delete" onclick="event.stopPropagation(); deleteDeploy('${d.id}')">
+          <button class="icon-btn danger" title="Delete" onclick="event.stopPropagation(); deleteDeploy('${d.id}', event)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           </button>
         </div>
@@ -1335,19 +1363,22 @@ function renderDeploymentRow(d) {
 }
 
 function isDeploying(phase) {
-  return ['checking_docker','building','pulling','l1_starting','deploying_contracts','l2_starting','starting_prover','starting_tools'].includes(phase);
+  return ['checking_docker','building','pulling','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_tools'].includes(phase);
 }
 
 // Deployment was stopped before ever reaching 'running' — incomplete build
 function isIncomplete(d) {
-  return d.phase === 'stopped' && d.status !== 'active';
+  if (d.phase !== 'stopped') return false;
+  if (d.ever_running) return false;
+  if (d.status === 'active') return false;
+  return true;
 }
 
 function statusLabel(phase) {
   const map = {
     configured: 'Configured', checking_docker: 'Checking...', building: 'Building',
     pulling: 'Pulling', l1_starting: 'Starting', deploying_contracts: 'Deploying',
-    l2_starting: 'Starting', starting_prover: 'Starting', starting_tools: 'Starting',
+    verifying_contracts: 'Verifying', l2_starting: 'Starting', starting_prover: 'Starting', starting_tools: 'Starting',
     running: 'Running', stopped: 'Stopped', error: 'Error',
   };
   return map[phase] || phase;
@@ -1443,13 +1474,35 @@ async function loadContainersForDeploy(id) {
   }
 }
 
-async function serviceAction(deployId, service, action) {
+async function serviceAction(deployId, service, action, btnEl) {
+  // Immediate UI feedback: show Starting.../Stopping...
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.textContent = action === 'start' ? 'Starting...' : 'Stopping...';
+  }
   try {
     await fetch(`${API}/deployments/${deployId}/service/${service}/${action}`, { method: 'POST' });
-    // Refresh container list after a brief delay
+    // Refresh detail view to reflect new state
+    if (currentDeploymentId === deployId) await fetchDetailStatus();
     setTimeout(() => loadContainersForDeploy(deployId), 1000);
   } catch (e) {
     console.error(`Service ${action} failed:`, e);
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = action === 'start' ? 'Start' : 'Stop'; }
+  }
+}
+
+async function toolsAction(deployId, action, btnEl) {
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.textContent = action === 'startTools' ? 'Starting...' : 'Stopping...';
+  }
+  try {
+    const endpoint = action === 'startTools' ? 'restart-tools' : 'stop-tools';
+    await fetch(`${API}/deployments/${deployId}/${endpoint}`, { method: 'POST' });
+    if (currentDeploymentId === deployId) await fetchDetailStatus();
+  } catch (e) {
+    console.error(`Tools ${action} failed:`, e);
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = action === 'startTools' ? 'Start' : 'Stop'; }
   }
 }
 
@@ -1586,6 +1639,9 @@ async function editConfiguredDeploy(id) {
       if (config.testnet.l1ChainId && document.getElementById('launch-testnet-l1-chainid')) {
         document.getElementById('launch-testnet-l1-chainid').value = config.testnet.l1ChainId;
       }
+      if (config.testnet.etherscanApiKey && document.getElementById('launch-testnet-etherscan-key')) {
+        document.getElementById('launch-testnet-etherscan-key').value = config.testnet.etherscanApiKey;
+      }
     }
 
     if (config.deployDir) {
@@ -1688,7 +1744,19 @@ async function retryDeploy(id) {
   }
 }
 
-async function deleteDeploy(id) {
+async function deleteDeploy(id, event) {
+  const dep = cachedDeployList?.find(d => d.id === id);
+  const name = dep?.name || 'this L2';
+  // Double-click guard: first click sets pending state, second click confirms
+  const btn = event?.target?.closest?.('.icon-btn');
+  if (btn && !btn.dataset.pendingDelete) {
+    btn.dataset.pendingDelete = '1';
+    btn.title = 'Click again to confirm delete';
+    btn.style.color = 'var(--red-500, #ef4444)';
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+    setTimeout(() => { if (btn) { delete btn.dataset.pendingDelete; btn.title = 'Delete'; btn.style.color = ''; } }, 3000);
+    return;
+  }
   try {
     await fetch(`${API}/deployments/${id}`, { method: 'DELETE' });
     if (expandedDeploymentId === id) expandedDeploymentId = null;
@@ -1700,10 +1768,10 @@ function renderPhaseBadge(phase) {
   const labels = {
     configured: 'Not deployed', checking_docker: 'Checking Docker', building: 'Building',
     pulling: 'Pulling Images', l1_starting: 'Starting L1', deploying_contracts: 'Deploying',
-    l2_starting: 'Starting L2', starting_prover: 'Starting Prover', starting_tools: 'Starting Tools',
+    verifying_contracts: 'Verifying', l2_starting: 'Starting L2', starting_prover: 'Starting Prover', starting_tools: 'Starting Tools',
     running: 'Running', stopped: 'Stopped', error: 'Error',
   };
-  const animating = ['checking_docker','building','pulling','l1_starting','deploying_contracts','l2_starting','starting_prover','starting_tools'];
+  const animating = ['checking_docker','building','pulling','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_tools'];
   const label = labels[phase] || phase;
   const dot = animating.includes(phase) ? '<span class="dot pulse"></span>' : (phase === 'running' ? '<span class="dot"></span>' : '');
   return `<span class="phase-badge phase-${phase}">${dot}${label}</span>`;
@@ -1783,14 +1851,22 @@ function renderOverviewTab() {
   const d = detailDeployment;
   if (!d) return;
   const isProvisioned = !!d.docker_project;
-  const isDeploying = ['checking_docker','building','l1_starting','deploying_contracts','l2_starting','starting_prover','starting_tools'].includes(d.phase);
+  const isDeploying = ['checking_docker','building','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_tools'].includes(d.phase);
   // Reconcile: use live container state instead of stale DB phase
   const liveContainers = detailStatus?.containers || [];
   const hasContainers = liveContainers.length > 0;
   const anyContainerRunning = hasContainers && liveContainers.some(c => (c.State || c.state) === 'running');
-  const isRunning = isDeploying ? false : (hasContainers ? anyContainerRunning : d.phase === 'running');
-  const isStopped = !isDeploying && !isRunning && d.phase !== 'error';
-  const isError = d.phase === 'error' || (isProvisioned && !hasContainers && d.phase === 'running');
+  // Only trust live status when detailStatus has been fetched; otherwise use DB phase
+  const statusFetched = !!detailStatus;
+  const isRunning = isDeploying ? false : (statusFetched ? anyContainerRunning : d.phase === 'running');
+  const isStopped = !isDeploying && !isRunning && (statusFetched ? !anyContainerRunning : d.phase !== 'error');
+  const isError = d.phase === 'error' || (statusFetched && isProvisioned && !hasContainers && d.phase === 'running');
+
+  // Update header badge to reflect live container status (only when status is fetched)
+  if (statusFetched) {
+    const livePhase = isDeploying ? d.phase : isRunning ? 'running' : isError ? 'error' : 'stopped';
+    document.getElementById('detail-phase').innerHTML = renderPhaseBadge(livePhase);
+  }
 
   document.getElementById('container-cards').innerHTML = '';
   document.getElementById('detail-endpoints').style.display = 'none';
@@ -1820,13 +1896,13 @@ function renderOverviewTab() {
     const stateText = `<span style="font-size:11px;color:${running ? 'var(--green-600)' : 'var(--text-muted)'}">${state}</span>`;
     const openIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;cursor:pointer"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
     const ep = endpoint
-      ? (isTools && running
+      ? (running
         ? `<span style="font-size:11px;font-family:monospace;color:var(--blue-600)">${endpoint}</span> <a href="http://localhost${endpoint}" target="_blank" title="Open in browser" style="color:var(--blue-600)">${openIcon}</a>`
-        : `<span style="font-size:11px;font-family:monospace;color:var(--blue-600)">${endpoint}</span>`)
+        : `<span style="font-size:11px;font-family:monospace;color:var(--text-muted)">${endpoint}</span>`)
       : '';
-    const btn = running
-      ? `<button class="btn-secondary" style="padding:2px 8px;font-size:10px" onclick="serviceAction('${d.id}','${svcName}','stop')">Stop</button>`
-      : (isProvisioned ? `<button class="btn-secondary" style="padding:2px 8px;font-size:10px" onclick="serviceAction('${d.id}','${svcName}','start')">Start</button>` : '');
+    const btn = isTools ? '' : (running
+      ? `<button class="btn-secondary" style="padding:2px 8px;font-size:10px" onclick="serviceAction('${d.id}','${svcName}','stop',this)">Stop</button>`
+      : (isProvisioned ? `<button class="btn-secondary" style="padding:2px 8px;font-size:10px" onclick="serviceAction('${d.id}','${svcName}','start',this)">Start</button>` : ''));
     return `<div class="svc-row">${dot}<span class="svc-name">${label}</span>${stateText}${ep}<span style="margin-left:auto">${btn}</span></div>`;
   }
 
@@ -1861,7 +1937,13 @@ function renderOverviewTab() {
   html += svcRow('Prover', 'tokamak-app-prover', null);
 
   // Tools services
-  html += '<div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin:8px 0 4px;padding-top:8px;border-top:1px solid var(--border-light)">Tools</div>';
+  const toolsSvcs = ['frontend-l1','frontend-l2','bridge-ui'];
+  const anyToolRunning = toolsSvcs.some(s => svcState(s) === 'running');
+  const toolsBtnLabel = anyToolRunning ? 'Stop' : 'Start';
+  const toolsBtnAction = anyToolRunning ? 'stopTools' : 'startTools';
+  const toolsBtnStyle = anyToolRunning ? 'color:var(--orange-600,#ea580c)' : 'color:var(--green-600,#16a34a)';
+  const toolsBtn = isProvisioned ? `<button class="btn-secondary" style="padding:2px 8px;font-size:10px;margin-left:auto;${toolsBtnStyle}" onclick="toolsAction('${d.id}','${toolsBtnAction}',this)">${toolsBtnLabel}</button>` : '';
+  html += `<div style="display:flex;align-items:center;gap:6px;margin:8px 0 4px;padding-top:8px;border-top:1px solid var(--border-light)"><span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted)">Tools</span>${toolsBtn}</div>`;
   if (!isTestnetDeploy) {
     html += svcRow('L1 Explorer', 'frontend-l1', d.tools_l1_explorer_port ? `:${d.tools_l1_explorer_port}` : null, true);
   } else {
@@ -1882,10 +1964,9 @@ function renderOverviewTab() {
   // Global actions
   html += '<div style="display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">';
   if (!isProvisioned) html += '<button class="btn-primary" style="padding:5px 12px;font-size:12px" onclick="deployAction(\'provision\')">Deploy</button>';
-  if (isStopped) html += '<button class="btn-green" style="padding:5px 12px;font-size:12px" onclick="deployAction(\'start\')">Start All</button>';
-  if (isRunning || isDeploying) html += '<button class="btn-orange" style="padding:5px 12px;font-size:12px" onclick="deployAction(\'stop\')">Stop All</button>';
-  if (isProvisioned) html += '<button class="btn-danger" style="padding:5px 12px;font-size:12px" onclick="deployAction(\'destroy\')">Destroy</button>';
-  if (isError) html += '<button class="btn-primary" style="padding:5px 12px;font-size:12px" onclick="deployAction(\'provision\')">Retry</button>';
+  if (isStopped) html += '<button class="btn-green" style="padding:5px 12px;font-size:12px" onclick="this.disabled=true;this.textContent=\'Starting...\';deployAction(\'start\')">Start All</button>';
+  if (isRunning || isDeploying) html += '<button class="btn-orange" style="padding:5px 12px;font-size:12px" onclick="this.disabled=true;this.textContent=\'Stopping...\';deployAction(\'stop\')">Stop All</button>';
+  if (isError) html += '<button class="btn-primary" style="padding:5px 12px;font-size:12px" onclick="this.disabled=true;this.textContent=\'Deploying...\';deployAction(\'provision\')">Retry</button>';
   html += '</div>';
 
   html += '</div>'; // card
@@ -1940,7 +2021,7 @@ function renderOverviewTab() {
       <dt>L1 RPC</dt><dd style="font-size:10px;word-break:break-all">${esc(dConfig.testnet?.l1RpcUrl || '-')}</dd>` : ''}
     </dl>
   </div>`;
-  html += `<button class="btn-danger" style="font-size:11px;padding:6px 12px;align-self:flex-start" onclick="deleteDeployment('${d.id}')">Remove L2</button>`;
+  html += `<button class="btn-danger" style="font-size:11px;padding:6px 12px;align-self:flex-start" onclick="deleteDeployment('${d.id}', event)">Remove L2</button>`;
   html += '</div>'; // end right
 
   html += '</div>'; // close overview-grid
@@ -1964,9 +2045,14 @@ async function deployAction(action) {
     const res = await fetch(`${API}/deployments/${currentDeploymentId}/${action}`, { method: 'POST' });
     if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
     const data = await res.json();
-    // If destroyed/deleted, go back to list
+    // If destroyed/deleted, show confirmation then go back
     if (data.deleted || action === 'destroy') {
-      showView('deployments');
+      const indicator = document.getElementById('action-status');
+      if (indicator) {
+        indicator.textContent = 'All containers and volumes removed.';
+        indicator.style.cssText = 'padding:8px 12px;background:var(--green-50,#f0fdf4);border:1px solid var(--green-200,#bbf7d0);border-radius:6px;margin-bottom:12px;font-size:13px;color:var(--green-700,#15803d)';
+      }
+      setTimeout(() => showView('deployments'), 1500);
       return;
     }
     if (data.deployment) detailDeployment = data.deployment;
@@ -1987,7 +2073,17 @@ async function toolsAction(action) {
   try { await fetch(`${API}/deployments/${currentDeploymentId}/${ep}`, { method: 'POST' }); } catch {}
 }
 
-async function deleteDeployment(id) {
+async function deleteDeployment(id, event) {
+  // Double-click guard
+  const btn = event?.target?.closest?.('button');
+  if (btn && !btn.dataset.pendingDelete) {
+    btn.dataset.pendingDelete = '1';
+    btn.textContent = 'Click again to confirm';
+    btn.style.background = 'var(--red-500, #ef4444)';
+    btn.style.color = 'white';
+    setTimeout(() => { if (btn) { delete btn.dataset.pendingDelete; btn.textContent = 'Remove L2'; btn.style.background = ''; btn.style.color = ''; } }, 3000);
+    return;
+  }
   try { await fetch(`${API}/deployments/${id}`, { method: 'DELETE' }); showView('deployments'); }
   catch (err) { console.error('Failed to remove:', err.message); }
 }
