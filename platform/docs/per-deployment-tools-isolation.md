@@ -175,12 +175,13 @@ async function startTools(envVars, toolsPorts) {
 }
 
 // AFTER
-async function startTools(deploymentId, envVars, toolsPorts, options = {}) {
-  const toolsCompose = path.join(repoRoot, 'crates/l2/docker-compose-zk-dex-tools.yaml');
-  const projectName = `${deploymentId}-tools`;
+async function startTools(projectName, envVars, toolsPorts = {}) {
+  const l2Dir = path.resolve(ETHREX_ROOT, "crates/l2");
+  const toolsCompose = path.join(l2Dir, 'docker-compose-zk-dex-tools.yaml');
 
-  // 배포별 .env 파일
-  const envFilePath = path.join(repoRoot, `crates/l2/.deployed-${deploymentId}.env`);
+  // 배포별 .env 파일 (projectName은 이미 `${docker_project}-tools` 형태)
+  const envFileName = `.deployed-${projectName}.env`;
+  const envFilePath = path.join(l2Dir, envFileName);
   writeEnvFile(envFilePath, envVars);
 
   const env = {
