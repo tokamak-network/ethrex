@@ -263,8 +263,9 @@ function buildToolsEnv(toolsPorts) {
 }
 
 /** Build docker compose up args, selecting L2-only services for external L1 */
-function buildToolsUpArgs(toolsCompose, toolsPorts) {
+function buildToolsUpArgs(toolsCompose, toolsPorts, projectName) {
   const upArgs = ["compose", "-f", toolsCompose];
+  if (projectName) upArgs.push("-p", projectName);
   if (toolsPorts.skipL1Explorer) {
     upArgs.push("--profile", "external-l1");
     upArgs.push("up", "-d");
@@ -275,8 +276,10 @@ function buildToolsUpArgs(toolsCompose, toolsPorts) {
   return upArgs;
 }
 
-/** Start support tools (Blockscout, Bridge UI, Dashboard) using the existing tools compose file */
-async function startTools(envVars, toolsPorts = {}) {
+/** Start support tools (Blockscout, Bridge UI, Dashboard) using the existing tools compose file.
+ *  @param {string} projectName - Docker Compose project name for per-deployment isolation (e.g. "tokamak-08cab1ae-tools")
+ */
+async function startTools(projectName, envVars, toolsPorts = {}) {
   const l2Dir = path.resolve(ETHREX_ROOT, "crates/l2");
   const toolsCompose = path.join(l2Dir, "docker-compose-zk-dex-tools.yaml");
 
@@ -284,18 +287,22 @@ async function startTools(envVars, toolsPorts = {}) {
     throw new Error("Tools compose file not found: " + toolsCompose);
   }
 
-  // Write .zk-dex-deployed.env for tools (Blockscout address names, bridge UI)
-  const envPath = path.join(l2Dir, ".zk-dex-deployed.env");
+  // Write per-deployment .env file (avoids overwriting other deployments)
+  const envFileName = projectName ? `.deployed-${projectName}.env` : ".zk-dex-deployed.env";
+  const envPath = path.join(l2Dir, envFileName);
   const envLines = Object.entries(envVars || {})
     .map(([k, v]) => `${k}=${v}`)
     .join("\n");
   fs.writeFileSync(envPath, envLines + "\n");
 
-  const toolsEnv = buildToolsEnv(toolsPorts);
+  const toolsEnv = { ...buildToolsEnv(toolsPorts), TOOLS_ENV_FILE: envPath };
 
   // Build bridge UI image
+  const buildArgs = ["compose", "-f", toolsCompose];
+  if (projectName) buildArgs.push("-p", projectName);
+  buildArgs.push("build");
   await new Promise((resolve, reject) => {
-    const proc = spawn("docker", ["compose", "-f", toolsCompose, "build"], {
+    const proc = spawn("docker", buildArgs, {
       cwd: l2Dir,
       env: { ...process.env, ...toolsEnv },
       stdio: "pipe",
@@ -310,7 +317,7 @@ async function startTools(envVars, toolsPorts = {}) {
   });
 
   // Start tools (optionally skip L1 explorer for external L1)
-  const upArgs = buildToolsUpArgs(toolsCompose, toolsPorts);
+  const upArgs = buildToolsUpArgs(toolsCompose, toolsPorts, projectName);
   await new Promise((resolve, reject) => {
     const proc = spawn("docker", upArgs, {
       cwd: l2Dir,
@@ -328,7 +335,7 @@ async function startTools(envVars, toolsPorts = {}) {
 }
 
 /** Build support tools images only (no start) */
-async function buildTools(toolsPorts = {}) {
+async function buildTools(projectName, toolsPorts = {}) {
   const l2Dir = path.resolve(ETHREX_ROOT, "crates/l2");
   const toolsCompose = path.join(l2Dir, "docker-compose-zk-dex-tools.yaml");
 
@@ -336,18 +343,13 @@ async function buildTools(toolsPorts = {}) {
     throw new Error("Tools compose file not found: " + toolsCompose);
   }
 
-  const toolsEnv = {
-    TOOLS_L1_EXPLORER_PORT: String(toolsPorts.toolsL1ExplorerPort || 8083),
-    TOOLS_L2_EXPLORER_PORT: String(toolsPorts.toolsL2ExplorerPort || 8082),
-    TOOLS_BRIDGE_UI_PORT: String(toolsPorts.toolsBridgeUIPort || 3000),
-    TOOLS_DB_PORT: String(toolsPorts.toolsDbPort || 7432),
-    TOOLS_L1_RPC_PORT: String(toolsPorts.l1Port || 8545),
-    TOOLS_L2_RPC_PORT: String(toolsPorts.l2Port || 1729),
-    TOOLS_METRICS_PORT: String(toolsPorts.toolsMetricsPort || 3702),
-  };
+  const toolsEnv = buildToolsEnv(toolsPorts);
 
+  const buildArgs = ["compose", "-f", toolsCompose];
+  if (projectName) buildArgs.push("-p", projectName);
+  buildArgs.push("build");
   await new Promise((resolve, reject) => {
-    const proc = spawn("docker", ["compose", "-f", toolsCompose, "build"], {
+    const proc = spawn("docker", buildArgs, {
       cwd: l2Dir,
       env: { ...process.env, ...toolsEnv },
       stdio: "pipe",
@@ -363,7 +365,7 @@ async function buildTools(toolsPorts = {}) {
 }
 
 /** Restart support tools (no rebuild, just stop + up) */
-async function restartTools(envVars, toolsPorts = {}) {
+async function restartTools(projectName, envVars, toolsPorts = {}) {
   const l2Dir = path.resolve(ETHREX_ROOT, "crates/l2");
   const toolsCompose = path.join(l2Dir, "docker-compose-zk-dex-tools.yaml");
 
@@ -371,18 +373,22 @@ async function restartTools(envVars, toolsPorts = {}) {
     throw new Error("Tools compose file not found: " + toolsCompose);
   }
 
-  // Write .zk-dex-deployed.env for tools
-  const envPath = path.join(l2Dir, ".zk-dex-deployed.env");
+  // Write per-deployment .env file
+  const envFileName = projectName ? `.deployed-${projectName}.env` : ".zk-dex-deployed.env";
+  const envPath = path.join(l2Dir, envFileName);
   const envLines = Object.entries(envVars || {})
     .map(([k, v]) => `${k}=${v}`)
     .join("\n");
   fs.writeFileSync(envPath, envLines + "\n");
 
-  const toolsEnv = buildToolsEnv(toolsPorts);
+  const toolsEnv = { ...buildToolsEnv(toolsPorts), TOOLS_ENV_FILE: envPath };
 
-  // Stop existing tools
+  // Stop existing tools for this deployment only
+  const downArgs = ["compose", "-f", toolsCompose];
+  if (projectName) downArgs.push("-p", projectName);
+  downArgs.push("down", "--remove-orphans");
   await new Promise((resolve) => {
-    const proc = spawn("docker", ["compose", "-f", toolsCompose, "down", "--remove-orphans"], {
+    const proc = spawn("docker", downArgs, {
       cwd: l2Dir,
       env: { ...process.env, ...toolsEnv },
       stdio: "pipe",
@@ -392,7 +398,7 @@ async function restartTools(envVars, toolsPorts = {}) {
   });
 
   // Start without build
-  const restartUpArgs = buildToolsUpArgs(toolsCompose, toolsPorts);
+  const restartUpArgs = buildToolsUpArgs(toolsCompose, toolsPorts, projectName);
   await new Promise((resolve, reject) => {
     const proc = spawn("docker", restartUpArgs, {
       cwd: l2Dir,
@@ -410,12 +416,14 @@ async function restartTools(envVars, toolsPorts = {}) {
 }
 
 /** Get logs for a tools service */
-async function getToolsLogs(service, tail = 100) {
+async function getToolsLogs(projectName, service, tail = 100) {
   const l2Dir = path.resolve(ETHREX_ROOT, "crates/l2");
   const toolsCompose = path.join(l2Dir, "docker-compose-zk-dex-tools.yaml");
   if (!fs.existsSync(toolsCompose)) return "";
 
-  const args = ["compose", "-f", toolsCompose, "logs", "--tail", String(tail)];
+  const args = ["compose", "-f", toolsCompose];
+  if (projectName) args.push("-p", projectName);
+  args.push("logs", "--tail", String(tail));
   if (service) args.push(service);
 
   return new Promise((resolve) => {
@@ -429,23 +437,29 @@ async function getToolsLogs(service, tail = 100) {
 }
 
 /** Stream logs for a tools service (returns spawned process) */
-function streamToolsLogs(service) {
+function streamToolsLogs(projectName, service) {
   const l2Dir = path.resolve(ETHREX_ROOT, "crates/l2");
   const toolsCompose = path.join(l2Dir, "docker-compose-zk-dex-tools.yaml");
-  const args = ["compose", "-f", toolsCompose, "logs", "-f", "--tail", "50"];
+  const args = ["compose", "-f", toolsCompose];
+  if (projectName) args.push("-p", projectName);
+  args.push("logs", "-f", "--tail", "50");
   if (service) args.push(service);
   return spawn("docker", args, { cwd: l2Dir, stdio: "pipe" });
 }
 
-/** Get support tools container status */
-async function getToolsStatus() {
+/** Get support tools container status for a specific deployment */
+async function getToolsStatus(projectName) {
   const l2Dir = path.resolve(ETHREX_ROOT, "crates/l2");
   const toolsCompose = path.join(l2Dir, "docker-compose-zk-dex-tools.yaml");
   if (!fs.existsSync(toolsCompose)) return [];
 
+  const args = ["compose", "-f", toolsCompose];
+  if (projectName) args.push("-p", projectName);
+  args.push("ps", "--format", "json");
+
   try {
     const result = await new Promise((resolve, reject) => {
-      const proc = spawn("docker", ["compose", "-f", toolsCompose, "ps", "--format", "json"], {
+      const proc = spawn("docker", args, {
         cwd: l2Dir,
         stdio: "pipe",
       });
@@ -465,14 +479,18 @@ async function getToolsStatus() {
   }
 }
 
-/** Stop support tools */
-async function stopTools() {
+/** Stop support tools for a specific deployment */
+async function stopTools(projectName) {
   const l2Dir = path.resolve(ETHREX_ROOT, "crates/l2");
   const toolsCompose = path.join(l2Dir, "docker-compose-zk-dex-tools.yaml");
   if (!fs.existsSync(toolsCompose)) return;
 
+  const args = ["compose", "-f", toolsCompose];
+  if (projectName) args.push("-p", projectName);
+  args.push("down", "--remove-orphans");
+
   await new Promise((resolve) => {
-    const proc = spawn("docker", ["compose", "-f", toolsCompose, "down", "--remove-orphans"], {
+    const proc = spawn("docker", args, {
       cwd: l2Dir,
       stdio: "pipe",
     });

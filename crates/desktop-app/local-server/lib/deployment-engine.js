@@ -468,7 +468,7 @@ async function provision(deployment) {
         });
         envVars = freshEnv;
       }
-      await docker.startTools(envVars, { toolsL1ExplorerPort, toolsL2ExplorerPort, toolsBridgeUIPort, toolsDbPort, l1Port, l2Port, toolsMetricsPort });
+      await docker.startTools(`${projectName}-tools`, envVars, { toolsL1ExplorerPort, toolsL2ExplorerPort, toolsBridgeUIPort, toolsDbPort, l1Port, l2Port, toolsMetricsPort });
       emit(id, "phase", { phase: "starting_tools", message: "Support tools started" });
     } catch (toolsErr) {
       emit(id, "phase", { phase: "starting_tools", message: `Tools setup skipped: ${toolsErr.message}` });
@@ -840,7 +840,7 @@ async function provisionTestnet(deployment) {
       const freshEnv = await docker.extractEnv(projectName, composeFile);
       // For testnet/mainnet tools, override L1 RPC to use external URL
       freshEnv.ETHREX_ETH_RPC_URL = l1RpcUrl;
-      await docker.startTools(freshEnv, {
+      await docker.startTools(`${projectName}-tools`, freshEnv, {
         toolsL1ExplorerPort, toolsL2ExplorerPort, toolsBridgeUIPort, toolsDbPort,
         l1Port: null, l2Port, toolsMetricsPort,
         skipL1Explorer: true,
@@ -1058,7 +1058,7 @@ async function stopDeployment(deployment) {
   }
   const composeFile = require("path").join(getDeploymentDir(deployment.id), "docker-compose.yaml");
   // Stop tools (Explorer, Bridge UI) first, then the deployment containers
-  try { await docker.stopTools(); } catch { /* tools may not be running */ }
+  try { await docker.stopTools(`${deployment.docker_project}-tools`); } catch { /* tools may not be running */ }
   await docker.stop(deployment.docker_project, composeFile);
   return updateDeployment(deployment.id, { phase: "stopped", status: "configured" });
 }
@@ -1073,7 +1073,7 @@ async function startDeployment(deployment) {
   // Also start tools (Explorer, Bridge UI, Dashboard) if they were provisioned
   try {
     const envVars = await docker.extractEnv(deployment.docker_project, composeFile);
-    await docker.startTools(envVars, {
+    await docker.startTools(`${deployment.docker_project}-tools`, envVars, {
       toolsL1ExplorerPort: deployment.tools_l1_explorer_port,
       toolsL2ExplorerPort: deployment.tools_l2_explorer_port,
       toolsBridgeUIPort: deployment.tools_bridge_ui_port,
@@ -1095,11 +1095,15 @@ async function destroyDeployment(deployment) {
   }
   const composeFile = require("path").join(getDeploymentDir(deployment.id), "docker-compose.yaml");
   // Stop tools (Explorer, Bridge UI) first, then destroy the deployment
-  try { await docker.stopTools(); } catch { /* tools may not be running */ }
+  const toolsProject = `${deployment.docker_project}-tools`;
+  try { await docker.stopTools(toolsProject); } catch { /* tools may not be running */ }
   await docker.destroy(deployment.docker_project, composeFile);
   const fs = require("fs");
   const deployDir = getDeploymentDir(deployment.id);
   if (fs.existsSync(deployDir)) fs.rmSync(deployDir, { recursive: true, force: true });
+  // Clean up per-deployment tools env file
+  const toolsEnvFile = require("path").join(require("path").resolve(__dirname, "../../.."), "l2", `.deployed-${toolsProject}.env`);
+  if (fs.existsSync(toolsEnvFile)) fs.unlinkSync(toolsEnvFile);
   return updateDeployment(deployment.id, {
     phase: "configured", status: "configured",
     docker_project: null, l1_port: null, l2_port: null, proof_coord_port: null,
