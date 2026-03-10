@@ -12,16 +12,14 @@ interface HomeViewProps {
   onCreateWithNetwork: (network: NetworkMode) => void
 }
 
-interface MiniDeployment {
+interface L2Info {
   id: string
   name: string
-  program_slug: string
+  source: 'appchain' | 'deployment'
   chain_id: number | null
+  network_mode: string
   status: string
-  phase: string
-  config: string | null
-  l1_port: number | null
-  l2_port: number | null
+  phase: string | null
 }
 
 async function openDeployManager(view?: string) {
@@ -49,11 +47,11 @@ async function openDeployManager(view?: string) {
 export default function HomeView({ onNavigate }: HomeViewProps) {
   const { lang } = useLang()
   const ko = lang === 'ko'
-  const [deployments, setDeployments] = useState<MiniDeployment[]>([])
+  const [deployments, setDeployments] = useState<L2Info[]>([])
 
   const loadDeployments = useCallback(async () => {
     try {
-      const rows = await invoke<MiniDeployment[]>('list_docker_deployments')
+      const rows = await invoke<L2Info[]>('get_all_l2')
       setDeployments(rows)
     } catch { /* ignore */ }
   }, [])
@@ -76,15 +74,8 @@ export default function HomeView({ onNavigate }: HomeViewProps) {
     }
   }, [loadDeployments])
 
-  const runningCount = deployments.filter(d => d.status === 'active' || d.status === 'running').length
+  const runningCount = deployments.filter(d => d.status === 'running').length
   const totalCount = deployments.length
-
-  const getNetworkMode = (d: MiniDeployment) => {
-    try {
-      const cfg = d.config ? JSON.parse(d.config) : {}
-      return cfg.mode || 'local'
-    } catch { return 'local' }
-  }
 
   return (
     <div className="flex flex-col h-full bg-[var(--color-bg-main)]">
@@ -134,8 +125,8 @@ export default function HomeView({ onNavigate }: HomeViewProps) {
           ) : (
             <div className="bg-[var(--color-bg-sidebar)] rounded-xl border border-[var(--color-border)] overflow-hidden">
               {deployments.map((d, i) => {
-                const mode = getNetworkMode(d)
-                const isRunning = d.status === 'active' || d.status === 'running'
+                const mode = d.network_mode?.toLowerCase() || 'local'
+                const isRunning = d.status === 'running'
                 return (
                   <button
                     key={d.id}
@@ -143,7 +134,7 @@ export default function HomeView({ onNavigate }: HomeViewProps) {
                     className={`w-full flex items-center gap-3 px-3.5 py-3 hover:bg-[var(--color-bg-main)] transition-colors cursor-pointer text-left ${i > 0 ? 'border-t border-[var(--color-border)]' : ''}`}
                   >
                     <div className="w-8 h-8 rounded-lg bg-[var(--color-bg-main)] flex items-center justify-center text-sm flex-shrink-0 border border-[var(--color-border)]">
-                      {d.program_slug === 'zk-dex' ? '🔐' : '⛓️'}
+                      ⛓️
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
@@ -151,7 +142,7 @@ export default function HomeView({ onNavigate }: HomeViewProps) {
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isRunning ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-secondary)]'}`} />
                       </div>
                       <div className="text-[10px] text-[var(--color-text-secondary)] mt-0.5">
-                        {d.chain_id ? `Chain ID: ${d.chain_id}` : d.phase}
+                        {d.chain_id ? `Chain ID: ${d.chain_id}` : (d.phase || d.status)}
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1 flex-shrink-0">
@@ -194,8 +185,8 @@ export default function HomeView({ onNavigate }: HomeViewProps) {
           </h2>
           <div className="space-y-2">
             {[
-              { step: '1', label: t('home.step1', lang), desc: t('home.step1.desc', lang), done: deployments.some(d => getNetworkMode(d) === 'local') },
-              { step: '2', label: t('home.step2', lang), desc: t('home.step2.desc', lang), done: deployments.some(d => getNetworkMode(d) === 'testnet') },
+              { step: '1', label: t('home.step1', lang), desc: t('home.step1.desc', lang), done: deployments.some(d => (d.network_mode?.toLowerCase() || 'local') === 'local') },
+              { step: '2', label: t('home.step2', lang), desc: t('home.step2.desc', lang), done: deployments.some(d => (d.network_mode?.toLowerCase() || 'local') === 'testnet') },
               { step: '3', label: t('home.step3', lang), desc: t('home.step3.desc', lang), done: false },
             ].map(item => (
               <div key={item.step} className={`flex items-center gap-3 px-3.5 py-3 rounded-xl border ${item.done ? 'bg-[var(--color-success)]/5 border-[var(--color-success)]/20' : 'bg-[var(--color-bg-sidebar)] border-[var(--color-border)]'}`}>

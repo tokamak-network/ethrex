@@ -531,12 +531,9 @@ impl TelegramBot {
     /// Execute action without confirmation (called after confirmation or for non-destructive ops)
     async fn execute_action_unchecked(&self, chat_id: i64, action: &ParsedAction) -> String {
         match action.name.as_str() {
-            "start_appchain" => self.action_start_appchain(chat_id, &action.params).await,
-            "stop_appchain" => self.action_stop_appchain(chat_id, &action.params).await,
-            "delete_appchain" => self.action_delete_appchain(&action.params).await,
-            "start_deployment" => self.action_start_deployment(&action.params).await,
-            "stop_deployment" => self.action_stop_deployment(&action.params).await,
-            "delete_deployment" => self.action_delete_deployment(&action.params).await,
+            "start_appchain" | "start_deployment" => self.action_start_appchain(chat_id, &action.params).await,
+            "stop_appchain" | "stop_deployment" => self.action_stop_appchain(chat_id, &action.params).await,
+            "delete_appchain" | "delete_deployment" => self.action_delete_appchain(&action.params).await,
             "create_appchain" => self.action_create_appchain(chat_id, &action.params).await,
             "update_summary" => {
                 if let Some(content) = action.params.get("content") {
@@ -556,41 +553,35 @@ impl TelegramBot {
         }
     }
 
-    async fn action_start_appchain(&self, chat_id: i64, params: &HashMap<String, String>) -> String {
-        let chain_id = match self.resolve_chain_id(params) {
-            Ok(id) => id,
+    async fn action_start_appchain(&self, _chat_id: i64, params: &HashMap<String, String>) -> String {
+        let l2 = match self.resolve_l2_id(params) {
+            Ok(l2) => l2,
             Err(e) => return format!("❌ {e}"),
         };
 
-        let config = match self.appchain_manager.get_appchain(&chain_id) {
-            Some(c) => c,
-            None => return "❌ 앱체인을 찾을 수 없습니다.".to_string(),
-        };
-
-        if matches!(config.status, AppchainStatus::Running) {
-            return format!("ℹ️ {} 은(는) 이미 실행 중입니다.", config.name);
+        use crate::unified_state::{L2Source, L2Status};
+        if l2.status == L2Status::Running {
+            return format!("ℹ️ {} 은(는) 이미 실행 중입니다.", l2.name);
         }
 
-        let chain_name = config.name.clone();
-        let has_prover = config.prover_type != "none";
-
-        // Initialize setup
-        self.appchain_manager.init_setup_progress(&chain_id, &config.network_mode, has_prover);
-        self.appchain_manager.update_status(&chain_id, AppchainStatus::SettingUp);
-        self.appchain_manager.update_step_status(&chain_id, "config", StepStatus::Done);
-
-        self.memory.append_event("started", &chain_name, &chain_id, "", "telegram");
-
-        // Start process in background
-        let runner = self.runner.clone();
-        let am = self.appchain_manager.clone();
-        let cid = chain_id.clone();
-        tokio::spawn(async move {
-            ProcessRunner::start_local_dev(runner, am, cid).await;
-        });
-
-        // Poll progress and report
-        self.poll_setup_progress(chat_id, &chain_id, &chain_name).await
+        match l2.source {
+            L2Source::Deployment => {
+                // Docker deployment → use local-server API
+                let proxy = DeploymentProxy::new(LOCAL_SERVER_URL);
+                match proxy.start_deployment(&l2.id).await {
+                    Ok(()) => {
+                        self.memory.append_event("started", &l2.name, &l2.id, "", "telegram");
+                        self.unified_state.refresh_now(&self.appchain_manager, &self.runner).await;
+                        format!("✅ {} 시작됨.", l2.name)
+                    }
+                    Err(e) => format!("❌ {} 시작 실패: {e}", l2.name),
+                }
+            }
+            L2Source::Appchain => {
+                // Legacy local process — not actively used
+                format!("⚠️ {} 은(는) 레거시 로컬 프로세스 앱체인입니다. L2 매니저에서 새로 생성해주세요.", l2.name)
+            }
+        }
     }
 
     async fn poll_setup_progress(&self, chat_id: i64, chain_id: &str, chain_name: &str) -> String {
@@ -649,59 +640,64 @@ impl TelegramBot {
     }
 
     async fn action_stop_appchain(&self, _chat_id: i64, params: &HashMap<String, String>) -> String {
-        let chain_id = match self.resolve_chain_id(params) {
-            Ok(id) => id,
+        let l2 = match self.resolve_l2_id(params) {
+            Ok(l2) => l2,
             Err(e) => return format!("❌ {e}"),
         };
 
-        let config = match self.appchain_manager.get_appchain(&chain_id) {
-            Some(c) => c,
-            None => return "❌ 앱체인을 찾을 수 없습니다.".to_string(),
-        };
-
-        if matches!(config.status, AppchainStatus::Stopped) {
-            return format!("ℹ️ {} 은(는) 이미 중지되어 있습니다.", config.name);
+        use crate::unified_state::{L2Source, L2Status};
+        if l2.status == L2Status::Stopped {
+            return format!("ℹ️ {} 은(는) 이미 중지되어 있습니다.", l2.name);
         }
 
-        let chain_name = config.name.clone();
-        match self.runner.stop_chain(&chain_id).await {
-            Ok(()) => {
-                self.appchain_manager.update_status(&chain_id, AppchainStatus::Stopped);
-                self.appchain_manager.add_log(&chain_id, "Stopped via Telegram.".to_string());
-                self.memory.append_event("stopped", &chain_name, &chain_id, "", "telegram");
-                format!("✅ {} 중지 완료.", chain_name)
+        match l2.source {
+            L2Source::Deployment => {
+                let proxy = DeploymentProxy::new(LOCAL_SERVER_URL);
+                match proxy.stop_deployment(&l2.id).await {
+                    Ok(()) => {
+                        self.memory.append_event("stopped", &l2.name, &l2.id, "", "telegram");
+                        self.unified_state.refresh_now(&self.appchain_manager, &self.runner).await;
+                        format!("✅ {} 중지 완료.", l2.name)
+                    }
+                    Err(e) => format!("❌ {} 중지 실패: {e}", l2.name),
+                }
             }
-            Err(e) => {
-                // If process not found, just update status
-                self.appchain_manager.update_status(&chain_id, AppchainStatus::Stopped);
-                self.memory.append_event("stopped", &chain_name, &chain_id, &e, "telegram");
-                format!("⚠️ {} 프로세스가 이미 종료된 상태입니다. 상태를 Stopped로 변경했습니다.", chain_name)
+            L2Source::Appchain => {
+                format!("⚠️ {} 은(는) 레거시 로컬 프로세스 앱체인입니다. L2 매니저에서 관리해주세요.", l2.name)
             }
         }
     }
 
     async fn action_delete_appchain(&self, params: &HashMap<String, String>) -> String {
-        let chain_id = match self.resolve_chain_id(params) {
-            Ok(id) => id,
+        let l2 = match self.resolve_l2_id(params) {
+            Ok(l2) => l2,
             Err(e) => return format!("❌ {e}"),
         };
 
-        let config = match self.appchain_manager.get_appchain(&chain_id) {
-            Some(c) => c,
-            None => return "❌ 앱체인을 찾을 수 없습니다.".to_string(),
-        };
-
-        let chain_name = config.name.clone();
-
-        // Stop if running
-        let _ = self.runner.stop_chain(&chain_id).await;
-
-        match self.appchain_manager.delete_appchain(&chain_id) {
-            Ok(()) => {
-                self.memory.append_event("deleted", &chain_name, &chain_id, "", "telegram");
-                format!("✅ {} 삭제 완료.", chain_name)
+        use crate::unified_state::L2Source;
+        match l2.source {
+            L2Source::Deployment => {
+                let proxy = DeploymentProxy::new(LOCAL_SERVER_URL);
+                match proxy.destroy_deployment(&l2.id).await {
+                    Ok(()) => {
+                        self.memory.append_event("deleted", &l2.name, &l2.id, "", "telegram");
+                        self.unified_state.refresh_now(&self.appchain_manager, &self.runner).await;
+                        format!("✅ {} 삭제 완료.", l2.name)
+                    }
+                    Err(e) => format!("❌ {} 삭제 실패: {e}", l2.name),
+                }
             }
-            Err(e) => format!("❌ 삭제 실패: {e}"),
+            L2Source::Appchain => {
+                // Legacy — just remove from AppchainManager
+                let _ = self.runner.stop_chain(&l2.id).await;
+                match self.appchain_manager.delete_appchain(&l2.id) {
+                    Ok(()) => {
+                        self.memory.append_event("deleted", &l2.name, &l2.id, "", "telegram");
+                        format!("✅ {} 삭제 완료.", l2.name)
+                    }
+                    Err(e) => format!("❌ 삭제 실패: {e}"),
+                }
+            }
         }
     }
 
@@ -771,64 +767,20 @@ impl TelegramBot {
         }
     }
 
-    async fn action_start_deployment(&self, params: &HashMap<String, String>) -> String {
-        let id = match params.get("id") {
-            Some(id) => id.clone(),
-            None => return "❌ 배포 ID가 필요합니다.".to_string(),
-        };
-        let proxy = DeploymentProxy::new(LOCAL_SERVER_URL);
-        match proxy.start_deployment(&id).await {
-            Ok(()) => {
-                self.memory.append_event("deployment_started", &id, &id, "", "telegram");
-                format!("✅ 배포 {} 시작됨.", id)
-            }
-            Err(e) => format!("❌ 배포 시작 실패: {e}"),
-        }
-    }
-
-    async fn action_stop_deployment(&self, params: &HashMap<String, String>) -> String {
-        let id = match params.get("id") {
-            Some(id) => id.clone(),
-            None => return "❌ 배포 ID가 필요합니다.".to_string(),
-        };
-        let proxy = DeploymentProxy::new(LOCAL_SERVER_URL);
-        match proxy.stop_deployment(&id).await {
-            Ok(()) => {
-                self.memory.append_event("deployment_stopped", &id, &id, "", "telegram");
-                format!("✅ 배포 {} 중지됨.", id)
-            }
-            Err(e) => format!("❌ 배포 중지 실패: {e}"),
-        }
-    }
-
-    async fn action_delete_deployment(&self, params: &HashMap<String, String>) -> String {
-        let id = match params.get("id") {
-            Some(id) => id.clone(),
-            None => return "❌ 배포 ID가 필요합니다.".to_string(),
-        };
-        let proxy = DeploymentProxy::new(LOCAL_SERVER_URL);
-        match proxy.destroy_deployment(&id).await {
-            Ok(()) => {
-                self.memory.append_event("deployment_deleted", &id, &id, "", "telegram");
-                format!("✅ 배포 {} 삭제됨.", id)
-            }
-            Err(e) => format!("❌ 배포 삭제 실패: {e}"),
-        }
-    }
-
     // ── Helpers ──
 
-    fn resolve_chain_id(&self, params: &HashMap<String, String>) -> Result<String, String> {
+    /// Resolve L2 instance by id or name from UnifiedL2State (covers all sources)
+    fn resolve_l2_id(&self, params: &HashMap<String, String>) -> Result<crate::unified_state::L2Info, String> {
+        let all = self.unified_state.get_all();
         if let Some(id) = params.get("id") {
-            return Ok(id.clone());
+            return all.into_iter()
+                .find(|l| l.id == *id)
+                .ok_or_else(|| format!("앱체인 ID '{id}'을(를) 찾을 수 없습니다."));
         }
         if let Some(name) = params.get("name") {
-            let chains = self.appchain_manager.list_appchains();
-            let chain = chains
-                .iter()
-                .find(|c| c.name.to_lowercase() == name.to_lowercase())
-                .ok_or_else(|| format!("앱체인 '{name}'을(를) 찾을 수 없습니다."))?;
-            return Ok(chain.id.clone());
+            return all.into_iter()
+                .find(|l| l.name.to_lowercase() == name.to_lowercase())
+                .ok_or_else(|| format!("앱체인 '{name}'을(를) 찾을 수 없습니다."));
         }
         Err("앱체인 id 또는 name이 필요합니다.".to_string())
     }
