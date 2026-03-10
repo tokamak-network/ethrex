@@ -69,7 +69,6 @@ cat > /usr/share/nginx/html/config.json << EOF
   "sp1_verifier_address": "${ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS:-}",
   "bridge_l2_address": "0x000000000000000000000000000000000000ffff",
   "l1_rpc": "${L1_RPC_PUBLIC}",
-  "l1_rpc_internal": "${L1_RPC_RESOLVED}",
   "l2_rpc": "${L2_RPC_PUBLIC}",
   "l1_explorer": "${L1_EXPLORER_RESOLVED}",
   "l2_explorer": "${L2_EXPLORER_PUBLIC}",
