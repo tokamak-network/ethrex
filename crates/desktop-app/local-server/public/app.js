@@ -1157,12 +1157,21 @@ async function resumeDeployProgress(id) {
     document.getElementById('deploy-complete').style.display = 'none';
     document.getElementById('goto-dashboard-btn').style.display = 'none';
 
+    // Always reset cancel button state
+    const cancelBtn = document.getElementById('cancel-deploy-btn');
+
     renderProgressSteps();
     renderBuildLog();
     if (dep) renderDeployConfigSummary(dep);
 
     // If still active, connect SSE for live updates + start timer
     if (histData.isActive) {
+      // Show cancel button for active deployments
+      if (cancelBtn) {
+        cancelBtn.style.display = '';
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = 'Cancel Deployment';
+      }
       startElapsedTimer();
 
       if (deployEventSource) deployEventSource.close();
@@ -1210,7 +1219,8 @@ async function resumeDeployProgress(id) {
         if (currentPhase === 'running') deployEventSource.close();
       };
     } else {
-      // Not active -- show final state
+      // Not active -- hide cancel button, show final state
+      if (cancelBtn) cancelBtn.style.display = 'none';
       if (currentPhase === 'running') {
         showDeployComplete(statusData);
       } else if (currentPhase === 'error') {

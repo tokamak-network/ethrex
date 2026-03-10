@@ -398,6 +398,12 @@ async function provision(deployment) {
       emit(id, "phase", { phase: "building", message: forceRebuild
         ? "Force rebuilding Docker images..."
         : "Building Docker images... (this may take several minutes on first run)" });
+      // Remove existing project-specific images to prevent "already exists" BuildKit error
+      const { execSync } = require("child_process");
+      const l1Tag = `tokamak-appchain:l1-${projectName}`;
+      const l2Tag = `tokamak-appchain:${programSlug}-${projectName}`;
+      try { execSync(`docker rmi "${l1Tag}" 2>/dev/null`, { stdio: "pipe" }); } catch {}
+      try { execSync(`docker rmi "${l2Tag}" 2>/dev/null`, { stdio: "pipe" }); } catch {}
       // Track per-stage progress across parallel Docker builds
       const buildStages = {}; // stageKey -> { current, total }
       let lastEmittedPct = -1;
