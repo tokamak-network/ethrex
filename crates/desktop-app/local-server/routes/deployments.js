@@ -176,7 +176,7 @@ router.post("/testnet/check-balance", async (req, res) => {
     const balanceWei = BigInt(balanceHex || "0x0");
     const chainId = parseInt(chainIdHex || "0x0", 16);
     const gasPriceWei = BigInt(gasPriceHex || "0x0");
-    const gasPriceGwei = Number(gasPriceWei) / 1e9;
+    const gasPriceGwei = Number(gasPriceWei / 1000n) / 1e6;
 
     const roleInfo = ROLE_GAS_ESTIMATES[role] || ROLE_GAS_ESTIMATES.deployer;
     const estimatedGas = roleInfo.gas;
@@ -254,7 +254,7 @@ router.post("/testnet/resolve-keys", async (req, res) => {
       } catch {
         return { error: `Invalid key format for "${keychainName}"`, label };
       } finally {
-        pk = null; // Clear private key from memory
+        pk = null; // Best-effort: dereference private key (actual GC timing is V8-controlled)
       }
     };
 
@@ -283,7 +283,7 @@ router.post("/testnet/resolve-keys", async (req, res) => {
     ]);
 
     const gasPriceWei = BigInt(gasPriceHex || "0x0");
-    const gasPriceGwei = Number(gasPriceWei) / 1e9;
+    const gasPriceGwei = Number(gasPriceWei / 1000n) / 1e6;
 
     // Estimate total deployment cost using BigInt
     const deployerGas = ROLE_GAS_ESTIMATES.deployer.gas;
@@ -325,7 +325,7 @@ router.post("/testnet/estimate-gas", async (req, res) => {
     ]);
 
     const gasPriceWei = BigInt(gasPriceHex || "0x0");
-    const gasPriceGwei = Number(gasPriceWei) / 1e9;
+    const gasPriceGwei = Number(gasPriceWei / 1000n) / 1e6;
     const chainId = parseInt(chainIdHex || "0x0", 16);
 
     const breakdown = {};

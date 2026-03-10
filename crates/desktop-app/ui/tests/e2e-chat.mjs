@@ -210,31 +210,39 @@ if (!fs.existsSync(TOKEN_FILE)) {
   // 4.1 Simulate logout: delete token file
   const backupFile = TOKEN_FILE + '.backup';
   fs.copyFileSync(TOKEN_FILE, backupFile);
-  fs.unlinkSync(TOKEN_FILE);
-  assert(!fs.existsSync(TOKEN_FILE), '4.1 로그아웃: 토큰 파일 삭제됨');
+  try {
+    fs.unlinkSync(TOKEN_FILE);
+    assert(!fs.existsSync(TOKEN_FILE), '4.1 로그아웃: 토큰 파일 삭제됨');
 
-  if (tokenValid) {
-    const usageBefore = (await fetchUsage(originalToken)).data?.used;
-    console.log(`       로그아웃 전 사용량: ${usageBefore}`);
-    const usageAfterLogout = await fetchUsage(originalToken);
-    assert(usageAfterLogout.status === 200, '4.2 서버 세션은 로컬 파일 삭제와 무관');
+    if (tokenValid) {
+      const usageBefore = (await fetchUsage(originalToken)).data?.used;
+      console.log(`       로그아웃 전 사용량: ${usageBefore}`);
+      const usageAfterLogout = await fetchUsage(originalToken);
+      assert(usageAfterLogout.status === 200, '4.2 서버 세션은 로컬 파일 삭제와 무관');
 
-    // 4.3 Simulate re-login: restore token file
-    fs.copyFileSync(backupFile, TOKEN_FILE);
-    fs.unlinkSync(backupFile);
-    assert(fs.existsSync(TOKEN_FILE), '4.3 재로그인: 토큰 파일 복원됨');
+      // 4.3 Simulate re-login: restore token file
+      fs.copyFileSync(backupFile, TOKEN_FILE);
+      fs.unlinkSync(backupFile);
+      assert(fs.existsSync(TOKEN_FILE), '4.3 재로그인: 토큰 파일 복원됨');
 
-    // 4.4 Verify usage preserved after re-login
-    const usageAfterRelogin = await fetchUsage(originalToken);
-    assertEqual(usageAfterRelogin.data?.used, usageBefore, '4.4 재로그인 후 사용량 보존 (서버 기준)');
-    console.log(`       재로그인 후 사용량: ${usageAfterRelogin.data?.used}`);
-  } else {
-    // Restore file and skip API tests
-    fs.copyFileSync(backupFile, TOKEN_FILE);
-    fs.unlinkSync(backupFile);
-    assert(fs.existsSync(TOKEN_FILE), '4.2 토큰 파일 복원 (cleanup)');
-    skip('4.3 서버 세션은 로컬 파일 삭제와 무관');
-    skip('4.4 재로그인 후 사용량 보존 (서버 기준)');
+      // 4.4 Verify usage preserved after re-login
+      const usageAfterRelogin = await fetchUsage(originalToken);
+      assertEqual(usageAfterRelogin.data?.used, usageBefore, '4.4 재로그인 후 사용량 보존 (서버 기준)');
+      console.log(`       재로그인 후 사용량: ${usageAfterRelogin.data?.used}`);
+    } else {
+      // Restore file and skip API tests
+      fs.copyFileSync(backupFile, TOKEN_FILE);
+      fs.unlinkSync(backupFile);
+      assert(fs.existsSync(TOKEN_FILE), '4.2 토큰 파일 복원 (cleanup)');
+      skip('4.3 서버 세션은 로컬 파일 삭제와 무관');
+      skip('4.4 재로그인 후 사용량 보존 (서버 기준)');
+    }
+  } finally {
+    // Ensure token file is always restored even on crash
+    if (!fs.existsSync(TOKEN_FILE) && fs.existsSync(backupFile)) {
+      fs.copyFileSync(backupFile, TOKEN_FILE);
+    }
+    if (fs.existsSync(backupFile)) fs.unlinkSync(backupFile);
   }
 }
 
