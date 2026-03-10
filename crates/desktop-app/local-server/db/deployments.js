@@ -82,7 +82,7 @@ async function getNextAvailablePorts() {
             MAX(tools_l1_explorer_port) as max_tl1, MAX(tools_l2_explorer_port) as max_tl2,
             MAX(tools_bridge_ui_port) as max_tbridge, MAX(tools_db_port) as max_tdb,
             MAX(tools_metrics_port) as max_tmetrics
-     FROM deployments WHERE l1_port IS NOT NULL`
+     FROM deployments`
   ).get();
 
   // Non-overlapping port groups can be allocated in parallel

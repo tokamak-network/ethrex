@@ -119,13 +119,12 @@ async function extractEnv(projectName, composeFile) {
     );
 
     const envContent = fs.readFileSync(path.join(tempDir, ".env"), "utf-8");
-    console.log(`[extractEnv] Volume ${volumeName} content:\n${envContent}`);
     const parsed = {};
     for (const line of envContent.split("\n")) {
       const match = line.match(/^([^=]+)=(.*)$/);
       if (match) parsed[match[1].trim()] = match[2].trim();
     }
-    console.log(`[extractEnv] Parsed BRIDGE_ADDRESS: ${parsed.ETHREX_WATCHER_BRIDGE_ADDRESS || 'NOT FOUND'}`);
+    console.log(`[extractEnv] Volume ${volumeName}: ${Object.keys(parsed).length} vars`);
     return parsed;
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
