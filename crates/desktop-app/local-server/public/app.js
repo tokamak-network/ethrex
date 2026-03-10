@@ -937,8 +937,8 @@ function startDeployProgress(id) {
       if (data.event === 'log') {
         buildLogLines.push(data.message || '');
         if (buildLogLines.length > 200) buildLogLines = buildLogLines.slice(-200);
-        // Only parse contract addresses during the deploying_contracts phase
-        if (currentPhase === 'deploying_contracts') {
+        // Parse contract addresses during contract-related phases
+        if (['deploying_contracts', 'verifying_contracts', 'l2_starting'].includes(currentPhase)) {
           const prevCount = Object.keys(deployedContracts).length;
           parseContractFromLog(data.message || '');
           if (Object.keys(deployedContracts).length > prevCount) renderProgressSteps();
@@ -949,6 +949,9 @@ function startDeployProgress(id) {
 
       deployEvents.push(data);
       if (data.imageFound) buildingImageFound = data.imageFound;
+      // Capture contract addresses from phase events (server sends bridgeAddress/proposerAddress)
+      if (data.bridgeAddress && !deployedContracts['CommonBridge']) deployedContracts['CommonBridge'] = data.bridgeAddress;
+      if (data.proposerAddress && !deployedContracts['OnChainProposer']) deployedContracts['OnChainProposer'] = data.proposerAddress;
       if (data.phase && data.phase !== currentPhase) {
         if (currentPhase !== 'configured') {
           phaseDurations[currentPhase] = Math.floor((Date.now() - phaseStartTime) / 1000);
