@@ -265,19 +265,19 @@ export default function MyL2View() {
       const url = qs ? `${baseUrl}?${qs}` : baseUrl
       const existing = await WebviewWindow.getByLabel('deploy-manager')
       if (existing) {
-        await existing.close()
+        await existing.show()
+        await existing.setFocus()
+        return
       }
-      {
-        new WebviewWindow('deploy-manager', {
-          url,
-          title: 'Tokamak L2 Manager',
-          width: 1100,
-          height: 800,
-          minWidth: 800,
-          minHeight: 600,
-          center: true,
-        })
-      }
+      new WebviewWindow('deploy-manager', {
+        url,
+        title: 'Tokamak L2 Manager',
+        width: 1100,
+        height: 800,
+        minWidth: 800,
+        minHeight: 600,
+        center: true,
+      })
     } catch (e) {
       console.error('Failed to open deployment manager:', e)
     }

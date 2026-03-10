@@ -12,7 +12,7 @@
 //! - Background health monitoring
 
 use crate::ai_provider::{AiProvider, ChatMessage};
-use crate::appchain_manager::{AppchainManager, AppchainStatus, StepStatus};
+use crate::appchain_manager::{AppchainManager, AppchainStatus};
 use crate::deployment_db::{self, DeploymentProxy};
 use crate::pilot_memory::PilotMemory;
 use crate::runner::ProcessRunner;
@@ -215,7 +215,7 @@ impl TelegramBot {
 
     // ── Long-polling loop ──
 
-    pub async fn run(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
+    pub async fn run(self: Arc<Self>, shutdown: watch::Receiver<bool>) {
         log::info!("Telegram bot started (polling mode)");
         let mut offset: i64 = 0;
 
@@ -584,6 +584,7 @@ impl TelegramBot {
         }
     }
 
+    #[allow(dead_code)]
     async fn poll_setup_progress(&self, chat_id: i64, chain_id: &str, chain_name: &str) -> String {
         let mut last_step = String::new();
 
@@ -1100,7 +1101,7 @@ impl TelegramBotManager {
         let chat_ids = config.chat_ids.clone();
         let message = message.to_string();
         let client = config.client.clone();
-        drop(config);
+        let _ = config;
 
         tauri::async_runtime::spawn(async move {
             for chat_id in chat_ids {

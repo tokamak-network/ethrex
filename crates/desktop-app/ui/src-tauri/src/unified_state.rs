@@ -4,7 +4,7 @@
 //! Background-refreshed every 5 seconds, consumed by Telegram Bot, AI Messenger, and Frontend.
 
 use crate::appchain_manager::{AppchainManager, AppchainStatus};
-use crate::deployment_db::{self, DeploymentProxy, MonitoringInfo, RpcHealth};
+use crate::deployment_db::{self, DeploymentProxy, MonitoringInfo};
 use crate::pilot_memory::PilotMemory;
 use crate::runner::ProcessRunner;
 use serde::{Deserialize, Serialize};
@@ -140,6 +140,7 @@ impl UnifiedL2State {
     }
 
     /// Get a specific L2 instance by ID
+    #[allow(dead_code)]
     pub fn get_by_id(&self, id: &str) -> Option<L2Info> {
         self.snapshot
             .read()
@@ -167,6 +168,7 @@ impl UnifiedL2State {
     }
 
     /// Emit an event
+    #[allow(dead_code)]
     fn emit_event(&self, event: L2Event) {
         // Ignore send errors (no receivers)
         let _ = self.event_tx.send(event);
@@ -339,6 +341,7 @@ pub async fn spawn_state_refresh(
 
 // ── Helpers ──
 
+#[allow(dead_code)]
 fn reconcile_appchain_status(status: &AppchainStatus, process_alive: bool) -> L2Status {
     match status {
         AppchainStatus::Running if !process_alive => L2Status::Error,
@@ -350,6 +353,7 @@ fn reconcile_appchain_status(status: &AppchainStatus, process_alive: bool) -> L2
     }
 }
 
+#[allow(dead_code)]
 fn appchain_status_to_l2(status: &AppchainStatus) -> L2Status {
     match status {
         AppchainStatus::Running => L2Status::Running,

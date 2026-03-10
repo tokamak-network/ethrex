@@ -23,20 +23,15 @@ interface L2Info {
 }
 
 async function openDeployManager(view?: string) {
-  const baseUrl = await invoke<string>('open_deployment_ui')
-  const url = view ? `${baseUrl}?view=${view}` : baseUrl
-  const existing = await WebviewWindow.getByLabel('deploy-manager')
-  if (existing) {
-    if (view) {
-      // Close and reopen to navigate to the requested view
-      await existing.close()
-    } else {
+  try {
+    const baseUrl = await invoke<string>('open_deployment_ui')
+    const url = view ? `${baseUrl}?view=${view}` : baseUrl
+    const existing = await WebviewWindow.getByLabel('deploy-manager')
+    if (existing) {
       await existing.show()
       await existing.setFocus()
       return
     }
-  }
-  {
     new WebviewWindow('deploy-manager', {
       url,
       title: 'Tokamak L2 Manager',
@@ -44,6 +39,8 @@ async function openDeployManager(view?: string) {
       minWidth: 800, minHeight: 600,
       center: true,
     })
+  } catch (e) {
+    console.error('Failed to open deploy manager:', e)
   }
 }
 

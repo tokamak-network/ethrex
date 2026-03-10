@@ -38,6 +38,11 @@ pub fn run() {
             let server = Arc::new(local_server::LocalServer::new());
             app.manage(server.clone());
             tauri::async_runtime::spawn(async move {
+                // Skip start if port already has a healthy server
+                if server.health_check().await {
+                    log::info!("Local server already running on port {}", server.port());
+                    return;
+                }
                 if let Err(e) = server.start().await {
                     log::warn!("Failed to auto-start local server: {e}");
                 }

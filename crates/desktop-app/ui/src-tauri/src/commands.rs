@@ -396,14 +396,31 @@ pub async fn get_local_server_status(
 pub async fn open_deployment_ui(
     server: State<'_, Arc<LocalServer>>,
 ) -> Result<String, String> {
-    // Ensure server is running
-    if !server.is_running().await {
-        server.start().await?;
-        // Wait briefly for server to be ready
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    let url = format!("http://127.0.0.1:{}", server.port());
+
+    // If port already has a healthy server (e.g. started separately), skip start
+    if server.health_check().await {
+        return Ok(url);
     }
 
-    Ok(format!("http://127.0.0.1:{}", server.port()))
+    // Try to start if not running
+    if !server.is_running().await {
+        match server.start().await {
+            Ok(_) => {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+            Err(e) => {
+                log::warn!("Failed to start local-server: {e}");
+                // Even if start fails, port might already be in use by another server
+                if server.health_check().await {
+                    return Ok(url);
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(url)
 }
 
 // ============================================================================
@@ -506,6 +523,7 @@ pub async fn start_platform_login(app: tauri::AppHandle) -> Result<LoginStartRes
     let login_url = format!("{base_url}/login?desktop_code={code}");
 
     // Try to open browser (best-effort)
+    #[allow(deprecated)]
     let _ = app.shell().open(&login_url, None);
 
     Ok(LoginStartResult {
