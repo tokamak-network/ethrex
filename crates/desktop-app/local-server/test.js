@@ -507,6 +507,42 @@ testAsync("isHealthy returns false for unreachable host", async () => {
         assert.equal(result.proposer, null);
       });
 
+      test("parseContractAddressesFromLogs: prefers JSON over legacy logs", () => {
+        const logs = [
+          "tokamak-app-deployer  | CommonBridge deployed:",
+          "tokamak-app-deployer  |   Proxy -> address=0xoldoldoldoldoldoldoldoldoldoldoldoldoldold, tx_hash=0xabc",
+          'DEPLOYER_RESULT_JSON:{"status":"success","contracts":{"CommonBridge":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","OnChainProposer":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","SP1Verifier":"0xcccccccccccccccccccccccccccccccccccccccc","Timelock":"0xdddddddddddddddddddddddddddddddddddddddd","SequencerRegistry":"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","Router":null}}',
+        ];
+        const result = parseContractAddressesFromLogs(logs);
+        // Should use JSON values, not legacy log values
+        assert.equal(result.bridge, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert.equal(result.proposer, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert.equal(result.sp1Verifier, "0xcccccccccccccccccccccccccccccccccccccccc");
+        assert.equal(result.timelock, "0xdddddddddddddddddddddddddddddddddddddddd");
+        assert.equal(result.sequencerRegistry, "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        assert.equal(result.router, null);
+      });
+
+      test("parseContractAddressesFromLogs: falls back to legacy when JSON is malformed", () => {
+        const logs = [
+          "DEPLOYER_RESULT_JSON:{invalid json",
+          "CommonBridge deployed:",
+          "  Proxy -> address=0x1111111111111111111111111111111111111111, tx_hash=0x1",
+        ];
+        const result = parseContractAddressesFromLogs(logs);
+        assert.equal(result.bridge, "0x1111111111111111111111111111111111111111");
+      });
+
+      test("parseContractAddressesFromLogs: JSON with GuestProgramRegistry", () => {
+        const logs = [
+          'DEPLOYER_RESULT_JSON:{"status":"success","contracts":{"CommonBridge":"0xaaaa000000000000000000000000000000000000","OnChainProposer":"0xbbbb000000000000000000000000000000000000","SP1Verifier":"0xcccc000000000000000000000000000000000000","GuestProgramRegistry":"0xdddd000000000000000000000000000000000000","Timelock":null,"SequencerRegistry":"0xeeee000000000000000000000000000000000000","Router":null}}',
+        ];
+        const result = parseContractAddressesFromLogs(logs);
+        assert.equal(result.bridge, "0xaaaa000000000000000000000000000000000000");
+        assert.equal(result.proposer, "0xbbbb000000000000000000000000000000000000");
+        assert.equal(result.timelock, null);
+      });
+
       // -- 4-key testnet compose generation --
       const { generateTestnetComposeFile } = require("./lib/compose-generator");
       const { ethers } = require("ethers");

@@ -129,6 +129,27 @@ function cancelProvision(deploymentId) {
  */
 function parseContractAddressesFromLogs(logLines) {
   const result = { bridge: null, proposer: null, timelock: null, sp1Verifier: null, sequencerRegistry: null, router: null };
+
+  // Priority 1: Look for structured JSON output from deployer (DEPLOYER_RESULT_JSON:{...})
+  for (const line of logLines) {
+    const jsonMatch = line.match(/DEPLOYER_RESULT_JSON:(\{.*\})/);
+    if (jsonMatch) {
+      try {
+        const data = JSON.parse(jsonMatch[1]);
+        if (data.status === "success" && data.contracts) {
+          result.bridge = data.contracts.CommonBridge || null;
+          result.proposer = data.contracts.OnChainProposer || null;
+          result.timelock = data.contracts.Timelock || null;
+          result.sp1Verifier = data.contracts.SP1Verifier || null;
+          result.sequencerRegistry = data.contracts.SequencerRegistry || null;
+          result.router = data.contracts.Router || null;
+          return result;
+        }
+      } catch { /* fall through to legacy parsing */ }
+    }
+  }
+
+  // Priority 2: Legacy log-based parsing (for older deployer versions)
   const addressPattern = /address=(0x[0-9a-fA-F]{40})/;
   let lastContract = null; // which contract was just announced
 
