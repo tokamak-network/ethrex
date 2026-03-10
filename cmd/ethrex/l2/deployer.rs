@@ -652,18 +652,7 @@ pub async fn deploy_l1_contracts(
     )
     .await?;
 
-    info!("Waiting for transactions receipts");
-
-    for tx_hash in deploy_tx_hashes.iter().chain(initialize_tx_hashes.iter()) {
-        if *tx_hash == H256::default() {
-            continue;
-        }
-        let receipt = wait_for_transaction_receipt(*tx_hash, &eth_client, 20).await?;
-        if !receipt.receipt.status {
-            error!("Receipt status is false for tx_hash: {tx_hash:#x}");
-            return Err(DeployerError::TransactionReceiptError);
-        }
-    }
+    // All deploy/init receipts already confirmed inline — no batch wait needed
 
     if contract_addresses.router.is_some() {
         let _ = register_chain(

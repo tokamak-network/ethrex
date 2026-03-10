@@ -437,6 +437,7 @@ async function provision(deployment) {
     checkCancelled(provisionInfo);
 
     provisionInfo.phase = "deploying_contracts";
+    emit(id, "phase", { phase: "deploying_contracts", message: "Deploying L1 contracts..." });
     updateDeployment(id, { phase: "deploying_contracts" });
 
     // Check for existing contract addresses (skip redeploy when possible)

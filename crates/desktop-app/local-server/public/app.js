@@ -2532,15 +2532,19 @@ function toggleRpcUrl(uid, btn) {
 // ============================================================
 checkHealth();
 setInterval(checkHealth, 15000);
-loadDeployments();
 // Show launch button in header for deployments view
 document.getElementById('header-launch-btn').style.display = '';
-// Handle URL parameters (e.g. ?view=launch from Messenger)
+// Handle URL parameters (e.g. ?view=launch, ?detail=id from Messenger)
 const urlParams = new URLSearchParams(window.location.search);
 const editId = urlParams.get('edit');
 const initialView = urlParams.get('view');
-if (editId) {
-  editConfiguredDeploy(editId);
-} else if (initialView) {
-  showView(initialView);
-}
+const detailId = urlParams.get('detail');
+loadDeployments().then(() => {
+  if (detailId) {
+    showDeploymentDetail(detailId);
+  } else if (editId) {
+    editConfiguredDeploy(editId);
+  } else if (initialView) {
+    showView(initialView);
+  }
+});

@@ -54,11 +54,12 @@ interface Props {
   onRetry?: () => void
   l1ChainId?: number
   l2ChainId?: number
+  onOpenManager?: () => void
 }
 
 export default function L2DetailServicesTab({
   l2, ko, containers, products, actionLoading, handleAction,
-  onRefresh, onRetry, l1ChainId, l2ChainId,
+  onRefresh, onRetry, l1ChainId, l2ChainId, onOpenManager,
 }: Props) {
   const [toolsLoading, setToolsLoading] = useState(false)
   const [bridgeConfig, setBridgeConfig] = useState<BridgeUIConfig | null>(null)
@@ -148,8 +149,20 @@ export default function L2DetailServicesTab({
     <>
       {/* Docker Services */}
       <div className="bg-[var(--color-bg-sidebar)] rounded-xl border border-[var(--color-border)] overflow-hidden">
-        <div className="px-3 pt-3 pb-1">
+        <div className="px-3 pt-3 pb-1 flex items-center justify-between">
           <SectionHeader title={ko ? '서비스 상태' : 'Service Status'} />
+          {onOpenManager && (
+            <button
+              onClick={onOpenManager}
+              className="flex items-center gap-1 text-[10px] text-[#3b82f6] hover:opacity-70 cursor-pointer bg-transparent border-none"
+              title={ko ? '매니저에서 열기' : 'Open in Manager'}
+            >
+              {ko ? '매니저' : 'Manager'}
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+              </svg>
+            </button>
+          )}
         </div>
         {/* Core */}
         <div className="px-3 pb-1">

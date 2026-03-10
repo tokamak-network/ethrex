@@ -238,12 +238,13 @@ export default function MyL2View() {
     return () => clearInterval(interval)
   }, [loadDeployments])
 
-  const openDeployManager = async (view?: string, editId?: string) => {
+  const openDeployManager = async (view?: string, editId?: string, detailId?: string) => {
     try {
       const baseUrl = await invoke<string>('open_deployment_ui')
       const params = new URLSearchParams()
       if (view) params.set('view', view)
       if (editId) params.set('edit', editId)
+      if (detailId) params.set('detail', detailId)
       const qs = params.toString()
       const url = qs ? `${baseUrl}?${qs}` : baseUrl
       const existing = await WebviewWindow.getByLabel('deploy-manager')
