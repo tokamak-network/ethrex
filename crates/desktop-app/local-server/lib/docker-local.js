@@ -426,8 +426,11 @@ async function getToolsLogs(projectName, service, tail = 100) {
   args.push("logs", "--tail", String(tail));
   if (service) args.push(service);
 
+  const toolsEnvFile = resolveToolsEnvFile(projectName);
+  const env = toolsEnvFile ? { ...process.env, TOOLS_ENV_FILE: toolsEnvFile } : undefined;
+
   return new Promise((resolve) => {
-    const proc = spawn("docker", args, { cwd: l2Dir, stdio: "pipe" });
+    const proc = spawn("docker", args, { cwd: l2Dir, env, stdio: "pipe" });
     let stdout = "";
     if (proc.stdout) proc.stdout.on("data", (d) => (stdout += d));
     if (proc.stderr) proc.stderr.on("data", (d) => (stdout += d));
@@ -444,7 +447,18 @@ function streamToolsLogs(projectName, service) {
   if (projectName) args.push("-p", projectName);
   args.push("logs", "-f", "--tail", "50");
   if (service) args.push(service);
-  return spawn("docker", args, { cwd: l2Dir, stdio: "pipe" });
+
+  const toolsEnvFile = resolveToolsEnvFile(projectName);
+  const env = toolsEnvFile ? { ...process.env, TOOLS_ENV_FILE: toolsEnvFile } : undefined;
+  return spawn("docker", args, { cwd: l2Dir, env, stdio: "pipe" });
+}
+
+/** Resolve the per-deployment tools env file path for a given project name */
+function resolveToolsEnvFile(projectName) {
+  const l2Dir = path.resolve(ETHREX_ROOT, "crates/l2");
+  const envFileName = projectName ? `.deployed-${projectName}.env` : ".zk-dex-deployed.env";
+  const envPath = path.join(l2Dir, envFileName);
+  return fs.existsSync(envPath) ? envPath : null;
 }
 
 /** Get support tools container status for a specific deployment */
@@ -457,10 +471,14 @@ async function getToolsStatus(projectName) {
   if (projectName) args.push("-p", projectName);
   args.push("ps", "--format", "json");
 
+  const toolsEnvFile = resolveToolsEnvFile(projectName);
+  const env = toolsEnvFile ? { TOOLS_ENV_FILE: toolsEnvFile } : {};
+
   try {
     const result = await new Promise((resolve, reject) => {
       const proc = spawn("docker", args, {
         cwd: l2Dir,
+        env: { ...process.env, ...env },
         stdio: "pipe",
       });
       let stdout = "";
@@ -489,9 +507,13 @@ async function stopTools(projectName) {
   if (projectName) args.push("-p", projectName);
   args.push("down", "--remove-orphans");
 
+  const toolsEnvFile = resolveToolsEnvFile(projectName);
+  const env = toolsEnvFile ? { TOOLS_ENV_FILE: toolsEnvFile } : {};
+
   await new Promise((resolve) => {
     const proc = spawn("docker", args, {
       cwd: l2Dir,
+      env: { ...process.env, ...env },
       stdio: "pipe",
     });
     proc.on("close", () => resolve());
