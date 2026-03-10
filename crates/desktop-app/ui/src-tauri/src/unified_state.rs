@@ -215,7 +215,7 @@ impl UnifiedL2State {
             // Determine live status from containers
             let status = if containers.is_empty() {
                 match dep.phase.as_str() {
-                    "running" | "active" => L2Status::Stopped,
+                    "running" | "active" => L2Status::Partial, // phase says running but no containers found
                     "error" => L2Status::Error,
                     "stopped" => L2Status::Stopped,
                     "configured" => L2Status::Created,

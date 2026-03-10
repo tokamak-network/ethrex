@@ -343,6 +343,9 @@ impl TelegramBot {
             .map(|u| u.first_name.as_str())
             .unwrap_or("there");
 
+        // Refresh state before showing status
+        self.unified_state.refresh_now(&self.appchain_manager, &self.runner).await;
+
         // Generate a brief status summary
         let chains = self.appchain_manager.list_appchains();
         let deployments = deployment_db::list_deployments_from_db().unwrap_or_default();
@@ -414,7 +417,10 @@ impl TelegramBot {
         // Save user message to memory
         self.memory.append_message(chat_id, "user", text);
 
-        // Build context from unified state (cached, no HTTP calls)
+        // Refresh state before responding so user always sees latest
+        self.unified_state.refresh_now(&self.appchain_manager, &self.runner).await;
+
+        // Build context from unified state (freshly refreshed)
         let unified_context = self.unified_state.to_context_json();
         let pilot_context = self.memory.load_recent_context(chat_id, 20, 20);
 
@@ -845,6 +851,9 @@ impl TelegramBot {
                     "running" => "🟢",
                     "stopped" => "🔴",
                     "partial" => "🟡",
+                    "settingup" => "🔧",
+                    "error" => "💥",
+                    "created" => "🆕",
                     _ => "⚪",
                 };
                 // Show container breakdown for partial status
@@ -856,6 +865,8 @@ impl TelegramBot {
                     } else {
                         String::new()
                     }
+                } else if status == "error" {
+                    dep["error_message"].as_str().map(|e| format!(" — {}", e)).unwrap_or_default()
                 } else {
                     String::new()
                 };
