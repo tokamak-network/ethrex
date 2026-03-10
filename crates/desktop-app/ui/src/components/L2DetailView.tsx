@@ -81,10 +81,9 @@ export default function L2DetailView({ l2: l2Prop, onBack, onRefresh }: Props) {
       const url = `${baseUrl}?detail=${l2Prop.id}`
       const existing = await WebviewWindow.getByLabel('deploy-manager')
       if (existing) {
-        try { await existing.setUrl(url) } catch {}
-        await existing.show()
-        await existing.setFocus()
-      } else {
+        await existing.close()
+      }
+      {
         new WebviewWindow('deploy-manager', {
           url, title: 'Tokamak L2 Manager',
           width: 1100, height: 800, minWidth: 800, minHeight: 600, center: true,

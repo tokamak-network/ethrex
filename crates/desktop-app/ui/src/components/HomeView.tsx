@@ -28,12 +28,15 @@ async function openDeployManager(view?: string) {
   const existing = await WebviewWindow.getByLabel('deploy-manager')
   if (existing) {
     if (view) {
-      // Navigate to the requested view by changing the URL
-      try { await existing.setUrl(url) } catch {}
+      // Close and reopen to navigate to the requested view
+      await existing.close()
+    } else {
+      await existing.show()
+      await existing.setFocus()
+      return
     }
-    await existing.show()
-    await existing.setFocus()
-  } else {
+  }
+  {
     new WebviewWindow('deploy-manager', {
       url,
       title: 'Tokamak L2 Manager',

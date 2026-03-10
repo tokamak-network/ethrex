@@ -265,11 +265,9 @@ export default function MyL2View() {
       const url = qs ? `${baseUrl}?${qs}` : baseUrl
       const existing = await WebviewWindow.getByLabel('deploy-manager')
       if (existing) {
-        // Navigate by changing URL (Tauri emit doesn't reach plain webview)
-        try { await existing.setUrl(url) } catch (e) { console.warn('Failed to set URL:', e) }
-        await existing.show()
-        await existing.setFocus()
-      } else {
+        await existing.close()
+      }
+      {
         new WebviewWindow('deploy-manager', {
           url,
           title: 'Tokamak L2 Manager',
