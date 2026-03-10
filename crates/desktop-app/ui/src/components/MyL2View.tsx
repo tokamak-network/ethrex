@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useLang } from '../App'
 import { t } from '../i18n'
@@ -234,8 +235,15 @@ export default function MyL2View() {
 
   useEffect(() => {
     loadDeployments()
-    const interval = setInterval(loadDeployments, 5000)
-    return () => clearInterval(interval)
+    // Fallback polling at 30s (primary refresh is event-driven)
+    const interval = setInterval(loadDeployments, 30000)
+    // Listen for real-time state changes from UnifiedL2State
+    let unlisten: UnlistenFn | undefined
+    listen('l2-state-changed', () => { loadDeployments() }).then(fn => { unlisten = fn })
+    return () => {
+      clearInterval(interval)
+      unlisten?.()
+    }
   }, [loadDeployments])
 
   const openDeployManager = async (view?: string, editId?: string, detailId?: string) => {

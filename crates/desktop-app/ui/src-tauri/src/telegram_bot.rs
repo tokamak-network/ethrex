@@ -1272,7 +1272,7 @@ impl TelegramBotManager {
         });
     }
 
-    /// Background health monitor — checks process/container/RPC health periodically
+    /// Background health monitor — uses UnifiedL2State events + periodic log scanning
     pub async fn health_monitor(
         am: Arc<AppchainManager>,
         runner: Arc<ProcessRunner>,
@@ -1287,171 +1287,110 @@ impl TelegramBotManager {
         });
 
         log::info!("Health monitor started");
+
+        // Subscribe to unified state events for status/health changes
+        let mut event_rx = notify_tx.unified_state.subscribe_events();
         let proxy = DeploymentProxy::new(LOCAL_SERVER_URL);
-        // Track already-alerted issues to avoid notification spam.
-        // Key format: "type:entity_id:detail" — cleared when issue resolves.
-        let mut alerted: HashSet<String> = HashSet::new();
+        let mut log_alerted: HashSet<String> = HashSet::new();
 
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS)).await;
-
-            if !notify_tx.is_running() {
-                continue;
-            }
-
-            // Track current issues this cycle to detect resolved ones
-            let mut current_issues: HashSet<String> = HashSet::new();
-
-            // ── 1. Check appchain processes ──
-            let chains = am.list_appchains();
-            for chain in &chains {
-                if matches!(chain.status, AppchainStatus::Running)
-                    && !runner.is_running(&chain.id).await
-                {
-                    let key = format!("process_crashed:{}", chain.id);
-                    current_issues.insert(key.clone());
-                    // update_status prevents re-detection (Running→Error),
-                    // but we still deduplicate for safety
-                    if !alerted.contains(&key) {
-                        am.update_status(&chain.id, AppchainStatus::Error);
-                        memory.append_event(
-                            "process_crashed",
-                            &chain.name,
-                            &chain.id,
-                            "Process not found",
-                            "system",
-                        );
-                        notify_tx.notify(&format!(
-                            "⚠️ {} 프로세스가 비정상 종료되었습니다.",
-                            chain.name
-                        ));
-                        alerted.insert(key);
+            tokio::select! {
+                // React to state change events from UnifiedL2State
+                Ok(event) = event_rx.recv() => {
+                    if !notify_tx.is_running() {
+                        continue;
                     }
-                }
-            }
-
-            // ── 2. Check Docker deployments ──
-            let deployments = deployment_db::list_deployments_from_db().unwrap_or_default();
-            for dep in &deployments {
-                if dep.phase != "running" {
-                    continue;
-                }
-
-                // 2a. Container health — check for exited/restarting containers
-                if let Ok(containers) = proxy.get_containers(&dep.id).await {
-                    for c in &containers {
-                        let is_down = c.state == "exited" || c.state == "dead";
-                        let is_restarting = c.state == "restarting";
-                        if is_down || is_restarting {
-                            let key = format!("container:{}:{}", dep.id, c.service);
-                            current_issues.insert(key.clone());
-                            if !alerted.contains(&key) {
-                                let detail = format!(
-                                    "service={} state={} status={}",
-                                    c.service, c.state, c.status
-                                );
-                                memory.append_event(
-                                    "container_exited",
-                                    &dep.name,
-                                    &dep.id,
-                                    &detail,
-                                    "system",
-                                );
-                                let emoji = if is_restarting { "🔄" } else { "💀" };
-                                notify_tx.notify(&format!(
-                                    "{} 🐳 {} — 컨테이너 {} {}({})",
-                                    emoji, dep.name, c.service, c.state, c.status
-                                ));
-                                alerted.insert(key);
-                            }
-                        }
-                    }
-                }
-
-                // 2b. RPC health — check L1/L2 node responsiveness
-                if let Ok(mon) = proxy.get_monitoring(&dep.id).await {
-                    if let Some(l1) = &mon.l1 {
-                        let key = format!("rpc:{}:l1", dep.id);
-                        if !l1.healthy {
-                            current_issues.insert(key.clone());
-                            if !alerted.contains(&key) {
-                                memory.append_event(
-                                    "rpc_unhealthy",
-                                    &dep.name,
-                                    &dep.id,
-                                    "L1 RPC not responding",
-                                    "system",
-                                );
-                                notify_tx.notify(&format!(
-                                    "🔴 🐳 {} — L1 RPC가 응답하지 않습니다.",
-                                    dep.name
-                                ));
-                                alerted.insert(key);
-                            }
-                        }
-                    }
-                    if let Some(l2) = &mon.l2 {
-                        let key = format!("rpc:{}:l2", dep.id);
-                        if !l2.healthy {
-                            current_issues.insert(key.clone());
-                            if !alerted.contains(&key) {
-                                memory.append_event(
-                                    "rpc_unhealthy",
-                                    &dep.name,
-                                    &dep.id,
-                                    "L2 RPC not responding",
-                                    "system",
-                                );
-                                notify_tx.notify(&format!(
-                                    "🔴 🐳 {} — L2 RPC가 응답하지 않습니다.",
-                                    dep.name
-                                ));
-                                alerted.insert(key);
-                            }
-                        }
-                    }
-                }
-
-                // 2c. Log error detection — scan recent logs for critical errors
-                if let Ok(logs) = proxy.get_logs(&dep.id, None, 50).await {
-                    let errors: Vec<&str> = logs
-                        .lines()
-                        .filter(|line| ERROR_RE.is_match(line))
-                        .collect();
-                    if !errors.is_empty() {
-                        // Use hash of error content to detect new vs stale errors
-                        let sample = errors.last().unwrap_or(&"unknown error");
-                        let hash = {
-                            use sha2::Digest;
-                            let mut h = sha2::Sha256::new();
-                            h.update(sample.as_bytes());
-                            hex::encode(&h.finalize()[..8])
-                        };
-                        let key = format!("log_error:{}:{}", dep.id, hash);
-                        current_issues.insert(key.clone());
-                        if !alerted.contains(&key) {
-                            let truncated = truncate_utf8(sample, 200);
-                            memory.append_event(
-                                "log_error",
-                                &dep.name,
-                                &dep.id,
-                                &truncated,
-                                "system",
-                            );
+                    match event.event_type.as_str() {
+                        "status_changed" => {
+                            // Notify on important status changes
+                            let emoji = if event.detail.contains("Running") && !event.detail.starts_with("Running") {
+                                "🟢"
+                            } else if event.detail.contains("Error") {
+                                "⚠️"
+                            } else if event.detail.contains("Stopped") {
+                                "🔴"
+                            } else {
+                                "🔄"
+                            };
+                            let source_icon = if event.source_type == "deployment" { " 🐳" } else { "" };
                             notify_tx.notify(&format!(
-                                "⚠️ 🐳 {} — 로그에서 에러 감지 ({}건):\n{}",
-                                dep.name,
-                                errors.len(),
-                                truncated
+                                "{}{} {} — {}",
+                                emoji, source_icon, event.l2_name, event.detail
                             ));
-                            alerted.insert(key);
                         }
+                        "health_changed" => {
+                            if event.detail.contains("false") {
+                                let source_icon = if event.source_type == "deployment" { " 🐳" } else { "" };
+                                notify_tx.notify(&format!(
+                                    "🔴{} {} — RPC 헬스 변경: {}",
+                                    source_icon, event.l2_name, event.detail
+                                ));
+                            }
+                        }
+                        _ => {} // created/deleted events are informational
                     }
                 }
-            }
 
-            // Clear alerts for resolved issues so they can re-fire if they recur
-            alerted.retain(|key| current_issues.contains(key));
+                // Periodic log scanning (runs every 5 minutes, only for running deployments)
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS)) => {
+                    if !notify_tx.is_running() {
+                        continue;
+                    }
+
+                    // Use unified state to find running deployments
+                    let all_l2 = notify_tx.unified_state.get_all();
+                    let mut current_log_issues: HashSet<String> = HashSet::new();
+
+                    for l2 in &all_l2 {
+                        if l2.source != crate::unified_state::L2Source::Deployment {
+                            continue;
+                        }
+                        if l2.status != crate::unified_state::L2Status::Running
+                            && l2.status != crate::unified_state::L2Status::Partial {
+                            continue;
+                        }
+
+                        // Log error detection
+                        if let Ok(logs) = proxy.get_logs(&l2.id, None, 50).await {
+                            let errors: Vec<&str> = logs
+                                .lines()
+                                .filter(|line| ERROR_RE.is_match(line))
+                                .collect();
+                            if !errors.is_empty() {
+                                let sample = errors.last().unwrap_or(&"unknown error");
+                                let hash = {
+                                    use sha2::Digest;
+                                    let mut h = sha2::Sha256::new();
+                                    h.update(sample.as_bytes());
+                                    hex::encode(&h.finalize()[..8])
+                                };
+                                let key = format!("log_error:{}:{}", l2.id, hash);
+                                current_log_issues.insert(key.clone());
+                                if !log_alerted.contains(&key) {
+                                    let truncated = truncate_utf8(sample, 200);
+                                    memory.append_event(
+                                        "log_error",
+                                        &l2.name,
+                                        &l2.id,
+                                        &truncated,
+                                        "system",
+                                    );
+                                    notify_tx.notify(&format!(
+                                        "⚠️ 🐳 {} — 로그에서 에러 감지 ({}건):\n{}",
+                                        l2.name,
+                                        errors.len(),
+                                        truncated
+                                    ));
+                                    log_alerted.insert(key);
+                                }
+                            }
+                        }
+                    }
+
+                    // Clear resolved log alerts
+                    log_alerted.retain(|key| current_log_issues.contains(key));
+                }
+            }
         }
     }
 }

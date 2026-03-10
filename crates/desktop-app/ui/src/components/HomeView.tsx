@@ -4,6 +4,7 @@ import { t } from '../i18n'
 import type { ViewType } from '../App'
 import type { NetworkMode } from './CreateL2Wizard'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 
 interface HomeViewProps {
@@ -59,8 +60,14 @@ export default function HomeView({ onNavigate }: HomeViewProps) {
 
   useEffect(() => {
     loadDeployments()
-    const interval = setInterval(loadDeployments, 10000)
-    return () => clearInterval(interval)
+    // Fallback polling at 30s (primary refresh is event-driven)
+    const interval = setInterval(loadDeployments, 30000)
+    let unlisten: UnlistenFn | undefined
+    listen('l2-state-changed', () => { loadDeployments() }).then(fn => { unlisten = fn })
+    return () => {
+      clearInterval(interval)
+      unlisten?.()
+    }
   }, [loadDeployments])
 
   const runningCount = deployments.filter(d => d.status === 'active' || d.status === 'running').length
