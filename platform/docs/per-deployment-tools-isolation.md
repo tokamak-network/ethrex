@@ -345,7 +345,7 @@ services:
   # L1 Blockscout — 로컬 L1에서만 실행
   backend-l1:
     profiles: ["local-l1"]    # ← profile 추가
-    image: blockscout/blockscout-zkevm:latest
+    image: ghcr.io/lambdaclass/blockscout-private:9.2.2.commit.763c41da  # pinned version
     ...
 
   frontend-l1:
