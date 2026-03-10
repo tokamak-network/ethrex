@@ -262,6 +262,14 @@ async function startTools(envVars, toolsPorts = {}) {
     TOOLS_METRICS_PORT: String(toolsPorts.toolsMetricsPort || 3702),
   };
 
+  // External L1 config (testnet/mainnet)
+  if (toolsPorts.l1RpcUrl) toolsEnv.L1_RPC_URL = toolsPorts.l1RpcUrl;
+  if (toolsPorts.l1ChainId) toolsEnv.L1_CHAIN_ID = String(toolsPorts.l1ChainId);
+  if (toolsPorts.l1ExplorerUrl) toolsEnv.L1_EXPLORER_URL = toolsPorts.l1ExplorerUrl;
+  if (toolsPorts.l1NetworkName) toolsEnv.L1_NETWORK_NAME = toolsPorts.l1NetworkName;
+  if (toolsPorts.l2ChainId) toolsEnv.L2_CHAIN_ID = String(toolsPorts.l2ChainId);
+  if (toolsPorts.isExternalL1) toolsEnv.IS_EXTERNAL_L1 = 'true';
+
   // Build bridge UI image
   await new Promise((resolve, reject) => {
     const proc = spawn("docker", ["compose", "-f", toolsCompose, "build"], {
@@ -278,11 +286,16 @@ async function startTools(envVars, toolsPorts = {}) {
     proc.on("error", reject);
   });
 
-  // Start tools (optionally skip L1 explorer for testnet — use Etherscan instead)
-  const upArgs = ["compose", "-f", toolsCompose, "up", "-d"];
+  // Start tools (optionally skip L1 explorer for external L1)
+  const upArgs = ["compose", "-f", toolsCompose];
   if (toolsPorts.skipL1Explorer) {
-    // Exclude L1 explorer services — specify only the services we want
-    upArgs.push("frontend-l2", "backend-l2", "db", "db-init", "redis-db", "proxy", "function-selectors", "bridge-ui");
+    // Activate external-l1 profile for L2-only proxy
+    upArgs.push("--profile", "external-l1");
+    upArgs.push("up", "-d");
+    // Start only L2-related services + L2-only proxy
+    upArgs.push("frontend-l2", "backend-l2", "db", "db-init", "redis-db", "function-selectors-l2", "bridge-ui", "proxy-l2-only");
+  } else {
+    upArgs.push("up", "-d");
   }
   await new Promise((resolve, reject) => {
     const proc = spawn("docker", upArgs, {
@@ -361,6 +374,14 @@ async function restartTools(envVars, toolsPorts = {}) {
     TOOLS_METRICS_PORT: String(toolsPorts.toolsMetricsPort || 3702),
   };
 
+  // External L1 config (testnet/mainnet)
+  if (toolsPorts.l1RpcUrl) toolsEnv.L1_RPC_URL = toolsPorts.l1RpcUrl;
+  if (toolsPorts.l1ChainId) toolsEnv.L1_CHAIN_ID = String(toolsPorts.l1ChainId);
+  if (toolsPorts.l1ExplorerUrl) toolsEnv.L1_EXPLORER_URL = toolsPorts.l1ExplorerUrl;
+  if (toolsPorts.l1NetworkName) toolsEnv.L1_NETWORK_NAME = toolsPorts.l1NetworkName;
+  if (toolsPorts.l2ChainId) toolsEnv.L2_CHAIN_ID = String(toolsPorts.l2ChainId);
+  if (toolsPorts.isExternalL1) toolsEnv.IS_EXTERNAL_L1 = 'true';
+
   // Stop existing tools
   await new Promise((resolve) => {
     const proc = spawn("docker", ["compose", "-f", toolsCompose, "down", "--remove-orphans"], {
@@ -373,9 +394,14 @@ async function restartTools(envVars, toolsPorts = {}) {
   });
 
   // Start without build
-  const restartUpArgs = ["compose", "-f", toolsCompose, "up", "-d"];
+  const restartUpArgs = ["compose", "-f", toolsCompose];
   if (toolsPorts.skipL1Explorer) {
-    restartUpArgs.push("frontend-l2", "backend-l2", "db", "db-init", "redis-db", "proxy", "function-selectors", "bridge-ui");
+    // Activate external-l1 profile for L2-only proxy
+    restartUpArgs.push("--profile", "external-l1");
+    restartUpArgs.push("up", "-d");
+    restartUpArgs.push("frontend-l2", "backend-l2", "db", "db-init", "redis-db", "function-selectors-l2", "bridge-ui", "proxy-l2-only");
+  } else {
+    restartUpArgs.push("up", "-d");
   }
   await new Promise((resolve, reject) => {
     const proc = spawn("docker", restartUpArgs, {

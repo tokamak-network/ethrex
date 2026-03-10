@@ -760,9 +760,19 @@ async function provisionTestnet(deployment) {
     updateDeployment(id, { phase: "starting_tools" });
     try {
       const freshEnv = await docker.extractEnv(projectName, composeFile);
-      // For testnet tools, override L1 RPC to use external URL
+      // For testnet/mainnet tools, override L1 RPC to use external URL
       freshEnv.ETHREX_ETH_RPC_URL = l1RpcUrl;
-      await docker.startTools(freshEnv, { toolsL1ExplorerPort, toolsL2ExplorerPort, toolsBridgeUIPort, toolsDbPort, l1Port: null, l2Port, toolsMetricsPort, skipL1Explorer: true });
+      await docker.startTools(freshEnv, {
+        toolsL1ExplorerPort, toolsL2ExplorerPort, toolsBridgeUIPort, toolsDbPort,
+        l1Port: null, l2Port, toolsMetricsPort,
+        skipL1Explorer: true,
+        // External L1 metadata for dashboard/bridge UI
+        l1RpcUrl,
+        l1ChainId: testnetConfig.l1ChainId,
+        l1ExplorerUrl: testnetConfig.l1ExplorerUrl,
+        l1NetworkName: testnetConfig.network,
+        isExternalL1: true,
+      });
       emit(id, "phase", { phase: "starting_tools", message: "Support tools started" });
     } catch (toolsErr) {
       emit(id, "phase", { phase: "starting_tools", message: `Tools setup skipped: ${toolsErr.message}` });
@@ -986,6 +996,8 @@ async function startDeployment(deployment) {
   try {
     const envVars = await docker.extractEnv(deployment.docker_project, composeFile);
     const startConfig = deployment.config ? JSON.parse(deployment.config) : {};
+    const isExternal = startConfig.mode === 'testnet';
+    const testnetCfg = startConfig.testnet || {};
     await docker.startTools(envVars, {
       toolsL1ExplorerPort: deployment.tools_l1_explorer_port,
       toolsL2ExplorerPort: deployment.tools_l2_explorer_port,
@@ -994,7 +1006,15 @@ async function startDeployment(deployment) {
       l1Port: deployment.l1_port,
       l2Port: deployment.l2_port,
       toolsMetricsPort: deployment.tools_metrics_port,
-      skipL1Explorer: startConfig.mode === 'testnet',
+      skipL1Explorer: isExternal,
+      // External L1 metadata
+      ...(isExternal && {
+        l1RpcUrl: testnetCfg.l1RpcUrl,
+        l1ChainId: testnetCfg.l1ChainId,
+        l1ExplorerUrl: testnetCfg.l1ExplorerUrl,
+        l1NetworkName: testnetCfg.network,
+        isExternalL1: true,
+      }),
     });
   } catch (e) {
     console.log(`[start] Tools start skipped: ${e.message}`);
