@@ -32,7 +32,7 @@ const { updateDeployment, getDeploymentById, getNextAvailablePorts, getAllDeploy
 const { getHostById } = require("../db/hosts");
 const keychain = require("./keychain");
 const { getExternalL1Config } = require("./tools-config");
-const { verifyAllContracts, ETHERSCAN_API_URLS } = require("./etherscan-verify");
+const { verifyAllContracts, SUPPORTED_CHAIN_IDS } = require("./etherscan-verify");
 
 // Active deployments event emitters (keyed by deployment ID)
 const deploymentEvents = new Map();
@@ -478,12 +478,13 @@ async function provision(deployment) {
 
     if (contractsVerifiedLocal) {
       // Reuse verified contracts
-      emit(id, "phase", { phase: "deploying_contracts", message: `Reusing verified contracts — bridge: ${existingDep.bridge_address}` });
-      emit(id, "log", { message: `Skipping contract deployment: bridge=${existingDep.bridge_address}, proposer=${existingDep.proposer_address}` });
       bridgeAddress = existingDep.bridge_address;
       proposerAddress = existingDep.proposer_address;
       timelockAddress = existingDep.timelock_address;
       sp1VerifierAddress = existingDep.sp1_verifier_address;
+      guestProgramRegistryAddress = existingDep.guest_program_registry_address;
+      emit(id, "phase", { phase: "deploying_contracts", message: `Reusing verified contracts — bridge: ${bridgeAddress}`, bridgeAddress, proposerAddress, timelockAddress, sp1VerifierAddress, guestProgramRegistryAddress });
+      emit(id, "log", { message: `Skipping contract deployment: bridge=${bridgeAddress}, proposer=${proposerAddress}` });
 
       // Try to restore .env from Docker volume for L2 service
       try {
@@ -572,7 +573,7 @@ async function provision(deployment) {
       );
     }
 
-    emit(id, "phase", { phase: "deploying_contracts", message: "Contracts deployed", bridgeAddress, proposerAddress });
+    emit(id, "phase", { phase: "deploying_contracts", message: "Contracts deployed", bridgeAddress, proposerAddress, timelockAddress, sp1VerifierAddress, guestProgramRegistryAddress });
 
     checkCancelled(provisionInfo);
 
@@ -839,7 +840,7 @@ async function provisionTestnet(deployment) {
 
     if (contractsVerified) {
       // Contracts verified on-chain — skip contract deployment
-      emit(id, "phase", { phase: "deploying_contracts", message: `Reusing verified contracts — bridge: ${bridgeAddress}` });
+      emit(id, "phase", { phase: "deploying_contracts", message: `Reusing verified contracts — bridge: ${bridgeAddress}`, bridgeAddress, proposerAddress, timelockAddress, sp1VerifierAddress, guestProgramRegistryAddress });
       emit(id, "log", { message: `Skipping contract deployment: bridge=${bridgeAddress}, proposer=${proposerAddress}` });
       provisionInfo.phase = "deploying_contracts";
       updateDeployment(id, { phase: "deploying_contracts" });
@@ -1023,12 +1024,12 @@ async function provisionTestnet(deployment) {
 
     checkCancelled(provisionInfo);
 
-    emit(id, "phase", { phase: "deploying_contracts", message: "Contracts deployed on testnet L1", bridgeAddress, proposerAddress });
+    emit(id, "phase", { phase: "deploying_contracts", message: "Contracts deployed on testnet L1", bridgeAddress, proposerAddress, timelockAddress, sp1VerifierAddress, guestProgramRegistryAddress });
 
     // Etherscan verification for testnet/mainnet (non-blocking)
     const l1ChainId = parseInt(testnetConfig.l1ChainId);
     const etherscanApiKey = testnetConfig.etherscanApiKey || process.env.ETHERSCAN_API_KEY;
-    if (ETHERSCAN_API_URLS[l1ChainId] && etherscanApiKey) {
+    if (SUPPORTED_CHAIN_IDS.has(l1ChainId) && etherscanApiKey) {
       emit(id, "phase", { phase: "verifying_contracts", message: "Verifying contracts on Etherscan..." });
       try {
         const verifyResults = await verifyAllContracts({
@@ -1045,7 +1046,7 @@ async function provisionTestnet(deployment) {
         emit(id, "log", { message: `Etherscan verification error: ${verifyErr.message}` });
         emit(id, "phase", { phase: "verifying_contracts", message: "Etherscan verification failed (non-blocking)" });
       }
-    } else if (ETHERSCAN_API_URLS[l1ChainId] && !etherscanApiKey) {
+    } else if (SUPPORTED_CHAIN_IDS.has(l1ChainId) && !etherscanApiKey) {
       emit(id, "log", { message: "Etherscan API key not provided — skipping contract verification. Set ETHERSCAN_API_KEY or configure in testnet settings." });
     }
 

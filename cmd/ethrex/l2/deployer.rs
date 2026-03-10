@@ -656,7 +656,7 @@ pub async fn deploy_l1_contracts(
         if *tx_hash == H256::default() {
             continue;
         }
-        let receipt = wait_for_transaction_receipt(*tx_hash, &eth_client, 100).await?;
+        let receipt = wait_for_transaction_receipt(*tx_hash, &eth_client, 20).await?;
         if !receipt.receipt.status {
             error!("Receipt status is false for tx_hash: {tx_hash:#x}");
             return Err(DeployerError::TransactionReceiptError);
@@ -1867,7 +1867,7 @@ async fn make_deposits(
     }
     trace!("Deposits finished");
     if let Some(hash) = last_hash {
-        wait_for_transaction_receipt(hash, eth_client, 100).await?;
+        wait_for_transaction_receipt(hash, eth_client, 5).await?;
     }
     Ok(())
 }

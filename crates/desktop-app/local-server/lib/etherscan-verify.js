@@ -15,12 +15,14 @@ const { execSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-// Etherscan API base URLs by chain ID
-const ETHERSCAN_API_URLS = {
-  1: "https://api.etherscan.io/api",
-  11155111: "https://api-sepolia.etherscan.io/api",
-  17000: "https://api-holesky.etherscan.io/api",
-};
+// Etherscan API V2: single endpoint with chainid parameter
+// See: https://docs.etherscan.io/v2-migration
+const ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api";
+const SUPPORTED_CHAIN_IDS = new Set([1, 11155111, 17000]);
+
+function getApiUrl(chainId) {
+  return `${ETHERSCAN_V2_BASE}?chainid=${chainId}`;
+}
 
 // Contract source paths (relative to ethrex root)
 const CONTRACT_SOURCES = {
@@ -83,10 +85,10 @@ async function submitVerification({
   constructorArgs = "",
   apiKey,
 }) {
-  const apiUrl = ETHERSCAN_API_URLS[chainId];
-  if (!apiUrl) throw new Error(`Unsupported chain ID for Etherscan: ${chainId}`);
+  if (!SUPPORTED_CHAIN_IDS.has(chainId)) throw new Error(`Unsupported chain ID for Etherscan: ${chainId}`);
   if (!apiKey) throw new Error("ETHERSCAN_API_KEY is required for contract verification");
 
+  const apiUrl = getApiUrl(chainId);
   const srcFile = CONTRACT_SOURCES[contractName];
   if (!srcFile) throw new Error(`Unknown contract name: ${contractName}`);
   const contractFullName = `${path.basename(srcFile)}:${contractName}`;
@@ -126,8 +128,7 @@ async function submitVerification({
  * Returns true if verified, false if failed.
  */
 async function checkVerificationStatus({ chainId, guid, apiKey, maxRetries = 10 }) {
-  const apiUrl = ETHERSCAN_API_URLS[chainId];
-  if (!apiUrl) throw new Error(`Unsupported chain ID: ${chainId}`);
+  const apiUrl = getApiUrl(chainId);
 
   for (let i = 0; i < maxRetries; i++) {
     await new Promise(r => setTimeout(r, 5000)); // Wait 5s between checks
@@ -148,8 +149,8 @@ async function checkVerificationStatus({ chainId, guid, apiKey, maxRetries = 10 
  * Submit proxy verification for upgradeable contracts (UUPS proxy).
  */
 async function verifyProxy({ chainId, proxyAddress, apiKey }) {
-  const apiUrl = ETHERSCAN_API_URLS[chainId];
-  if (!apiUrl) return;
+  if (!SUPPORTED_CHAIN_IDS.has(chainId)) return;
+  const apiUrl = getApiUrl(chainId);
 
   const params = new URLSearchParams();
   params.append("apikey", apiKey);
@@ -242,7 +243,7 @@ async function verifyContract({ chainId, contractName, contractAddress, apiKey, 
  * @returns {Object} verification status per contract
  */
 async function verifyAllContracts({ chainId, contracts, apiKey, log = console.log }) {
-  if (!ETHERSCAN_API_URLS[chainId]) {
+  if (!SUPPORTED_CHAIN_IDS.has(chainId)) {
     log(`[etherscan] Chain ID ${chainId} not supported for Etherscan verification, skipping`);
     return {};
   }
@@ -278,5 +279,5 @@ module.exports = {
   verifyContract,
   verifyAllContracts,
   flattenSource,
-  ETHERSCAN_API_URLS,
+  SUPPORTED_CHAIN_IDS,
 };

@@ -867,6 +867,21 @@ let lastContractAnnouncement = null;
 let buildingImageFound = null; // Set when image is found (skip build)
 
 function parseContractFromLog(line) {
+  // Priority 1: Structured JSON output from deployer
+  const jsonMatch = line.match(/DEPLOYER_RESULT_JSON:(\{.*\})/);
+  if (jsonMatch) {
+    try {
+      const data = JSON.parse(jsonMatch[1]);
+      if (data.status === 'success' && data.contracts) {
+        for (const [name, addr] of Object.entries(data.contracts)) {
+          if (addr && !deployedContracts[name]) deployedContracts[name] = addr;
+        }
+        lastContractAnnouncement = null;
+        return;
+      }
+    } catch { /* fall through to legacy parsing */ }
+  }
+
   const addrMatch = line.match(/address=(0x[0-9a-fA-F]{40})/);
 
   // Detect contract announcement
@@ -875,7 +890,7 @@ function parseContractFromLog(line) {
   else if (line.includes('Timelock deployed')) lastContractAnnouncement = 'Timelock';
   else if (line.includes('SP1Verifier deployed')) lastContractAnnouncement = 'SP1Verifier';
   else if (line.includes('SequencerRegistry deployed')) lastContractAnnouncement = 'SequencerRegistry';
-  else if (line.includes('GuestProgramRegistry initialized')) {
+  else if (line.includes('GuestProgramRegistry initialized') || line.includes('GuestProgramRegistry deployed')) {
     if (addrMatch) deployedContracts['GuestProgramRegistry'] = addrMatch[1];
     lastContractAnnouncement = null;
     return;
@@ -949,9 +964,12 @@ function startDeployProgress(id) {
 
       deployEvents.push(data);
       if (data.imageFound) buildingImageFound = data.imageFound;
-      // Capture contract addresses from phase events (server sends bridgeAddress/proposerAddress)
+      // Capture contract addresses from phase events
       if (data.bridgeAddress && !deployedContracts['CommonBridge']) deployedContracts['CommonBridge'] = data.bridgeAddress;
       if (data.proposerAddress && !deployedContracts['OnChainProposer']) deployedContracts['OnChainProposer'] = data.proposerAddress;
+      if (data.timelockAddress && !deployedContracts['Timelock']) deployedContracts['Timelock'] = data.timelockAddress;
+      if (data.sp1VerifierAddress && !deployedContracts['SP1Verifier']) deployedContracts['SP1Verifier'] = data.sp1VerifierAddress;
+      if (data.guestProgramRegistryAddress && !deployedContracts['GuestProgramRegistry']) deployedContracts['GuestProgramRegistry'] = data.guestProgramRegistryAddress;
       if (data.phase && data.phase !== currentPhase) {
         if (currentPhase !== 'configured') {
           phaseDurations[currentPhase] = Math.floor((Date.now() - phaseStartTime) / 1000);
@@ -1202,10 +1220,23 @@ async function resumeDeployProgress(id) {
           if (data.event === 'log') {
             buildLogLines.push(data.message || '');
             if (buildLogLines.length > 500) buildLogLines = buildLogLines.slice(-500);
+            // Parse contract addresses from logs
+            if (['deploying_contracts', 'verifying_contracts', 'l2_starting'].includes(currentPhase)) {
+              const prevCount = Object.keys(deployedContracts).length;
+              parseContractFromLog(data.message || '');
+              if (Object.keys(deployedContracts).length > prevCount) renderProgressSteps();
+            }
             renderBuildLog();
             return;
           }
           deployEvents.push(data);
+          if (data.imageFound) buildingImageFound = data.imageFound;
+          // Capture contract addresses from phase events
+          if (data.bridgeAddress && !deployedContracts['CommonBridge']) deployedContracts['CommonBridge'] = data.bridgeAddress;
+          if (data.proposerAddress && !deployedContracts['OnChainProposer']) deployedContracts['OnChainProposer'] = data.proposerAddress;
+          if (data.timelockAddress && !deployedContracts['Timelock']) deployedContracts['Timelock'] = data.timelockAddress;
+          if (data.sp1VerifierAddress && !deployedContracts['SP1Verifier']) deployedContracts['SP1Verifier'] = data.sp1VerifierAddress;
+          if (data.guestProgramRegistryAddress && !deployedContracts['GuestProgramRegistry']) deployedContracts['GuestProgramRegistry'] = data.guestProgramRegistryAddress;
           if (data.phase && data.phase !== currentPhase) {
             if (currentPhase !== 'configured') {
               phaseDurations[currentPhase] = Math.floor((Date.now() - phaseStartTime) / 1000);
@@ -1835,16 +1866,7 @@ async function retryDeploy(id) {
 async function deleteDeploy(id, event) {
   const dep = cachedDeployList?.find(d => d.id === id);
   const name = dep?.name || 'this L2';
-  // Double-click guard: first click sets pending state, second click confirms
-  const btn = event?.target?.closest?.('.icon-btn');
-  if (btn && !btn.dataset.pendingDelete) {
-    btn.dataset.pendingDelete = '1';
-    btn.title = 'Click again to confirm delete';
-    btn.style.color = 'var(--red-500, #ef4444)';
-    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
-    setTimeout(() => { if (btn) { delete btn.dataset.pendingDelete; btn.title = 'Delete'; btn.style.color = ''; } }, 3000);
-    return;
-  }
+  if (!confirm(`Delete "${name}"?\n\nThis will remove the deployment record. Docker containers will not be affected.`)) return;
   try {
     await fetch(`${API}/deployments/${id}`, { method: 'DELETE' });
     if (expandedDeploymentId === id) expandedDeploymentId = null;
