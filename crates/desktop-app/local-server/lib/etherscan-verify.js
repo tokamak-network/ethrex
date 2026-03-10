@@ -266,7 +266,7 @@ async function verifyAllContracts({ chainId, contracts, apiKey, log = console.lo
     if (!address) continue;
     results[name] = await verifyContract({ chainId, contractName: name, contractAddress: address, apiKey, isProxy: true, log });
     // Rate limit: Etherscan free tier allows ~1 req/5s
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 5000));
   }
 
   // SP1Verifier is not a proxy and uses create2 deployment — skip for now
