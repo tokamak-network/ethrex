@@ -1008,6 +1008,55 @@ testAsync("isHealthy returns false for unreachable host", async () => {
       return Promise.resolve();
     })
 
+    // -- build step progress parsing --
+    .then(() =>
+      test("Docker build step parsing: Step X/Y format", () => {
+        const lines = [
+          "Step 1/15 : FROM rust:1.75 AS builder",
+          "Step 8/15 : RUN cargo build --release",
+          "Step 15/15 : ENTRYPOINT [\"ethrex\"]",
+        ];
+        const results = [];
+        for (const line of lines) {
+          const stepMatch = line.match(/Step (\d+)\/(\d+)/i);
+          if (stepMatch) {
+            const current = parseInt(stepMatch[1]);
+            const total = parseInt(stepMatch[2]);
+            const pct = Math.round((current / total) * 100);
+            results.push({ current, total, pct });
+          }
+        }
+        assert.equal(results.length, 3);
+        assert.equal(results[0].pct, 7);   // 1/15
+        assert.equal(results[1].pct, 53);  // 8/15
+        assert.equal(results[2].pct, 100); // 15/15
+      })
+    )
+
+    .then(() =>
+      test("Docker build step parsing: BuildKit format #N [stage X/Y]", () => {
+        const lines = [
+          "#8 [builder 1/6] RUN cargo chef prepare",
+          "#9 [builder 3/6] RUN cargo chef cook",
+          "#10 [builder 6/6] RUN cargo build --release",
+        ];
+        const results = [];
+        for (const line of lines) {
+          const stepMatch = line.match(/#\d+ \[.*? (\d+)\/(\d+)\]/);
+          if (stepMatch) {
+            const current = parseInt(stepMatch[1]);
+            const total = parseInt(stepMatch[2]);
+            const pct = Math.round((current / total) * 100);
+            results.push({ current, total, pct });
+          }
+        }
+        assert.equal(results.length, 3);
+        assert.equal(results[0].pct, 17);  // 1/6
+        assert.equal(results[1].pct, 50);  // 3/6
+        assert.equal(results[2].pct, 100); // 6/6
+      })
+    )
+
     // -- estimate-gas API: rejects missing rpcUrl --
     .then(() =>
       testAsync("POST /testnet/estimate-gas rejects missing rpcUrl", async () => {

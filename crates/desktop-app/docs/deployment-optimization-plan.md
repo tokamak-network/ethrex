@@ -422,20 +422,20 @@ Deployer 잔액: 1.5 ETH ✅ 충분
 | 7 | Local 컨트랙트 스킵 옵션 | `deployment-engine.js` | ✅ |
 | 8 | 기존 배포 감지 시 재사용 프롬프트 | `CreateL2Wizard.tsx` (기존 이미지 감지 + 안내) | ✅ |
 
-### Phase 3: UX 개선 — ✅ 완료 (11번 제외)
+### Phase 3: UX 개선 — ✅ 완료
 
 | # | 작업 | 파일 | 상태 |
 |---|------|------|------|
 | 9 | 역할별 지갑 키 + 잔액 표시 (서비스 탭) | `L2DetailServicesTab.tsx`, `local-server.ts` | ✅ |
 | 10 | 컨트랙트 주소 클립보드 복사 버튼 | `L2DetailServicesTab.tsx` | ✅ |
-| 11 | 빌드 진행률 개선 (단계별 표시) | `SetupProgressView.tsx` | ⏳ (Tauri 전용, 별도 작업 필요) |
+| 11 | 빌드 진행률 개선 (단계별 표시) | `deployment-engine.js` (SSE progress 이벤트) | ✅ |
 | 12 | Committer/ProofCoord 잔액 소진 경고 | `L2DetailServicesTab.tsx`, API | ✅ |
 
-### Phase 4: 안정성 — ✅ 완료 (13번 제외)
+### Phase 4: 안정성 — ✅ 완료
 
 | # | 작업 | 파일 | 상태 |
 |---|------|------|------|
-| 13 | deployer.rs 구조화된 JSON 출력 | `deployer.rs` | ⏳ (Rust 변경 필요, 별도 작업) |
+| 13 | deployer.rs 구조화된 JSON 출력 | `deployer.rs`, `deployment-engine.js` | ✅ |
 | 14 | 부분 배포 복구 UI | `L2DetailServicesTab.tsx`, `L2DetailView.tsx` | ✅ |
 | 15 | 배포 비용 사전 계산 API | `deployments.js`, `CreateL2Wizard.tsx` | ✅ |
 

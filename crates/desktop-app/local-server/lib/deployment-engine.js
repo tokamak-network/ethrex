@@ -291,11 +291,21 @@ async function provision(deployment) {
       emit(id, "phase", { phase: "building", message: forceRebuild
         ? "Force rebuilding Docker images..."
         : "Building Docker images... (this may take several minutes on first run)" });
+      let buildStepMax = 0;
       await trackedDockerRun(provisionInfo, () =>
         docker.buildImages(projectName, composeFile, { DOCKER_ETHREX_WORKDIR: "/usr/local/bin" }, (chunk) => {
           const lines = chunk.split("\n").filter(Boolean);
           for (const line of lines) {
             emit(id, "log", { message: line });
+            // Parse Docker build step progress: "Step X/Y :" or "#N [stage X/Y]"
+            const stepMatch = line.match(/Step (\d+)\/(\d+)/i) || line.match(/#\d+ \[.*? (\d+)\/(\d+)\]/);
+            if (stepMatch) {
+              const current = parseInt(stepMatch[1]);
+              const total = parseInt(stepMatch[2]);
+              if (total > buildStepMax) buildStepMax = total;
+              const pct = Math.round((current / total) * 100);
+              emit(id, "phase", { phase: "building", message: `Building... step ${current}/${total} (${pct}%)`, progress: pct });
+            }
           }
         }, { forceRebuild })
       );
