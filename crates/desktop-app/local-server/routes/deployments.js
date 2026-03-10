@@ -816,7 +816,7 @@ router.get("/:id/logs", async (req, res) => {
     const follow = req.query.follow === "true";
     const tail = parseInt(req.query.tail) || 100;
 
-    const toolsServices = ["bridge-ui", "db", "backend-l1", "backend-l2", "frontend-l1", "frontend-l2", "proxy"];
+    const toolsServices = ["bridge-ui", "db", "db-init", "backend-l1", "backend-l2", "frontend-l1", "frontend-l2", "proxy", "proxy-l2-only", "redis-db", "function-selectors", "function-selectors-l2"];
     const isToolsService = service && toolsServices.includes(service);
 
     if (follow) {
