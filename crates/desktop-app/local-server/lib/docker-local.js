@@ -344,6 +344,8 @@ async function buildTools(projectName, toolsPorts = {}) {
   }
 
   const toolsEnv = buildToolsEnv(toolsPorts);
+  const envFile = resolveToolsEnvFile(projectName);
+  if (envFile) toolsEnv.TOOLS_ENV_FILE = envFile;
 
   const buildArgs = ["compose", "-f", toolsCompose];
   if (projectName) buildArgs.push("-p", projectName);
