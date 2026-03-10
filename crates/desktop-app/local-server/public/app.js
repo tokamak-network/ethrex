@@ -2126,9 +2126,9 @@ function renderOverviewTab() {
         try {
           const u = new URL(url);
           const path = u.pathname + u.search;
-          const masked = u.origin + (path.length > 8 ? path.slice(0, 4) + '••••' + path.slice(-4) : path);
+          const masked = u.origin + (path.length > 8 ? path.slice(0, 4) + '\u2022\u2022\u2022\u2022' + path.slice(-4) : path);
           const uid = 'rpc-' + d.id;
-          return '<span id="' + uid + '-masked">' + esc(masked) + '</span><span id="' + uid + '-full" style="display:none">' + esc(url) + '</span> <button onclick="const m=document.getElementById(\\'' + uid + '-masked\\');const f=document.getElementById(\\'' + uid + '-full\\');const v=f.style.display===\\'none\\';f.style.display=v?\\'inline\\':\\'none\\';m.style.display=v?\\'none\\':\\'inline\\';this.textContent=v?\\'Hide\\':\\'Show\\'" style="background:none;border:1px solid var(--border);border-radius:3px;font-size:9px;padding:1px 4px;cursor:pointer;color:var(--text-muted)">Show</button>';
+          return '<span id="' + uid + '-masked">' + esc(masked) + '</span><span id="' + uid + '-full" style="display:none">' + esc(url) + '</span> <button onclick="toggleRpcUrl(\'' + uid + '\',this)" style="background:none;border:1px solid var(--border);border-radius:3px;font-size:9px;padding:1px 4px;cursor:pointer;color:var(--text-muted)">Show</button>';
         } catch { return esc(url); }
       })()}</dd>` : ''}
     </dl>
@@ -2475,6 +2475,15 @@ function esc(str) {
   const div = document.createElement('div');
   div.textContent = str || '';
   return div.innerHTML;
+}
+
+function toggleRpcUrl(uid, btn) {
+  const m = document.getElementById(uid + '-masked');
+  const f = document.getElementById(uid + '-full');
+  const show = f.style.display === 'none';
+  f.style.display = show ? 'inline' : 'none';
+  m.style.display = show ? 'none' : 'inline';
+  btn.textContent = show ? 'Hide' : 'Show';
 }
 
 // ============================================================
