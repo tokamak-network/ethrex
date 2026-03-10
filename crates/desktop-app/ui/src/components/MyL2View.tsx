@@ -31,6 +31,7 @@ interface DeploymentFromDB {
   tools_l2_explorer_port: number | null
   tools_bridge_ui_port: number | null
   hashtags: string | null
+  ever_running: number
 }
 
 export interface L2Config {
@@ -70,6 +71,7 @@ export interface L2Config {
   testnetNetwork: string | null  // 'sepolia' | 'holesky' | null
   testnetL1RpcUrl: string | null
   rawConfig: string | null
+  everRunning: boolean
 }
 
 function deploymentToL2Config(d: DeploymentFromDB): L2Config {
@@ -117,6 +119,7 @@ function deploymentToL2Config(d: DeploymentFromDB): L2Config {
     testnetNetwork: isTestnet ? (testnet.network as string ?? null) : null,
     testnetL1RpcUrl: isTestnet ? (testnet.l1RpcUrl as string ?? null) : null,
     rawConfig: d.config as string | null,
+    everRunning: !!d.ever_running,
   }
 }
 
@@ -186,7 +189,7 @@ export default function MyL2View() {
           if (containers.length === 0) {
             // No containers → actually stopped
             // Also fix 'created' status for provisioned deployments (recovery set status=configured)
-            if (l2.status === 'running' || l2.status === 'error' || (l2.status === 'created' && l2.dockerProject)) {
+            if (l2.status === 'running' || l2.status === 'error' || (l2.status === 'created' && l2.dockerProject) || l2.everRunning) {
               return { ...l2, status: 'stopped' as const, phase: 'stopped', description: `${l2.programSlug} · stopped`, sequencerStatus: 'stopped' as const, proverStatus: 'stopped' as const }
             }
             return l2
@@ -245,11 +248,8 @@ export default function MyL2View() {
       const url = qs ? `${baseUrl}?${qs}` : baseUrl
       const existing = await WebviewWindow.getByLabel('deploy-manager')
       if (existing) {
-        if (editId) {
-          try { await existing.emit('edit-deploy', editId) } catch (e) { console.warn('Failed to emit edit-deploy:', e) }
-        } else if (view) {
-          try { await existing.emit('navigate-view', view) } catch (e) { console.warn('Failed to emit navigate-view:', e) }
-        }
+        // Navigate by changing URL (Tauri emit doesn't reach plain webview)
+        try { await existing.setUrl(url) } catch (e) { console.warn('Failed to set URL:', e) }
         await existing.show()
         await existing.setFocus()
       } else {
