@@ -2116,7 +2116,7 @@ function renderOverviewTab() {
     <h3 style="font-size:13px;margin-bottom:6px">Settings</h3>
     <dl class="info-grid" style="font-size:12px">
       <dt>Name</dt><dd>${esc(d.name)}</dd>
-      <dt>Chain ID</dt><dd>${d.chain_id || '-'}</dd>
+      <dt>Chain ID</dt><dd>${detailMonitoring?.l2?.chainId || d.chain_id || '-'}</dd>
       <dt>Docker</dt><dd style="font-size:10px">${d.docker_project || '-'}</dd>
       <dt>Created</dt><dd style="font-size:10px">${new Date(d.created_at).toLocaleDateString()}</dd>
       ${isTestnetDeploy ? `<dt>L1 Network</dt><dd>${esc((dConfig.testnet?.network || '').charAt(0).toUpperCase() + (dConfig.testnet?.network || '').slice(1))}</dd>
