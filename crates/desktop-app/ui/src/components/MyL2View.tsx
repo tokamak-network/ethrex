@@ -411,7 +411,7 @@ export default function MyL2View() {
                   <div className="text-[11px] text-[var(--color-text-secondary)] truncate mt-0.5">
                     {l2.errorMessage
                       ? <span className="text-[var(--color-error)]">{l2.errorMessage}</span>
-                      : <><div>L1 Chain ID: {l2.l1ChainId || '-'}{l2.l1ChainId === 11155111 ? ' (Sepolia)' : l2.l1ChainId === 17000 ? ' (Holesky)' : l2.l1ChainId === 1 ? ' (Mainnet)' : ''}</div><div>L2 Chain ID: {l2.chainId || l2.l2ChainId || '-'}</div></>
+                      : <><div>L1 Chain ID: {l2.l1ChainId || '-'}{l2.l1ChainId === 11155111 ? ' (Sepolia)' : l2.l1ChainId === 17000 ? ' (Holesky)' : l2.l1ChainId === 1 ? ' (Mainnet)' : ''}</div><div>L2 Chain ID: {l2.l2ChainId || l2.chainId || '-'}</div></>
                     }
                   </div>
                   <div className="flex flex-wrap gap-1 mt-1">

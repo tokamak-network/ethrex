@@ -52,11 +52,13 @@ interface Props {
   handleAction: (action: 'start' | 'stop') => void
   onRefresh?: () => void
   onRetry?: () => void
+  l1ChainId?: number
+  l2ChainId?: number
 }
 
 export default function L2DetailServicesTab({
   l2, ko, containers, products, actionLoading, handleAction,
-  onRefresh, onRetry,
+  onRefresh, onRetry, l1ChainId, l2ChainId,
 }: Props) {
   const [toolsLoading, setToolsLoading] = useState(false)
   const [bridgeConfig, setBridgeConfig] = useState<BridgeUIConfig | null>(null)
@@ -161,6 +163,7 @@ export default function L2DetailServicesTab({
                 <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: '#3b82f6' }} />
                 <span className="text-[12px] font-medium flex-shrink-0">L1 ({testnetNetworkName})</span>
                 <span className="text-[11px] text-[#2563eb]">external</span>
+                {l1ChainId ? <code className="text-[10px] font-mono text-[var(--color-text-secondary)]">ID: {l1ChainId}</code> : null}
                 {l2.testnetL1RpcUrl && (
                   <code className="text-[10px] font-mono text-[var(--color-text-secondary)] ml-auto truncate max-w-[180px]" title={maskRpcUrl(l2.testnetL1RpcUrl)}>
                     {maskRpcUrl(l2.testnetL1RpcUrl).replace(/^https?:\/\//, '').slice(0, 30)}
@@ -173,11 +176,13 @@ export default function L2DetailServicesTab({
           const running = state === 'running'
           const port = svc.portKey ? (l2[svc.portKey] ? `:${l2[svc.portKey]}` : null) : null
           const displayPort = port || svcPort(svc.service)
+          const chainId = svc.service === 'tokamak-app-l1' ? l1ChainId : svc.service === 'tokamak-app-l2' ? l2ChainId : undefined
           return (
             <div key={svc.service} className="flex items-center gap-2 px-3 py-2 border-t border-[var(--color-border)]">
               <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: dotColor(state) }} />
               <span className="text-[12px] font-medium flex-shrink-0">{svc.label}</span>
               <span className={`text-[11px] ${running ? 'text-[var(--color-success)]' : 'text-[var(--color-text-secondary)]'}`}>{state}</span>
+              {running && chainId ? <code className="text-[10px] font-mono text-[var(--color-text-secondary)]">ID: {chainId}</code> : null}
               {displayPort && <code className="text-[10px] font-mono text-[#3b82f6] ml-auto">{displayPort}</code>}
             </div>
           )

@@ -21,7 +21,9 @@ use ethrex_l2_sdk::{
     build_generic_tx, calldata::encode_calldata, create2_deploy_from_bytecode_no_wait,
     initialize_contract_no_wait, send_generic_transaction, wait_for_transaction_receipt,
 };
-use ethrex_l2_sdk::{deploy_with_proxy_from_bytecode_no_wait, register_fee_token_no_wait};
+use ethrex_l2_sdk::{
+    deploy_with_proxy_from_bytecode_no_wait, register_fee_token_no_wait, ProxyDeployment,
+};
 use ethrex_rpc::{
     EthClient,
     clients::Overrides,

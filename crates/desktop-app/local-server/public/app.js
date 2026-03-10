@@ -1863,10 +1863,33 @@ async function retryDeploy(id) {
   }
 }
 
+function showConfirm(message) {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('confirm-overlay');
+    document.getElementById('confirm-msg').textContent = message;
+    overlay.style.display = 'flex';
+    const ok = document.getElementById('confirm-ok');
+    const cancel = document.getElementById('confirm-cancel');
+    function cleanup(result) {
+      overlay.style.display = 'none';
+      ok.removeEventListener('click', onOk);
+      cancel.removeEventListener('click', onCancel);
+      overlay.removeEventListener('click', onOverlay);
+      resolve(result);
+    }
+    function onOk() { cleanup(true); }
+    function onCancel() { cleanup(false); }
+    function onOverlay(e) { if (e.target === overlay) cleanup(false); }
+    ok.addEventListener('click', onOk);
+    cancel.addEventListener('click', onCancel);
+    overlay.addEventListener('click', onOverlay);
+  });
+}
+
 async function deleteDeploy(id, event) {
   const dep = cachedDeployList?.find(d => d.id === id);
   const name = dep?.name || 'this L2';
-  if (!confirm(`Delete "${name}"?\n\nThis will remove the deployment record. Docker containers will not be affected.`)) return;
+  if (!await showConfirm(`Delete "${name}"?\n\nThis will remove the deployment record. Docker containers will not be affected.`)) return;
   try {
     await fetch(`${API}/deployments/${id}`, { method: 'DELETE' });
     if (expandedDeploymentId === id) expandedDeploymentId = null;
@@ -2207,16 +2230,9 @@ async function deployAction(action) {
 // toolsAction is defined above (line ~1518) with full button state management
 
 async function deleteDeployment(id, event) {
-  // Double-click guard
-  const btn = event?.target?.closest?.('button');
-  if (btn && !btn.dataset.pendingDelete) {
-    btn.dataset.pendingDelete = '1';
-    btn.textContent = 'Click again to confirm';
-    btn.style.background = 'var(--red-500, #ef4444)';
-    btn.style.color = 'white';
-    setTimeout(() => { if (btn) { delete btn.dataset.pendingDelete; btn.textContent = 'Remove L2'; btn.style.background = ''; btn.style.color = ''; } }, 3000);
-    return;
-  }
+  const dep = detailDeployment || cachedDeployList?.find(d => d.id === id);
+  const name = dep?.name || 'this L2';
+  if (!await showConfirm(`Delete "${name}"?\n\nThis will remove the deployment record.`)) return;
   try { await fetch(`${API}/deployments/${id}`, { method: 'DELETE' }); showView('deployments'); }
   catch (err) { console.error('Failed to remove:', err.message); }
 }

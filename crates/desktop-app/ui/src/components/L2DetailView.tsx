@@ -222,6 +222,7 @@ export default function L2DetailView({ l2: l2Prop, onBack, onRefresh }: Props) {
           <L2DetailServicesTab
             l2={l2} ko={ko} containers={containers ?? []} products={products}
             actionLoading={actionLoading} handleAction={handleAction}
+            l1ChainId={chain.l1ChainId} l2ChainId={chain.l2ChainId}
             onRefresh={onRefresh}
             onRetry={async () => {
               setActionLoading(true)
