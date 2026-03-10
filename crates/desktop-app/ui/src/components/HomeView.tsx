@@ -62,11 +62,17 @@ export default function HomeView({ onNavigate }: HomeViewProps) {
     loadDeployments()
     // Fallback polling at 30s (primary refresh is event-driven)
     const interval = setInterval(loadDeployments, 30000)
+    // Listen for real-time state changes (debounced to avoid rapid re-fetches)
     let unlisten: UnlistenFn | undefined
-    listen('l2-state-changed', () => { loadDeployments() }).then(fn => { unlisten = fn })
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null
+    listen('l2-state-changed', () => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => { loadDeployments() }, 500)
+    }).then(fn => { unlisten = fn })
     return () => {
       clearInterval(interval)
       unlisten?.()
+      if (debounceTimer) clearTimeout(debounceTimer)
     }
   }, [loadDeployments])
 

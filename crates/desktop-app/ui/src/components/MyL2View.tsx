@@ -233,18 +233,26 @@ export default function MyL2View() {
     }
   }, [lang])
 
+  // Debounced refresh: coalesce rapid events into a single loadDeployments call
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const debouncedLoad = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => { loadDeployments() }, 500)
+  }, [loadDeployments])
+
   useEffect(() => {
     loadDeployments()
     // Fallback polling at 30s (primary refresh is event-driven)
     const interval = setInterval(loadDeployments, 30000)
-    // Listen for real-time state changes from UnifiedL2State
+    // Listen for real-time state changes from UnifiedL2State (debounced)
     let unlisten: UnlistenFn | undefined
-    listen('l2-state-changed', () => { loadDeployments() }).then(fn => { unlisten = fn })
+    listen('l2-state-changed', debouncedLoad).then(fn => { unlisten = fn })
     return () => {
       clearInterval(interval)
       unlisten?.()
+      if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [loadDeployments])
+  }, [loadDeployments, debouncedLoad])
 
   const openDeployManager = async (view?: string, editId?: string, detailId?: string) => {
     try {

@@ -466,6 +466,10 @@ impl TelegramBot {
             );
             action_results.push(result);
         }
+        // Immediately refresh unified state after actions so next query sees latest
+        if !actions.is_empty() {
+            self.unified_state.refresh_now(&self.appchain_manager, &self.runner).await;
+        }
 
         // Build final response
         let mut final_text = clean_text.clone();
@@ -834,8 +838,8 @@ impl TelegramBot {
     async fn generate_briefing(&self, since: chrono::DateTime<chrono::Utc>) -> String {
         let events = self.memory.events_since(since);
 
-        // Use live deployment context (Docker + monitoring) for accurate status
-        let live_ctx = build_deployment_context_live().await;
+        // Use unified state for accurate status (cached, no HTTP)
+        let live_ctx = self.unified_state.to_context_json();
         let live_deployments = live_ctx["deployments"].as_array();
 
         let now = chrono::Utc::now();
@@ -1040,117 +1044,6 @@ fn status_emoji(status: &AppchainStatus) -> &'static str {
     }
 }
 
-// ── Shared context builders ──
-
-pub fn build_appchain_context(am: &AppchainManager) -> serde_json::Value {
-    let chains = am.list_appchains();
-    let summaries: Vec<serde_json::Value> = chains
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "id": c.id,
-                "name": c.name,
-                "chain_id": c.chain_id,
-                "status": format!("{:?}", c.status),
-                "network_mode": format!("{:?}", c.network_mode),
-                "rpc_port": c.l2_rpc_port,
-                "is_public": c.is_public,
-                "native_token": c.native_token,
-            })
-        })
-        .collect();
-
-    serde_json::json!({
-        "appchains": summaries,
-        "total_count": chains.len(),
-    })
-}
-
-/// Build deployment context with live container status, monitoring, and contract data.
-/// This is async because it queries the local-server for real-time state.
-pub async fn build_deployment_context_live() -> serde_json::Value {
-    let deployments = deployment_db::list_deployments_from_db().unwrap_or_default();
-    let proxy = DeploymentProxy::new(LOCAL_SERVER_URL);
-
-    let mut summaries = Vec::new();
-    for d in &deployments {
-        // Fetch live container status
-        let containers = proxy.get_containers(&d.id).await.unwrap_or_default();
-        let container_info: Vec<serde_json::Value> = containers
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "service": c.service,
-                    "state": c.state,
-                    "status": c.status,
-                })
-            })
-            .collect();
-
-        // Determine live status from containers (reconcile like Manager/Messenger)
-        let live_status = if containers.is_empty() {
-            // No containers but DB says running → actually stopped
-            if d.status == "running" || d.status == "active" {
-                "stopped".to_string()
-            } else {
-                d.status.clone()
-            }
-        } else if containers.iter().all(|c| c.state == "running") {
-            "running".to_string()
-        } else if containers.iter().all(|c| c.state == "exited" || c.state == "dead") {
-            "stopped".to_string()
-        } else {
-            "partial".to_string() // some running, some not
-        };
-
-        // Fetch monitoring data (chain IDs, block numbers)
-        let monitoring = proxy.get_monitoring(&d.id).await.ok();
-        let monitoring_json = if let Some(ref mon) = monitoring {
-            serde_json::json!({
-                "l1": mon.l1.as_ref().map(|l| serde_json::json!({
-                    "healthy": l.healthy,
-                    "chainId": l.chain_id,
-                    "blockNumber": l.block_number,
-                })),
-                "l2": mon.l2.as_ref().map(|l| serde_json::json!({
-                    "healthy": l.healthy,
-                    "chainId": l.chain_id,
-                    "blockNumber": l.block_number,
-                })),
-            })
-        } else {
-            serde_json::Value::Null
-        };
-
-        // Contract addresses
-        let mut contracts = serde_json::json!({});
-        if let Some(ref addr) = d.bridge_address { contracts["bridge"] = serde_json::json!(addr); }
-        if let Some(ref addr) = d.proposer_address { contracts["proposer"] = serde_json::json!(addr); }
-        if let Some(ref addr) = d.timelock_address { contracts["timelock"] = serde_json::json!(addr); }
-        if let Some(ref addr) = d.sp1_verifier_address { contracts["sp1_verifier"] = serde_json::json!(addr); }
-
-        summaries.push(serde_json::json!({
-            "id": d.id,
-            "name": d.name,
-            "program": d.program_slug,
-            "status": live_status,
-            "chain_id": d.chain_id,
-            "l1_port": d.l1_port,
-            "l2_port": d.l2_port,
-            "phase": d.phase,
-            "error": d.error_message,
-            "containers": container_info,
-            "monitoring": monitoring_json,
-            "contracts": contracts,
-        }));
-    }
-
-    serde_json::json!({
-        "deployments": summaries,
-        "total_count": deployments.len(),
-    })
-}
-
 // ── TelegramBotManager ──
 
 pub struct TelegramBotManager {
@@ -1274,8 +1167,8 @@ impl TelegramBotManager {
 
     /// Background health monitor — uses UnifiedL2State events + periodic log scanning
     pub async fn health_monitor(
-        am: Arc<AppchainManager>,
-        runner: Arc<ProcessRunner>,
+        _am: Arc<AppchainManager>,
+        _runner: Arc<ProcessRunner>,
         memory: Arc<PilotMemory>,
         notify_tx: Arc<TelegramBotManager>,
     ) {

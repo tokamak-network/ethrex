@@ -353,13 +353,13 @@ impl UnifiedL2State {
 
 // ── Background refresh task ──
 
-pub fn spawn_state_refresh(
+pub async fn spawn_state_refresh(
     state: Arc<UnifiedL2State>,
     am: Arc<AppchainManager>,
     runner: Arc<ProcessRunner>,
     memory: Arc<PilotMemory>,
     app_handle: tauri::AppHandle,
-) -> tokio::task::JoinHandle<()> {
+) {
     // Pipe events to PilotMemory + Tauri frontend events
     let mut event_rx = state.subscribe_events();
     let memory_clone = memory.clone();
@@ -386,7 +386,7 @@ pub fn spawn_state_refresh(
             state.do_refresh(&am, &runner).await;
             tokio::time::sleep(tokio::time::Duration::from_secs(REFRESH_INTERVAL_SECS)).await;
         }
-    })
+    });
 }
 
 // ── Helpers ──
