@@ -264,7 +264,10 @@
         <div id="launch-step3" class="launch-step" style="display:none">
           <h2>Deploying Your L2</h2>
           <p class="step-desc" id="deploy-info-text"></p>
-          <div id="deploy-config-summary" class="config-summary" style="display:none"></div>
+          <details id="deploy-config-summary" class="config-summary" style="display:none" open>
+            <summary>Configuration</summary>
+            <div id="deploy-config-grid" class="config-grid"></div>
+          </details>
           <div class="deploy-card">
             <div class="elapsed-bar">
               <div>Total elapsed: <span class="time" id="deploy-elapsed">0s</span></div>
@@ -312,6 +315,7 @@
           <button class="tab-btn" data-tab="logs" onclick="switchTab('logs')">Logs</button>
           <button class="tab-btn" data-tab="config" onclick="switchTab('config')">Config</button>
         </div>
+        <div id="detail-error-msg" style="display:none;background:var(--red-50,#fef2f2);color:var(--red-700,#b91c1c);border:1px solid var(--red-200,#fecaca);border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px"></div>
         <div class="detail-content">
           <div id="tab-overview" class="tab-panel active">
             <div id="container-cards"></div>
@@ -357,6 +361,6 @@
     </footer>
   </div>
 
-  <script src="/app.js?v=20"></script>
+  <script src="/app.js?v=23"></script>
 </body>
 </html>
