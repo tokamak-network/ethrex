@@ -877,7 +877,8 @@ async function provisionTestnet(deployment) {
             FMSPC_TCB_DAO: ZERO,
             PCK_DAO: ZERO,
             PCS_DAO: ZERO,
-            ETHREX_DEPLOYER_SEQUENCER_REGISTRY_ADDRESS: guestProgramRegistryAddress || ZERO,
+            ETHREX_DEPLOYER_SEQUENCER_REGISTRY_ADDRESS: ZERO,
+            ETHREX_DEPLOYER_GUEST_PROGRAM_REGISTRY_ADDRESS: guestProgramRegistryAddress || ZERO,
             ETHREX_SHARED_BRIDGE_ROUTER_ADDRESS: ZERO,
           });
           emit(id, "log", { message: "Contract addresses written to Docker volume." });
@@ -1014,6 +1015,7 @@ async function provisionTestnet(deployment) {
             PCK_DAO: ZERO,
             PCS_DAO: ZERO,
             ETHREX_DEPLOYER_SEQUENCER_REGISTRY_ADDRESS: parsed.sequencerRegistry || ZERO,
+            ETHREX_DEPLOYER_GUEST_PROGRAM_REGISTRY_ADDRESS: parsed.guestProgramRegistry || ZERO,
             ETHREX_SHARED_BRIDGE_ROUTER_ADDRESS: parsed.router || ZERO,
           });
           emit(id, "log", { message: "Contract addresses written to Docker volume." });
