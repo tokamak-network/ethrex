@@ -694,6 +694,7 @@ router.post("/:id/stop-tools", async (req, res) => {
   try {
     const deployment = db.prepare("SELECT * FROM deployments WHERE id = ?").get(req.params.id);
     if (!deployment) return res.status(404).json({ error: "Deployment not found" });
+    if (!deployment.docker_project) return res.status(400).json({ error: "Not provisioned yet" });
     await docker.stopTools(`${deployment.docker_project}-tools`);
     res.json({ ok: true, message: "Tools stopped" });
   } catch (e) {
