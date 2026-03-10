@@ -32,6 +32,7 @@ const { updateDeployment, getDeploymentById, getNextAvailablePorts, getAllDeploy
 const { getHostById } = require("../db/hosts");
 const keychain = require("./keychain");
 const { getExternalL1Config } = require("./tools-config");
+const { verifyAllContracts, ETHERSCAN_API_URLS } = require("./etherscan-verify");
 
 // Active deployments event emitters (keyed by deployment ID)
 const deploymentEvents = new Map();
@@ -46,6 +47,7 @@ const PHASES = [
   "pulling",
   "l1_starting",
   "deploying_contracts",
+  "verifying_contracts",
   "l2_starting",
   "starting_prover",
   "starting_tools",
@@ -54,7 +56,7 @@ const PHASES = [
 
 const ACTIVE_PHASES = [
   "checking_docker", "building", "pulling", "l1_starting",
-  "deploying_contracts", "l2_starting", "starting_prover", "starting_tools",
+  "deploying_contracts", "verifying_contracts", "l2_starting", "starting_prover", "starting_tools",
 ];
 
 function getEmitter(deploymentId) {
@@ -109,7 +111,9 @@ function cancelProvision(deploymentId) {
     activeProvisions.delete(deploymentId);
     deploymentEvents.delete(deploymentId);
     console.log(`[deploy-engine] Cancelled active provision for ${deploymentId}`);
+    return true;
   }
+  return false;
 }
 
 /**
@@ -183,6 +187,99 @@ function parseContractAddressesFromLogs(logLines) {
     }
   }
   return result;
+}
+
+/**
+ * Create a real-time contract address tracker that parses deployer log lines
+ * and saves addresses to DB incrementally.
+ *
+ * Returns { logFn, getAddresses } — logFn is the callback for Docker logs,
+ * getAddresses() returns the current parsed state.
+ */
+function createContractTracker(deploymentId) {
+  const state = {
+    lastContract: null,
+    bridge: null, proposer: null, timelock: null,
+    sp1Verifier: null, guestProgramRegistry: null,
+  };
+  const dbFieldMap = {
+    bridge: "bridge_address",
+    proposer: "proposer_address",
+    timelock: "timelock_address",
+    sp1Verifier: "sp1_verifier_address",
+    guestProgramRegistry: "guest_program_registry_address",
+  };
+
+  function processLine(line) {
+    // Check for structured JSON output (highest priority)
+    const jsonMatch = line.match(/DEPLOYER_RESULT_JSON:(\{.*\})/);
+    if (jsonMatch) {
+      try {
+        const data = JSON.parse(jsonMatch[1]);
+        if (data.status === "success" && data.contracts) {
+          const mapping = {
+            CommonBridge: "bridge", OnChainProposer: "proposer",
+            Timelock: "timelock", SP1Verifier: "sp1Verifier",
+            GuestProgramRegistry: "guestProgramRegistry",
+          };
+          for (const [solName, key] of Object.entries(mapping)) {
+            if (data.contracts[solName] && !state[key]) {
+              state[key] = data.contracts[solName];
+              saveAddress(key, data.contracts[solName]);
+            }
+          }
+          return;
+        }
+      } catch { /* fall through */ }
+    }
+
+    // Detect contract announcement lines
+    if (line.includes("CommonBridge deployed")) state.lastContract = "bridge";
+    else if (line.includes("OnChainProposer deployed")) state.lastContract = "proposer";
+    else if (line.includes("Timelock deployed")) state.lastContract = "timelock";
+    else if (line.includes("GuestProgramRegistry deployed")) state.lastContract = "guestProgramRegistry";
+
+    const addrMatch = line.match(/address=(0x[0-9a-fA-F]{40})/);
+    if (!addrMatch) return;
+    const addr = addrMatch[1];
+
+    // SP1Verifier: address on same line as "deployed"
+    if (line.includes("SP1Verifier deployed")) {
+      if (!state.sp1Verifier) {
+        state.sp1Verifier = addr;
+        saveAddress("sp1Verifier", addr);
+      }
+      state.lastContract = null;
+      return;
+    }
+
+    // For proxy contracts, capture the Proxy address
+    if (state.lastContract && line.includes("Proxy")) {
+      if (!state[state.lastContract]) {
+        state[state.lastContract] = addr;
+        saveAddress(state.lastContract, addr);
+      }
+      state.lastContract = null;
+    }
+  }
+
+  function saveAddress(key, address) {
+    const dbField = dbFieldMap[key];
+    if (dbField) {
+      updateDeployment(deploymentId, { [dbField]: address });
+      console.log(`[contract-tracker] Saved ${key}=${address} for deployment ${deploymentId}`);
+    }
+  }
+
+  return {
+    logFn: (chunk) => {
+      const lines = chunk.split("\n").filter(Boolean);
+      for (const line of lines) {
+        processLine(line);
+      }
+    },
+    getAddresses: () => ({ ...state, lastContract: undefined }),
+  };
 }
 
 /** Throw if the provision was cancelled (call between phases) */
@@ -290,24 +387,47 @@ async function provision(deployment) {
     if (existingImage && !forceRebuild) {
       emit(id, "phase", { phase: "building", message: `Docker image found (${existingImage}) — skipping build` });
       emit(id, "log", { message: `Reusing existing image: ${existingImage}` });
+      // Tag existing image for this project's compose references
+      const { execSync } = require("child_process");
+      const l1Tag = `tokamak-appchain:l1-${projectName}`;
+      const l2Tag = `tokamak-appchain:${programSlug}-${projectName}`;
+      try { execSync(`docker tag "${existingImage}" "${l1Tag}"`, { stdio: "pipe" }); } catch {}
+      try { execSync(`docker tag "${existingImage}" "${l2Tag}"`, { stdio: "pipe" }); } catch {}
+      emit(id, "log", { message: `Tagged as ${l1Tag} and ${l2Tag}` });
     } else {
       emit(id, "phase", { phase: "building", message: forceRebuild
         ? "Force rebuilding Docker images..."
         : "Building Docker images... (this may take several minutes on first run)" });
-      let buildStepMax = 0;
+      // Track per-stage progress across parallel Docker builds
+      const buildStages = {}; // stageKey -> { current, total }
+      let lastEmittedPct = -1;
       await trackedDockerRun(provisionInfo, () =>
         docker.buildImages(projectName, composeFile, { DOCKER_ETHREX_WORKDIR: "/usr/local/bin" }, (chunk) => {
           const lines = chunk.split("\n").filter(Boolean);
           for (const line of lines) {
             emit(id, "log", { message: line });
-            // Parse Docker build step progress: "Step X/Y :" or "#N [stage X/Y]"
-            const stepMatch = line.match(/Step (\d+)\/(\d+)/i) || line.match(/#\d+ \[.*? (\d+)\/(\d+)\]/);
-            if (stepMatch) {
-              const current = parseInt(stepMatch[1]);
-              const total = parseInt(stepMatch[2]);
-              if (total > buildStepMax) buildStepMax = total;
-              const pct = Math.round((current / total) * 100);
-              emit(id, "phase", { phase: "building", message: `Building... step ${current}/${total} (${pct}%)`, progress: pct });
+            // Parse Docker BuildKit progress: "#N [stageName X/Y]" or legacy "Step X/Y :"
+            const bkMatch = line.match(/#(\d+) \[([^\]]*?) (\d+)\/(\d+)\]/);
+            const legacyMatch = !bkMatch && line.match(/Step (\d+)\/(\d+)/i);
+            if (bkMatch) {
+              const stageKey = bkMatch[2].replace(/\s*\d+\/\d+$/, '').trim() || `stage-${bkMatch[1]}`;
+              buildStages[stageKey] = { current: parseInt(bkMatch[3]), total: parseInt(bkMatch[4]) };
+            } else if (legacyMatch) {
+              buildStages['default'] = { current: parseInt(legacyMatch[1]), total: parseInt(legacyMatch[2]) };
+            } else {
+              continue;
+            }
+            // Compute global progress across all stages
+            let totalSteps = 0, completedSteps = 0;
+            for (const s of Object.values(buildStages)) {
+              totalSteps += s.total;
+              completedSteps += s.current;
+            }
+            const pct = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
+            // Only emit if progress increased (never go backwards)
+            if (pct > lastEmittedPct) {
+              lastEmittedPct = pct;
+              emit(id, "phase", { phase: "building", message: `Building... ${pct}%`, progress: pct });
             }
           }
         }, { forceRebuild })
@@ -337,6 +457,7 @@ async function provision(deployment) {
     let proposerAddress = null;
     let timelockAddress = null;
     let sp1VerifierAddress = null;
+    let guestProgramRegistryAddress = null;
 
     let envVars = {};
 
@@ -357,17 +478,20 @@ async function provision(deployment) {
         // Use DB values (already set above)
       }
     } else {
-      // Deploy contracts
+      // Deploy contracts — track each address in real-time via log parsing
       emit(id, "phase", { phase: "deploying_contracts", message: forceRedeploy
         ? "Force redeploying L1 contracts..."
         : "Deploying L1 contracts (bridge, proposer, verifier)..." });
       const contractLogLines = [];
+      const tracker = createContractTracker(id);
       const contractLogFn = (chunk) => {
         const lines = chunk.split("\n").filter(Boolean);
         for (const line of lines) {
           contractLogLines.push(line);
           emit(id, "log", { message: line });
         }
+        // Parse and save addresses incrementally
+        tracker.logFn(chunk);
       };
       await trackedDockerRun(provisionInfo, () =>
         docker.deployContracts(projectName, composeFile, { DOCKER_ETHREX_WORKDIR: "/usr/local/bin" }, contractLogFn)
@@ -375,24 +499,30 @@ async function provision(deployment) {
 
       await docker.stopService(projectName, composeFile, "tokamak-app-deployer");
 
-      try {
-        envVars = await docker.extractEnv(projectName, composeFile);
-      } catch (extractErr) {
-        emit(id, "log", { message: `Warning: extractEnv failed: ${extractErr.message}, retrying...` });
-        await new Promise(r => setTimeout(r, 3000));
+      // Get addresses from tracker (already saved to DB incrementally)
+      const tracked = tracker.getAddresses();
+      bridgeAddress = tracked.bridge;
+      proposerAddress = tracked.proposer;
+      timelockAddress = tracked.timelock;
+      sp1VerifierAddress = tracked.sp1Verifier;
+      guestProgramRegistryAddress = tracked.guestProgramRegistry;
+
+      // Fallback: try extractEnv if tracker missed any
+      if (!bridgeAddress || !proposerAddress) {
         try {
           envVars = await docker.extractEnv(projectName, composeFile);
-        } catch (retryErr) {
-          emit(id, "log", { message: `extractEnv retry failed: ${retryErr.message}` });
+        } catch (extractErr) {
+          emit(id, "log", { message: `Warning: extractEnv failed: ${extractErr.message}, retrying...` });
+          await new Promise(r => setTimeout(r, 3000));
+          try { envVars = await docker.extractEnv(projectName, composeFile); } catch {}
         }
+        if (!bridgeAddress) bridgeAddress = envVars.ETHREX_WATCHER_BRIDGE_ADDRESS || null;
+        if (!proposerAddress) proposerAddress = envVars.ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS || null;
+        if (!timelockAddress) timelockAddress = envVars.ETHREX_TIMELOCK_ADDRESS || null;
+        if (!sp1VerifierAddress) sp1VerifierAddress = envVars.ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS || null;
       }
 
-      bridgeAddress = envVars.ETHREX_WATCHER_BRIDGE_ADDRESS || null;
-      proposerAddress = envVars.ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS || null;
-      timelockAddress = envVars.ETHREX_TIMELOCK_ADDRESS || null;
-      sp1VerifierAddress = envVars.ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS || null;
-
-      // Fallback: parse addresses from deployer log output
+      // Final fallback: parse from accumulated log lines
       if (!bridgeAddress || !proposerAddress) {
         const parsed = parseContractAddressesFromLogs(contractLogLines);
         if (!bridgeAddress && parsed.bridge) bridgeAddress = parsed.bridge;
@@ -408,7 +538,7 @@ async function provision(deployment) {
     console.log(`[deployment-engine] contract addresses for ${projectName}: bridge=${bridgeAddress}, proposer=${proposerAddress}, timelock=${timelockAddress}, sp1Verifier=${sp1VerifierAddress}`);
     emit(id, "log", { message: `Contract addresses [${projectName}]: bridge=${bridgeAddress}, proposer=${proposerAddress}, timelock=${timelockAddress}, sp1Verifier=${sp1VerifierAddress}` });
 
-    // Save addresses so they can be reused on retry
+    // Save final addresses (ensures all are in DB even from fallback sources)
     if (bridgeAddress || proposerAddress) {
       updateDeployment(id, {
         bridge_address: bridgeAddress,
@@ -482,7 +612,7 @@ async function provision(deployment) {
       bridgeAddress,
       proposerAddress,
     });
-    updateDeployment(id, { phase: "running", status: "active", error_message: null });
+    updateDeployment(id, { phase: "running", status: "active", error_message: null, ever_running: 1 });
     activeProvisions.delete(id);
     return updateDeployment(id, {});
   } catch (err) {
@@ -631,11 +761,14 @@ async function provisionTestnet(deployment) {
     if (existingImage) {
       emit(id, "phase", { phase: "building", message: `Docker image found — skipping build`, imageFound: existingImage });
       emit(id, "log", { message: `Reusing existing image: ${existingImage}` });
-      // Tag the existing image with the shared name if needed
+      // Tag existing image for this project's compose references
+      const { execSync } = require("child_process");
+      const l2Tag = `tokamak-appchain:${programSlug}-${projectName}`;
+      try { execSync(`docker tag "${existingImage}" "${l2Tag}"`, { stdio: "pipe" }); } catch {}
       if (existingImage !== sharedImage) {
-        emit(id, "log", { message: `Tagging ${existingImage} → ${sharedImage}` });
-        try { require("child_process").execSync(`docker tag "${existingImage}" "${sharedImage}"`, { timeout: 10000 }); } catch {}
+        try { execSync(`docker tag "${existingImage}" "${sharedImage}"`, { stdio: "pipe" }); } catch {}
       }
+      emit(id, "log", { message: `Tagged as ${l2Tag}` });
     } else {
       emit(id, "phase", { phase: "building", message: "Building Docker images... (this may take several minutes on first run)" });
       await trackedDockerRun(provisionInfo, () =>
@@ -656,6 +789,7 @@ async function provisionTestnet(deployment) {
     let proposerAddress = existingDep?.proposer_address || null;
     let timelockAddress = existingDep?.timelock_address || null;
     let sp1VerifierAddress = existingDep?.sp1_verifier_address || null;
+    let guestProgramRegistryAddress = existingDep?.guest_program_registry_address || null;
     let envVars = {};
 
     if (bridgeAddress && proposerAddress) {
@@ -703,12 +837,15 @@ async function provisionTestnet(deployment) {
 
       provisionInfo.phase = "deploying_contracts";
       updateDeployment(id, { phase: "deploying_contracts" });
+      const tracker = createContractTracker(id);
       const contractLogFn = (chunk) => {
         const lines = chunk.split("\n").filter(Boolean);
         for (const line of lines) {
           contractLogLines.push(line);
           emit(id, "log", { message: line });
         }
+        // Parse and save addresses incrementally
+        tracker.logFn(chunk);
       };
       let deployerFailed = false;
       try {
@@ -727,24 +864,30 @@ async function provisionTestnet(deployment) {
 
       try { await docker.stopService(projectName, composeFile, "tokamak-app-deployer"); } catch {}
 
-      try {
-        envVars = await docker.extractEnv(projectName, composeFile);
-      } catch (extractErr) {
-        emit(id, "log", { message: `extractEnv failed: ${extractErr.message}, retrying...` });
-        await new Promise(r => setTimeout(r, 3000));
+      // Get addresses from tracker (already saved to DB incrementally)
+      const tracked = tracker.getAddresses();
+      bridgeAddress = tracked.bridge;
+      proposerAddress = tracked.proposer;
+      timelockAddress = tracked.timelock;
+      sp1VerifierAddress = tracked.sp1Verifier;
+      guestProgramRegistryAddress = tracked.guestProgramRegistry;
+
+      // Fallback: try extractEnv if tracker missed any
+      if (!bridgeAddress || !proposerAddress) {
         try {
           envVars = await docker.extractEnv(projectName, composeFile);
-        } catch (retryErr) {
-          emit(id, "log", { message: `extractEnv retry failed: ${retryErr.message}` });
+        } catch (extractErr) {
+          emit(id, "log", { message: `extractEnv failed: ${extractErr.message}, retrying...` });
+          await new Promise(r => setTimeout(r, 3000));
+          try { envVars = await docker.extractEnv(projectName, composeFile); } catch {}
         }
+        if (!bridgeAddress) bridgeAddress = envVars.ETHREX_WATCHER_BRIDGE_ADDRESS || null;
+        if (!proposerAddress) proposerAddress = envVars.ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS || null;
+        if (!timelockAddress) timelockAddress = envVars.ETHREX_TIMELOCK_ADDRESS || null;
+        if (!sp1VerifierAddress) sp1VerifierAddress = envVars.ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS || null;
       }
 
-      bridgeAddress = envVars.ETHREX_WATCHER_BRIDGE_ADDRESS || null;
-      proposerAddress = envVars.ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS || null;
-      timelockAddress = envVars.ETHREX_TIMELOCK_ADDRESS || null;
-      sp1VerifierAddress = envVars.ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS || null;
-
-      // Fallback: parse addresses from deployer log output (covers case where .env wasn't written)
+      // Final fallback: parse from accumulated log lines
       if (!bridgeAddress || !proposerAddress) {
         const parsed = parseContractAddressesFromLogs(contractLogLines);
         if (!bridgeAddress && parsed.bridge) bridgeAddress = parsed.bridge;
@@ -758,7 +901,7 @@ async function provisionTestnet(deployment) {
 
       console.log(`[deployment-engine] testnet contract addresses for ${projectName}: bridge=${bridgeAddress}, proposer=${proposerAddress}`);
 
-      // Save whatever addresses we got (even partial) so they can be reused on retry
+      // Save final addresses (ensures all are in DB even from fallback sources)
       if (bridgeAddress || proposerAddress) {
         updateDeployment(id, {
           bridge_address: bridgeAddress,
@@ -809,6 +952,30 @@ async function provisionTestnet(deployment) {
     checkCancelled(provisionInfo);
 
     emit(id, "phase", { phase: "deploying_contracts", message: "Contracts deployed on testnet L1", bridgeAddress, proposerAddress });
+
+    // Etherscan verification for testnet/mainnet (non-blocking)
+    const l1ChainId = parseInt(testnetConfig.l1ChainId);
+    const etherscanApiKey = testnetConfig.etherscanApiKey || process.env.ETHERSCAN_API_KEY;
+    if (ETHERSCAN_API_URLS[l1ChainId] && etherscanApiKey) {
+      emit(id, "phase", { phase: "verifying_contracts", message: "Verifying contracts on Etherscan..." });
+      try {
+        const verifyResults = await verifyAllContracts({
+          chainId: l1ChainId,
+          contracts: { bridge: bridgeAddress, proposer: proposerAddress, timelock: timelockAddress, sp1Verifier: sp1VerifierAddress, guestProgramRegistry: guestProgramRegistryAddress },
+          apiKey: etherscanApiKey,
+          log: (msg) => emit(id, "log", { message: msg }),
+        });
+        const verificationStatus = JSON.stringify(verifyResults);
+        updateDeployment(id, { verification_status: verificationStatus });
+        const allVerified = Object.values(verifyResults).every(r => r.verified);
+        emit(id, "phase", { phase: "verifying_contracts", message: allVerified ? "All contracts verified on Etherscan" : "Some contracts could not be verified (see logs)" });
+      } catch (verifyErr) {
+        emit(id, "log", { message: `Etherscan verification error: ${verifyErr.message}` });
+        emit(id, "phase", { phase: "verifying_contracts", message: "Etherscan verification failed (non-blocking)" });
+      }
+    } else if (ETHERSCAN_API_URLS[l1ChainId] && !etherscanApiKey) {
+      emit(id, "log", { message: "Etherscan API key not provided — skipping contract verification. Set ETHERSCAN_API_KEY or configure in testnet settings." });
+    }
 
     checkCancelled(provisionInfo);
 
@@ -866,7 +1033,7 @@ async function provisionTestnet(deployment) {
       bridgeAddress,
       proposerAddress,
     });
-    updateDeployment(id, { phase: "running", status: "active", error_message: null });
+    updateDeployment(id, { phase: "running", status: "active", error_message: null, ever_running: 1 });
     activeProvisions.delete(id);
     return updateDeployment(id, {});
   } catch (err) {
@@ -1033,7 +1200,7 @@ async function provisionRemote(deployment, hostId) {
       bridgeAddress,
       proposerAddress,
     });
-    updateDeployment(id, { phase: "running", status: "active", error_message: null });
+    updateDeployment(id, { phase: "running", status: "active", error_message: null, ever_running: 1 });
     activeProvisions.delete(id);
     conn.end();
     return updateDeployment(id, {});
@@ -1086,7 +1253,7 @@ async function startDeployment(deployment) {
   } catch (e) {
     console.log(`[start] Tools start skipped: ${e.message}`);
   }
-  return updateDeployment(deployment.id, { phase: "running", status: "active" });
+  return updateDeployment(deployment.id, { phase: "running", status: "active", ever_running: 1 });
 }
 
 async function destroyDeployment(deployment) {
@@ -1097,6 +1264,20 @@ async function destroyDeployment(deployment) {
   // Stop tools (Explorer, Bridge UI) first, then destroy the deployment
   try { await docker.stopTools(); } catch { /* tools may not be running */ }
   await docker.destroy(deployment.docker_project, composeFile);
+
+  // Verify all containers for this project are removed
+  try {
+    const remaining = await docker.getStatus(deployment.docker_project, composeFile);
+    if (remaining.length > 0) {
+      console.log(`[destroy] ${remaining.length} container(s) still present after destroy, force removing...`);
+      for (const c of remaining) {
+        try {
+          require("child_process").execSync(`docker rm -f ${c.ID || c.Name}`, { stdio: "pipe" });
+        } catch { /* ignore */ }
+      }
+    }
+  } catch { /* compose file may already be gone */ }
+
   const fs = require("fs");
   const deployDir = getDeploymentDir(deployment.id);
   if (fs.existsSync(deployDir)) fs.rmSync(deployDir, { recursive: true, force: true });
@@ -1127,7 +1308,7 @@ async function startDeploymentRemote(deployment) {
   const remoteDir = `/opt/tokamak/${deployment.id}`;
   await remote.startRemote(conn, deployment.docker_project, remoteDir);
   conn.end();
-  return updateDeployment(deployment.id, { phase: "running", status: "active" });
+  return updateDeployment(deployment.id, { phase: "running", status: "active", ever_running: 1 });
 }
 
 async function destroyDeploymentRemote(deployment) {
@@ -1187,15 +1368,18 @@ async function recoverStuckDeployments() {
           console.log(`[recovery] Could not backfill contracts for ${dep.id}: ${e.message}`);
         }
       }
-      // Reconcile: phase says "running" but Docker containers are actually stopped
-      if (dep.phase === "running" && dep.docker_project) {
+      // Reconcile DB phase with actual Docker container state
+      if (dep.docker_project && (dep.phase === "running" || dep.phase === "stopped")) {
         try {
           const composeFile = require("path").join(getDeploymentDir(dep.id), "docker-compose.yaml");
           const containers = await docker.getStatus(dep.docker_project, composeFile);
           const anyRunning = containers.some(c => (c.State || "").toLowerCase() === "running");
-          if (!anyRunning) {
+          if (dep.phase === "running" && !anyRunning) {
             console.log(`[recovery] Deployment ${dep.id} (${dep.name}) phase="running" but no containers running -- marking as stopped`);
             updateDeployment(dep.id, { phase: "stopped", status: "configured" });
+          } else if (dep.phase === "stopped" && anyRunning) {
+            console.log(`[recovery] Deployment ${dep.id} (${dep.name}) phase="stopped" but containers running -- marking as running`);
+            updateDeployment(dep.id, { phase: "running", status: "active", ever_running: 1 });
           }
         } catch (e) {
           console.log(`[recovery] Could not check containers for ${dep.id}: ${e.message}`);
