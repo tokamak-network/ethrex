@@ -635,6 +635,7 @@ router.post("/:id/build-tools", async (req, res) => {
   try {
     const deployment = db.prepare("SELECT * FROM deployments WHERE id = ?").get(req.params.id);
     if (!deployment) return res.status(404).json({ error: "Deployment not found" });
+    if (!deployment.docker_project) return res.status(400).json({ error: "Not provisioned yet" });
 
     const toolsPorts = {
       toolsL1ExplorerPort: deployment.tools_l1_explorer_port,
