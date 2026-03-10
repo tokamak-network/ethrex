@@ -114,10 +114,17 @@ pub async fn wait_for_transaction_receipt(
     client: &EthClient,
     max_retries: u64,
 ) -> Result<RpcReceipt, EthClientError> {
-    // Determine retry interval based on L1 chain ID (external L1 ~12s blocks, local ~1s)
     let chain_id = client.get_chain_id().await.unwrap_or(9u64.into());
     let interval_secs = if chain_id > 100u64.into() { 12 } else { 2 };
+    wait_for_transaction_receipt_with_interval(tx_hash, client, max_retries, interval_secs).await
+}
 
+pub async fn wait_for_transaction_receipt_with_interval(
+    tx_hash: H256,
+    client: &EthClient,
+    max_retries: u64,
+    interval_secs: u64,
+) -> Result<RpcReceipt, EthClientError> {
     let mut r#try = 1;
     loop {
         match client.get_transaction_receipt(tx_hash).await {
