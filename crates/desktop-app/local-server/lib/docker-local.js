@@ -505,9 +505,10 @@ async function stopTools(projectName) {
   const toolsCompose = path.join(l2Dir, "docker-compose-zk-dex-tools.yaml");
   if (!fs.existsSync(toolsCompose)) return;
 
+  // Stop all profiles (default + external-l1) to ensure proxy-l2 etc. are also stopped
   const args = ["compose", "-f", toolsCompose];
   if (projectName) args.push("-p", projectName);
-  args.push("down", "--remove-orphans");
+  args.push("--profile", "*", "down", "--remove-orphans");
 
   const toolsEnvFile = resolveToolsEnvFile(projectName);
   const env = toolsEnvFile ? { TOOLS_ENV_FILE: toolsEnvFile } : {};

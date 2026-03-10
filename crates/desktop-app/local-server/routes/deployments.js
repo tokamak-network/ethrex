@@ -528,7 +528,7 @@ router.post("/:id/stop", async (req, res) => {
     if (!deployment) return res.status(404).json({ error: "Deployment not found" });
 
     // Cancel active provision first (removes from registry)
-    cancelProvision(req.params.id);
+    const wasProvisioning = cancelProvision(req.params.id);
 
     if (deployment.docker_project) {
       // Stop all containers including deployer
@@ -537,17 +537,25 @@ router.post("/:id/stop", async (req, res) => {
         const { getDeploymentDir } = require("../lib/compose-generator");
         const composeFile = path.join(getDeploymentDir(deployment.id), "docker-compose.yaml");
         const docker = require("../lib/docker-local");
+        // Stop tools first, then core services
+        try { await docker.stopTools(); } catch { /* tools may not be running */ }
         await docker.stop(deployment.docker_project, composeFile);
       } catch (e) {
         console.log(`[stop] docker stop failed: ${e.message}`);
       }
       const { updateDeployment: updateDep } = require("../db/deployments");
-      const updated = updateDep(deployment.id, { phase: "stopped", error_message: "Cancelled by user" });
+      const updated = updateDep(deployment.id, {
+        phase: "stopped",
+        error_message: wasProvisioning ? "Cancelled by user" : null,
+      });
       res.json({ deployment: updated });
     } else {
       // No docker project yet — just mark as configured
       const { updateDeployment: updateDep } = require("../db/deployments");
-      const updated = updateDep(deployment.id, { phase: "configured", error_message: "Cancelled by user" });
+      const updated = updateDep(deployment.id, {
+        phase: "configured",
+        error_message: wasProvisioning ? "Cancelled by user" : null,
+      });
       res.json({ deployment: updated });
     }
   } catch (e) {
@@ -683,8 +691,11 @@ router.post("/:id/restart-tools", async (req, res) => {
       ...getExternalL1Config(deployment),
     };
 
-    await docker.restartTools(`${deployment.docker_project}-tools`, envVars, toolsPorts);
-    res.json({ ok: true, message: "Tools restarted" });
+    // Respond immediately — docker compose up can take 30s+ and WebKit times out
+    res.json({ ok: true, message: "Tools starting..." });
+    docker.restartTools(`${deployment.docker_project}-tools`, envVars, toolsPorts).catch(e => {
+      console.error("Tools restart failed:", e.message);
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -696,8 +707,10 @@ router.post("/:id/stop-tools", async (req, res) => {
     const deployment = db.prepare("SELECT * FROM deployments WHERE id = ?").get(req.params.id);
     if (!deployment) return res.status(404).json({ error: "Deployment not found" });
     if (!deployment.docker_project) return res.status(400).json({ error: "Not provisioned yet" });
-    await docker.stopTools(`${deployment.docker_project}-tools`);
-    res.json({ ok: true, message: "Tools stopped" });
+    res.json({ ok: true, message: "Tools stopping..." });
+    docker.stopTools(`${deployment.docker_project}-tools`).catch(e => {
+      console.error("Tools stop failed:", e.message);
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
