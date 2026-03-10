@@ -153,22 +153,11 @@ impl UnifiedL2State {
     /// Build JSON context for AI system prompts (Telegram + Desktop Chat)
     pub fn to_context_json(&self) -> serde_json::Value {
         let snap = self.snapshot.read().unwrap();
-        let appchains: Vec<&L2Info> = snap
-            .items
-            .iter()
-            .filter(|l| l.source == L2Source::Appchain)
-            .collect();
-        let deployments: Vec<&L2Info> = snap
-            .items
-            .iter()
-            .filter(|l| l.source == L2Source::Deployment)
-            .collect();
+        let all: &Vec<L2Info> = &snap.items;
 
         serde_json::json!({
-            "appchains": appchains,
-            "deployments": deployments,
-            "total_appchains": appchains.len(),
-            "total_deployments": deployments.len(),
+            "my_appchains": all,
+            "total_count": all.len(),
         })
     }
 
@@ -195,57 +184,17 @@ impl UnifiedL2State {
     /// Core refresh logic: collect state from AppchainManager + local-server
     async fn do_refresh(
         &self,
-        am: &AppchainManager,
-        runner: &ProcessRunner,
+        _am: &AppchainManager,
+        _runner: &ProcessRunner,
     ) {
         let old_items = self.snapshot.read().unwrap().items.clone();
         let mut new_items = Vec::new();
 
-        // 1. Appchains from AppchainManager
-        let chains = am.list_appchains();
-        for chain in &chains {
-            let process_alive = runner.is_running(&chain.id).await;
-            let status = reconcile_appchain_status(&chain.status, process_alive);
+        // NOTE: AppchainManager (local process appchains) is not collected here.
+        // All real deployments go through the Docker-based L2 Manager (local-server).
+        // AppchainManager contains only legacy test data that is not actively used.
 
-            // If status diverged, update AppchainManager
-            if status != appchain_status_to_l2(&chain.status) {
-                match status {
-                    L2Status::Error => am.update_status(&chain.id, AppchainStatus::Error),
-                    L2Status::Stopped => am.update_status(&chain.id, AppchainStatus::Stopped),
-                    _ => {}
-                }
-            }
-
-            new_items.push(L2Info {
-                id: chain.id.clone(),
-                name: chain.name.clone(),
-                source: L2Source::Appchain,
-                chain_id: Some(chain.chain_id),
-                network_mode: format!("{:?}", chain.network_mode),
-                native_token: chain.native_token.clone(),
-                status,
-                health: None, // Appchains don't have monitoring endpoint yet
-                l1_rpc_url: Some(chain.l1_rpc_url.clone()),
-                l2_rpc_url: Some(format!("http://localhost:{}", chain.l2_rpc_port)),
-                contracts: if chain.bridge_address.is_some() || chain.on_chain_proposer_address.is_some() {
-                    Some(L2Contracts {
-                        bridge: chain.bridge_address.clone(),
-                        proposer: chain.on_chain_proposer_address.clone(),
-                        timelock: None,
-                        sp1_verifier: None,
-                    })
-                } else {
-                    None
-                },
-                containers: None,
-                phase: None,
-                error_message: None,
-                is_public: chain.is_public,
-                created_at: chain.created_at.clone(),
-            });
-        }
-
-        // 2. Docker deployments from local-server
+        // Docker deployments from local-server
         let deployments = deployment_db::list_deployments_from_db().unwrap_or_default();
         let proxy = DeploymentProxy::new(LOCAL_SERVER_URL);
 
@@ -734,31 +683,26 @@ mod tests {
     fn test_context_json_empty() {
         let state = UnifiedL2State::new();
         let ctx = state.to_context_json();
-        assert_eq!(ctx["total_appchains"], 0);
-        assert_eq!(ctx["total_deployments"], 0);
-        assert!(ctx["appchains"].as_array().unwrap().is_empty());
-        assert!(ctx["deployments"].as_array().unwrap().is_empty());
+        assert_eq!(ctx["total_count"], 0);
+        assert!(ctx["my_appchains"].as_array().unwrap().is_empty());
     }
 
     #[test]
-    fn test_context_json_separates_sources() {
+    fn test_context_json_lists_all() {
         let state = UnifiedL2State::new();
-        // Inject test data directly via write lock
         {
             let mut snap = state.snapshot.write().unwrap();
             snap.items = vec![
-                make_appchain("a1", "Appchain 1", L2Status::Running),
-                make_deployment("d1", "Deploy 1", L2Status::Stopped),
-                make_appchain("a2", "Appchain 2", L2Status::Created),
+                make_deployment("d1", "Deploy 1", L2Status::Running),
+                make_deployment("d2", "Deploy 2", L2Status::Stopped),
             ];
         }
         let ctx = state.to_context_json();
-        assert_eq!(ctx["total_appchains"], 2);
-        assert_eq!(ctx["total_deployments"], 1);
-        let appchains = ctx["appchains"].as_array().unwrap();
-        assert!(appchains.iter().all(|a| a["source"] == "appchain"));
-        let deployments = ctx["deployments"].as_array().unwrap();
-        assert!(deployments.iter().all(|d| d["source"] == "deployment"));
+        assert_eq!(ctx["total_count"], 2);
+        let all = ctx["my_appchains"].as_array().unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0]["name"], "Deploy 1");
+        assert_eq!(all[1]["name"], "Deploy 2");
     }
 
     #[test]
@@ -966,7 +910,7 @@ mod tests {
 
         // Initially empty
         assert!(state.get_all().is_empty());
-        assert_eq!(state.to_context_json()["total_appchains"], 0);
+        assert_eq!(state.to_context_json()["total_count"], 0);
 
         // Simulate first refresh: 2 appchains appear
         {
@@ -979,7 +923,7 @@ mod tests {
             diff_and_emit(&old, &snap.items, &state.event_tx);
         }
         assert_eq!(state.get_all().len(), 2);
-        assert_eq!(state.to_context_json()["total_appchains"], 2);
+        assert_eq!(state.to_context_json()["total_count"], 2);
 
         // 2 created events
         assert_eq!(rx.try_recv().unwrap().event_type, "created");
@@ -998,8 +942,7 @@ mod tests {
             diff_and_emit(&old, &snap.items, &state.event_tx);
         }
         assert_eq!(state.get_all().len(), 3);
-        assert_eq!(state.to_context_json()["total_appchains"], 2);
-        assert_eq!(state.to_context_json()["total_deployments"], 1);
+        assert_eq!(state.to_context_json()["total_count"], 3);
 
         // a1 status_changed, a2 status_changed, d1 created
         let e1 = rx.try_recv().unwrap();
@@ -1071,7 +1014,7 @@ mod tests {
         }
 
         let ctx = state.to_context_json();
-        let dep = &ctx["deployments"][0];
+        let dep = &ctx["my_appchains"][0];
         assert_eq!(dep["name"], "Full Deploy");
         assert_eq!(dep["status"], "running");
         assert_eq!(dep["health"]["l1_healthy"], true);

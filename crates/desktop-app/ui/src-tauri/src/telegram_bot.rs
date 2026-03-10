@@ -840,7 +840,7 @@ impl TelegramBot {
 
         // Use unified state for accurate status (cached, no HTTP)
         let live_ctx = self.unified_state.to_context_json();
-        let live_deployments = live_ctx["deployments"].as_array();
+        let live_deployments = live_ctx["my_appchains"].as_array();
 
         let now = chrono::Utc::now();
         let gap = now.signed_duration_since(since);
