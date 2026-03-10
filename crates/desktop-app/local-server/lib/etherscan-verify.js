@@ -48,7 +48,7 @@ function getEthrexRoot() {
 
 /**
  * Flatten a Solidity source file using `forge flatten`.
- * Falls back to reading raw source if forge is not available.
+ * Requires Foundry to be installed; throws if forge is not available.
  */
 function flattenSource(contractName) {
   const ethrexRoot = getEthrexRoot();
@@ -133,7 +133,7 @@ async function checkVerificationStatus({ chainId, guid, apiKey, maxRetries = 10 
   for (let i = 0; i < maxRetries; i++) {
     await new Promise(r => setTimeout(r, 5000)); // Wait 5s between checks
 
-    const url = `${apiUrl}?module=contract&action=checkverifystatus&guid=${guid}&apikey=${apiKey}`;
+    const url = `${apiUrl}&module=contract&action=checkverifystatus&guid=${guid}&apikey=${apiKey}`;
     const response = await fetch(url);
     const data = await response.json();
 
@@ -170,7 +170,7 @@ async function verifyProxy({ chainId, proxyAddress, apiKey }) {
       const proxyGuid = data.result;
       for (let i = 0; i < 5; i++) {
         await new Promise(r => setTimeout(r, 3000));
-        const checkUrl = `${apiUrl}?module=contract&action=checkproxyverification&guid=${proxyGuid}&apikey=${apiKey}`;
+        const checkUrl = `${apiUrl}&module=contract&action=checkproxyverification&guid=${proxyGuid}&apikey=${apiKey}`;
         const checkRes = await fetch(checkUrl);
         const checkData = await checkRes.json();
         if (checkData.result && !checkData.result.includes("Pending")) return true;
