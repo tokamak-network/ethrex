@@ -111,6 +111,7 @@ pub struct L2Event {
 #[derive(Debug, Clone)]
 struct StateSnapshot {
     items: Vec<L2Info>,
+    #[allow(dead_code)]
     refreshed_at: Instant,
 }
 
@@ -510,39 +511,203 @@ fn diff_and_emit(
 mod tests {
     use super::*;
 
+    // ── Test helpers ──
+
+    fn make_appchain(id: &str, name: &str, status: L2Status) -> L2Info {
+        L2Info {
+            id: id.to_string(),
+            name: name.to_string(),
+            source: L2Source::Appchain,
+            chain_id: Some(17001),
+            network_mode: "Local".to_string(),
+            native_token: "TON".to_string(),
+            status,
+            health: None,
+            l1_rpc_url: Some("http://localhost:8545".to_string()),
+            l2_rpc_url: Some("http://localhost:1729".to_string()),
+            contracts: None,
+            containers: None,
+            phase: None,
+            error_message: None,
+            is_public: false,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn make_deployment(id: &str, name: &str, status: L2Status) -> L2Info {
+        L2Info {
+            id: id.to_string(),
+            name: name.to_string(),
+            source: L2Source::Deployment,
+            chain_id: Some(17001),
+            network_mode: "local".to_string(),
+            native_token: "TON".to_string(),
+            status,
+            health: None,
+            l1_rpc_url: Some("http://127.0.0.1:8545".to_string()),
+            l2_rpc_url: Some("http://127.0.0.1:8546".to_string()),
+            contracts: None,
+            containers: None,
+            phase: Some("running".to_string()),
+            error_message: None,
+            is_public: false,
+            created_at: "1700000000".to_string(),
+        }
+    }
+
+    fn make_deployment_with_health(id: &str, name: &str, l1_healthy: bool, l2_healthy: bool) -> L2Info {
+        let mut d = make_deployment(id, name, L2Status::Running);
+        d.health = Some(L2Health {
+            l1_healthy,
+            l2_healthy,
+            l1_block_number: Some(serde_json::json!(100)),
+            l2_block_number: Some(serde_json::json!(50)),
+            l1_chain_id: Some(serde_json::json!(1)),
+            l2_chain_id: Some(serde_json::json!(17001)),
+        });
+        d
+    }
+
+    #[allow(dead_code)]
+    fn make_deployment_with_containers(id: &str, name: &str, containers: Vec<(&str, &str)>) -> L2Info {
+        let mut d = make_deployment(id, name, L2Status::Running);
+        d.containers = Some(
+            containers
+                .into_iter()
+                .map(|(svc, state)| L2Container {
+                    service: svc.to_string(),
+                    state: state.to_string(),
+                    status: format!("Up 5 min"),
+                })
+                .collect(),
+        );
+        d
+    }
+
+    // ── Unit Tests: Serialization ──
+
     #[test]
-    fn test_l2_status_serialize() {
-        let json = serde_json::to_string(&L2Status::Running).unwrap();
-        assert_eq!(json, "\"running\"");
-        let json = serde_json::to_string(&L2Status::Partial).unwrap();
-        assert_eq!(json, "\"partial\"");
+    fn test_l2_status_serialize_all_variants() {
+        assert_eq!(serde_json::to_string(&L2Status::Created).unwrap(), "\"created\"");
+        assert_eq!(serde_json::to_string(&L2Status::SettingUp).unwrap(), "\"settingup\"");
+        assert_eq!(serde_json::to_string(&L2Status::Running).unwrap(), "\"running\"");
+        assert_eq!(serde_json::to_string(&L2Status::Stopped).unwrap(), "\"stopped\"");
+        assert_eq!(serde_json::to_string(&L2Status::Error).unwrap(), "\"error\"");
+        assert_eq!(serde_json::to_string(&L2Status::Partial).unwrap(), "\"partial\"");
+    }
+
+    #[test]
+    fn test_l2_status_deserialize() {
+        assert_eq!(serde_json::from_str::<L2Status>("\"running\"").unwrap(), L2Status::Running);
+        assert_eq!(serde_json::from_str::<L2Status>("\"partial\"").unwrap(), L2Status::Partial);
     }
 
     #[test]
     fn test_l2_source_serialize() {
-        let json = serde_json::to_string(&L2Source::Appchain).unwrap();
-        assert_eq!(json, "\"appchain\"");
-        let json = serde_json::to_string(&L2Source::Deployment).unwrap();
-        assert_eq!(json, "\"deployment\"");
+        assert_eq!(serde_json::to_string(&L2Source::Appchain).unwrap(), "\"appchain\"");
+        assert_eq!(serde_json::to_string(&L2Source::Deployment).unwrap(), "\"deployment\"");
     }
 
     #[test]
-    fn test_reconcile_running_but_dead() {
-        let status = reconcile_appchain_status(&AppchainStatus::Running, false);
-        assert_eq!(status, L2Status::Error);
+    fn test_l2_info_full_json_roundtrip() {
+        let info = make_appchain("abc", "My Chain", L2Status::Running);
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: L2Info = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "abc");
+        assert_eq!(parsed.name, "My Chain");
+        assert_eq!(parsed.status, L2Status::Running);
+        assert_eq!(parsed.source, L2Source::Appchain);
+        assert_eq!(parsed.native_token, "TON");
     }
 
     #[test]
-    fn test_reconcile_running_alive() {
-        let status = reconcile_appchain_status(&AppchainStatus::Running, true);
-        assert_eq!(status, L2Status::Running);
+    fn test_l2_info_with_contracts_serializes() {
+        let mut info = make_deployment("dep-1", "Test Deploy", L2Status::Running);
+        info.contracts = Some(L2Contracts {
+            bridge: Some("0xabc".to_string()),
+            proposer: Some("0xdef".to_string()),
+            timelock: None,
+            sp1_verifier: None,
+        });
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("0xabc"));
+        assert!(json.contains("0xdef"));
     }
 
     #[test]
-    fn test_reconcile_stopped() {
-        let status = reconcile_appchain_status(&AppchainStatus::Stopped, false);
-        assert_eq!(status, L2Status::Stopped);
+    fn test_l2_health_serializes() {
+        let health = L2Health {
+            l1_healthy: true,
+            l2_healthy: false,
+            l1_block_number: Some(serde_json::json!(12345)),
+            l2_block_number: None,
+            l1_chain_id: Some(serde_json::json!(1)),
+            l2_chain_id: None,
+        };
+        let json = serde_json::to_string(&health).unwrap();
+        assert!(json.contains("\"l1_healthy\":true"));
+        assert!(json.contains("\"l2_healthy\":false"));
+        assert!(json.contains("12345"));
     }
+
+    // ── Unit Tests: Status reconciliation ──
+
+    #[test]
+    fn test_reconcile_all_appchain_statuses() {
+        assert_eq!(reconcile_appchain_status(&AppchainStatus::Running, true), L2Status::Running);
+        assert_eq!(reconcile_appchain_status(&AppchainStatus::Running, false), L2Status::Error);
+        assert_eq!(reconcile_appchain_status(&AppchainStatus::Stopped, false), L2Status::Stopped);
+        assert_eq!(reconcile_appchain_status(&AppchainStatus::Stopped, true), L2Status::Stopped);
+        assert_eq!(reconcile_appchain_status(&AppchainStatus::SettingUp, false), L2Status::SettingUp);
+        assert_eq!(reconcile_appchain_status(&AppchainStatus::Error, false), L2Status::Error);
+        assert_eq!(reconcile_appchain_status(&AppchainStatus::Created, false), L2Status::Created);
+    }
+
+    #[test]
+    fn test_appchain_status_to_l2_all() {
+        assert_eq!(appchain_status_to_l2(&AppchainStatus::Running), L2Status::Running);
+        assert_eq!(appchain_status_to_l2(&AppchainStatus::Stopped), L2Status::Stopped);
+        assert_eq!(appchain_status_to_l2(&AppchainStatus::SettingUp), L2Status::SettingUp);
+        assert_eq!(appchain_status_to_l2(&AppchainStatus::Error), L2Status::Error);
+        assert_eq!(appchain_status_to_l2(&AppchainStatus::Created), L2Status::Created);
+    }
+
+    // ── Unit Tests: build_health ──
+
+    #[test]
+    fn test_build_health_both_present() {
+        let m = MonitoringInfo {
+            l1: Some(RpcHealth {
+                healthy: true,
+                block_number: Some(serde_json::json!(100)),
+                chain_id: Some(serde_json::json!(1)),
+                rpc_url: Some("http://localhost:8545".to_string()),
+            }),
+            l2: Some(RpcHealth {
+                healthy: false,
+                block_number: Some(serde_json::json!(50)),
+                chain_id: Some(serde_json::json!(17001)),
+                rpc_url: None,
+            }),
+        };
+        let h = build_health(&m);
+        assert!(h.l1_healthy);
+        assert!(!h.l2_healthy);
+        assert_eq!(h.l1_block_number, Some(serde_json::json!(100)));
+        assert_eq!(h.l2_chain_id, Some(serde_json::json!(17001)));
+    }
+
+    #[test]
+    fn test_build_health_none() {
+        let m = MonitoringInfo { l1: None, l2: None };
+        let h = build_health(&m);
+        assert!(!h.l1_healthy);
+        assert!(!h.l2_healthy);
+        assert!(h.l1_block_number.is_none());
+        assert!(h.l2_block_number.is_none());
+    }
+
+    // ── Unit Tests: UnifiedL2State core ──
 
     #[test]
     fn test_empty_state() {
@@ -557,63 +722,109 @@ mod tests {
         let ctx = state.to_context_json();
         assert_eq!(ctx["total_appchains"], 0);
         assert_eq!(ctx["total_deployments"], 0);
+        assert!(ctx["appchains"].as_array().unwrap().is_empty());
+        assert!(ctx["deployments"].as_array().unwrap().is_empty());
     }
+
+    #[test]
+    fn test_context_json_separates_sources() {
+        let state = UnifiedL2State::new();
+        // Inject test data directly via write lock
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            snap.items = vec![
+                make_appchain("a1", "Appchain 1", L2Status::Running),
+                make_deployment("d1", "Deploy 1", L2Status::Stopped),
+                make_appchain("a2", "Appchain 2", L2Status::Created),
+            ];
+        }
+        let ctx = state.to_context_json();
+        assert_eq!(ctx["total_appchains"], 2);
+        assert_eq!(ctx["total_deployments"], 1);
+        let appchains = ctx["appchains"].as_array().unwrap();
+        assert!(appchains.iter().all(|a| a["source"] == "appchain"));
+        let deployments = ctx["deployments"].as_array().unwrap();
+        assert!(deployments.iter().all(|d| d["source"] == "deployment"));
+    }
+
+    #[test]
+    fn test_get_by_id_found() {
+        let state = UnifiedL2State::new();
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            snap.items = vec![
+                make_appchain("a1", "Chain A", L2Status::Running),
+                make_deployment("d1", "Deploy D", L2Status::Stopped),
+            ];
+        }
+        let found = state.get_by_id("a1").unwrap();
+        assert_eq!(found.name, "Chain A");
+        assert_eq!(found.source, L2Source::Appchain);
+    }
+
+    #[test]
+    fn test_get_by_id_not_found() {
+        let state = UnifiedL2State::new();
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            snap.items = vec![make_appchain("a1", "Chain A", L2Status::Running)];
+        }
+        assert!(state.get_by_id("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_subscribe_events() {
+        let state = UnifiedL2State::new();
+        let mut rx = state.subscribe_events();
+        state.emit_event(L2Event {
+            event_type: "test".to_string(),
+            l2_id: "id".to_string(),
+            l2_name: "name".to_string(),
+            source_type: "appchain".to_string(),
+            detail: "detail".to_string(),
+            timestamp: "now".to_string(),
+        });
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event_type, "test");
+        assert_eq!(event.l2_id, "id");
+    }
+
+    #[test]
+    fn test_multiple_subscribers_receive_events() {
+        let state = UnifiedL2State::new();
+        let mut rx1 = state.subscribe_events();
+        let mut rx2 = state.subscribe_events();
+        state.emit_event(L2Event {
+            event_type: "broadcast".to_string(),
+            l2_id: "x".to_string(),
+            l2_name: "x".to_string(),
+            source_type: "appchain".to_string(),
+            detail: "".to_string(),
+            timestamp: "".to_string(),
+        });
+        assert_eq!(rx1.try_recv().unwrap().event_type, "broadcast");
+        assert_eq!(rx2.try_recv().unwrap().event_type, "broadcast");
+    }
+
+    // ── Unit Tests: diff_and_emit ──
 
     #[test]
     fn test_diff_detects_new_item() {
         let (tx, mut rx) = broadcast::channel(16);
-        let old: Vec<L2Info> = vec![];
-        let new = vec![L2Info {
-            id: "test-1".to_string(),
-            name: "Test Chain".to_string(),
-            source: L2Source::Appchain,
-            chain_id: Some(17001),
-            network_mode: "Local".to_string(),
-            native_token: "TON".to_string(),
-            status: L2Status::Created,
-            health: None,
-            l1_rpc_url: None,
-            l2_rpc_url: None,
-            contracts: None,
-            containers: None,
-            phase: None,
-            error_message: None,
-            is_public: false,
-            created_at: "2026-01-01".to_string(),
-        }];
-
-        diff_and_emit(&old, &new, &tx);
+        let new = vec![make_appchain("test-1", "Test Chain", L2Status::Created)];
+        diff_and_emit(&[], &new, &tx);
         let event = rx.try_recv().unwrap();
         assert_eq!(event.event_type, "created");
         assert_eq!(event.l2_id, "test-1");
+        assert_eq!(event.source_type, "appchain");
     }
 
     #[test]
     fn test_diff_detects_status_change() {
         let (tx, mut rx) = broadcast::channel(16);
-        let item = L2Info {
-            id: "test-1".to_string(),
-            name: "Test Chain".to_string(),
-            source: L2Source::Appchain,
-            chain_id: Some(17001),
-            network_mode: "Local".to_string(),
-            native_token: "TON".to_string(),
-            status: L2Status::Running,
-            health: None,
-            l1_rpc_url: None,
-            l2_rpc_url: None,
-            contracts: None,
-            containers: None,
-            phase: None,
-            error_message: None,
-            is_public: false,
-            created_at: "2026-01-01".to_string(),
-        };
-
-        let mut stopped = item.clone();
-        stopped.status = L2Status::Stopped;
-
-        diff_and_emit(&[item], &[stopped], &tx);
+        let old = vec![make_appchain("test-1", "Test Chain", L2Status::Running)];
+        let new = vec![make_appchain("test-1", "Test Chain", L2Status::Stopped)];
+        diff_and_emit(&old, &new, &tx);
         let event = rx.try_recv().unwrap();
         assert_eq!(event.event_type, "status_changed");
         assert!(event.detail.contains("Running"));
@@ -623,53 +834,338 @@ mod tests {
     #[test]
     fn test_diff_detects_deletion() {
         let (tx, mut rx) = broadcast::channel(16);
-        let item = L2Info {
-            id: "test-1".to_string(),
-            name: "Test Chain".to_string(),
-            source: L2Source::Appchain,
-            chain_id: Some(17001),
-            network_mode: "Local".to_string(),
-            native_token: "TON".to_string(),
-            status: L2Status::Running,
-            health: None,
-            l1_rpc_url: None,
-            l2_rpc_url: None,
-            contracts: None,
-            containers: None,
-            phase: None,
-            error_message: None,
-            is_public: false,
-            created_at: "2026-01-01".to_string(),
-        };
-
-        diff_and_emit(&[item], &[], &tx);
+        let old = vec![make_appchain("test-1", "Test Chain", L2Status::Running)];
+        diff_and_emit(&old, &[], &tx);
         let event = rx.try_recv().unwrap();
         assert_eq!(event.event_type, "deleted");
+        assert_eq!(event.l2_id, "test-1");
     }
 
     #[test]
-    fn test_diff_no_change() {
+    fn test_diff_no_change_no_events() {
         let (tx, mut rx) = broadcast::channel(16);
-        let item = L2Info {
-            id: "test-1".to_string(),
-            name: "Test Chain".to_string(),
-            source: L2Source::Appchain,
-            chain_id: Some(17001),
-            network_mode: "Local".to_string(),
-            native_token: "TON".to_string(),
-            status: L2Status::Running,
-            health: None,
-            l1_rpc_url: None,
-            l2_rpc_url: None,
-            contracts: None,
-            containers: None,
-            phase: None,
-            error_message: None,
-            is_public: false,
-            created_at: "2026-01-01".to_string(),
-        };
-
-        diff_and_emit(&[item.clone()], &[item], &tx);
+        let items = vec![make_appchain("test-1", "Test Chain", L2Status::Running)];
+        diff_and_emit(&items, &items.clone(), &tx);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_diff_multiple_changes() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let old = vec![
+            make_appchain("a1", "Chain A", L2Status::Running),
+            make_appchain("a2", "Chain B", L2Status::Stopped),
+            make_appchain("a3", "Chain C", L2Status::Running),
+        ];
+        let new = vec![
+            make_appchain("a1", "Chain A", L2Status::Stopped),   // status changed
+            // a2 deleted
+            make_appchain("a3", "Chain C", L2Status::Running),   // no change
+            make_appchain("a4", "Chain D", L2Status::Created),   // new
+        ];
+        diff_and_emit(&old, &new, &tx);
+
+        let e1 = rx.try_recv().unwrap();
+        assert_eq!(e1.event_type, "status_changed");
+        assert_eq!(e1.l2_id, "a1");
+
+        let e2 = rx.try_recv().unwrap();
+        assert_eq!(e2.event_type, "created");
+        assert_eq!(e2.l2_id, "a4");
+
+        let e3 = rx.try_recv().unwrap();
+        assert_eq!(e3.event_type, "deleted");
+        assert_eq!(e3.l2_id, "a2");
+
+        // No more events
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_diff_same_id_different_source_are_independent() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let old = vec![make_appchain("same-id", "Appchain", L2Status::Running)];
+        let new = vec![
+            make_appchain("same-id", "Appchain", L2Status::Running),
+            make_deployment("same-id", "Deployment", L2Status::Running),
+        ];
+        diff_and_emit(&old, &new, &tx);
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event_type, "created");
+        assert_eq!(event.source_type, "deployment");
+        // No more events (appchain unchanged)
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_diff_health_change() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let old = vec![make_deployment_with_health("d1", "Deploy", true, true)];
+        let new = vec![make_deployment_with_health("d1", "Deploy", true, false)];
+        diff_and_emit(&old, &new, &tx);
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.event_type, "health_changed");
+        assert!(event.detail.contains("L2: true → false"));
+    }
+
+    #[test]
+    fn test_diff_health_no_change() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let old = vec![make_deployment_with_health("d1", "Deploy", true, true)];
+        let new = vec![make_deployment_with_health("d1", "Deploy", true, true)];
+        diff_and_emit(&old, &new, &tx);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_diff_health_added_first_time() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let old = vec![make_deployment("d1", "Deploy", L2Status::Running)]; // no health
+        let new = vec![make_deployment_with_health("d1", "Deploy", true, true)]; // health added
+        diff_and_emit(&old, &new, &tx);
+        // Health change not emitted when old has no health (no comparison possible)
+        assert!(rx.try_recv().is_err());
+    }
+
+    // ── Unit Tests: L2Container ──
+
+    #[test]
+    fn test_container_info_serializes() {
+        let c = L2Container {
+            service: "l2".to_string(),
+            state: "running".to_string(),
+            status: "Up 5 minutes".to_string(),
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("\"service\":\"l2\""));
+        assert!(json.contains("\"state\":\"running\""));
+    }
+
+    // ── E2E-like Tests: Full state lifecycle ──
+
+    #[test]
+    fn test_e2e_state_write_read_cycle() {
+        let state = UnifiedL2State::new();
+        let mut rx = state.subscribe_events();
+
+        // Initially empty
+        assert!(state.get_all().is_empty());
+        assert_eq!(state.to_context_json()["total_appchains"], 0);
+
+        // Simulate first refresh: 2 appchains appear
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            let old = snap.items.clone();
+            snap.items = vec![
+                make_appchain("a1", "Chain A", L2Status::Running),
+                make_appchain("a2", "Chain B", L2Status::Created),
+            ];
+            diff_and_emit(&old, &snap.items, &state.event_tx);
+        }
+        assert_eq!(state.get_all().len(), 2);
+        assert_eq!(state.to_context_json()["total_appchains"], 2);
+
+        // 2 created events
+        assert_eq!(rx.try_recv().unwrap().event_type, "created");
+        assert_eq!(rx.try_recv().unwrap().event_type, "created");
+        assert!(rx.try_recv().is_err());
+
+        // Simulate second refresh: a1 stops, a2 starts, d1 appears
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            let old = snap.items.clone();
+            snap.items = vec![
+                make_appchain("a1", "Chain A", L2Status::Stopped),
+                make_appchain("a2", "Chain B", L2Status::Running),
+                make_deployment("d1", "Deploy 1", L2Status::Running),
+            ];
+            diff_and_emit(&old, &snap.items, &state.event_tx);
+        }
+        assert_eq!(state.get_all().len(), 3);
+        assert_eq!(state.to_context_json()["total_appchains"], 2);
+        assert_eq!(state.to_context_json()["total_deployments"], 1);
+
+        // a1 status_changed, a2 status_changed, d1 created
+        let e1 = rx.try_recv().unwrap();
+        assert_eq!(e1.l2_id, "a1");
+        assert_eq!(e1.event_type, "status_changed");
+
+        let e2 = rx.try_recv().unwrap();
+        assert_eq!(e2.l2_id, "a2");
+        assert_eq!(e2.event_type, "status_changed");
+
+        let e3 = rx.try_recv().unwrap();
+        assert_eq!(e3.l2_id, "d1");
+        assert_eq!(e3.event_type, "created");
+
+        assert!(rx.try_recv().is_err());
+
+        // Simulate third refresh: a1 deleted, d1 health degrades
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            let old = snap.items.clone();
+            snap.items = vec![
+                make_appchain("a2", "Chain B", L2Status::Running),
+                make_deployment_with_health("d1", "Deploy 1", true, false),
+            ];
+            diff_and_emit(&old, &snap.items, &state.event_tx);
+        }
+        assert_eq!(state.get_all().len(), 2);
+        assert!(state.get_by_id("a1").is_none());
+
+        let e4 = rx.try_recv().unwrap();
+        assert_eq!(e4.l2_id, "a1");
+        assert_eq!(e4.event_type, "deleted");
+
+        assert!(rx.try_recv().is_err()); // d1 had no health before, so no health_changed
+    }
+
+    #[test]
+    fn test_e2e_context_json_includes_all_fields() {
+        let state = UnifiedL2State::new();
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            let mut dep = make_deployment("d1", "Full Deploy", L2Status::Running);
+            dep.health = Some(L2Health {
+                l1_healthy: true,
+                l2_healthy: true,
+                l1_block_number: Some(serde_json::json!(999)),
+                l2_block_number: Some(serde_json::json!(500)),
+                l1_chain_id: Some(serde_json::json!(1)),
+                l2_chain_id: Some(serde_json::json!(17001)),
+            });
+            dep.contracts = Some(L2Contracts {
+                bridge: Some("0xBridge".to_string()),
+                proposer: Some("0xProposer".to_string()),
+                timelock: Some("0xTimelock".to_string()),
+                sp1_verifier: None,
+            });
+            dep.containers = Some(vec![
+                L2Container { service: "l1".to_string(), state: "running".to_string(), status: "Up".to_string() },
+                L2Container { service: "l2".to_string(), state: "running".to_string(), status: "Up".to_string() },
+            ]);
+            snap.items = vec![dep];
+        }
+
+        let ctx = state.to_context_json();
+        let dep = &ctx["deployments"][0];
+        assert_eq!(dep["name"], "Full Deploy");
+        assert_eq!(dep["status"], "running");
+        assert_eq!(dep["health"]["l1_healthy"], true);
+        assert_eq!(dep["health"]["l1_block_number"], 999);
+        assert_eq!(dep["contracts"]["bridge"], "0xBridge");
+        assert_eq!(dep["contracts"]["proposer"], "0xProposer");
+        assert_eq!(dep["containers"].as_array().unwrap().len(), 2);
+        assert_eq!(dep["phase"], "running");
+    }
+
+    #[test]
+    fn test_e2e_concurrent_read_write() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let state = Arc::new(UnifiedL2State::new());
+
+        // Writer thread
+        let state_w = state.clone();
+        let writer = thread::spawn(move || {
+            for i in 0..100 {
+                let mut snap = state_w.snapshot.write().unwrap();
+                snap.items = vec![make_appchain(
+                    &format!("a-{}", i),
+                    &format!("Chain {}", i),
+                    if i % 2 == 0 { L2Status::Running } else { L2Status::Stopped },
+                )];
+            }
+        });
+
+        // Reader threads
+        let mut readers = vec![];
+        for _ in 0..4 {
+            let state_r = state.clone();
+            readers.push(thread::spawn(move || {
+                for _ in 0..100 {
+                    let all = state_r.get_all();
+                    // Should always be consistent (0 or 1 items, never corrupt)
+                    assert!(all.len() <= 1);
+                    let _ = state_r.to_context_json();
+                    let _ = state_r.get_by_id("a-50");
+                }
+            }));
+        }
+
+        writer.join().unwrap();
+        for r in readers {
+            r.join().unwrap();
+        }
+
+        // Final state should have exactly 1 item
+        assert_eq!(state.get_all().len(), 1);
+    }
+
+    #[test]
+    fn test_e2e_event_ordering() {
+        let (tx, mut rx) = broadcast::channel(64);
+
+        // Simulate a full lifecycle: create → start → health degrade → stop → delete
+        let v0: Vec<L2Info> = vec![];
+        let v1 = vec![make_appchain("a1", "Chain", L2Status::Created)];
+        let v2 = vec![make_appchain("a1", "Chain", L2Status::Running)];
+        let v3 = vec![make_appchain("a1", "Chain", L2Status::Error)];
+        let v4 = vec![make_appchain("a1", "Chain", L2Status::Stopped)];
+        let v5: Vec<L2Info> = vec![];
+
+        diff_and_emit(&v0, &v1, &tx); // created
+        diff_and_emit(&v1, &v2, &tx); // created → running
+        diff_and_emit(&v2, &v3, &tx); // running → error
+        diff_and_emit(&v3, &v4, &tx); // error → stopped
+        diff_and_emit(&v4, &v5, &tx); // deleted
+
+        let events: Vec<String> = (0..5).map(|_| rx.try_recv().unwrap().event_type).collect();
+        assert_eq!(events, vec!["created", "status_changed", "status_changed", "status_changed", "deleted"]);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_e2e_mixed_appchain_deployment_lifecycle() {
+        let (tx, mut rx) = broadcast::channel(64);
+
+        // Step 1: appchain + deployment created together
+        let old: Vec<L2Info> = vec![];
+        let new = vec![
+            make_appchain("a1", "My Appchain", L2Status::Created),
+            make_deployment("d1", "Docker L2", L2Status::SettingUp),
+        ];
+        diff_and_emit(&old, &new, &tx);
+        let e1 = rx.try_recv().unwrap();
+        assert_eq!(e1.source_type, "appchain");
+        let e2 = rx.try_recv().unwrap();
+        assert_eq!(e2.source_type, "deployment");
+
+        // Step 2: deployment finishes setup, appchain starts
+        let old = new;
+        let new = vec![
+            make_appchain("a1", "My Appchain", L2Status::Running),
+            make_deployment("d1", "Docker L2", L2Status::Running),
+        ];
+        diff_and_emit(&old, &new, &tx);
+        let e3 = rx.try_recv().unwrap();
+        assert_eq!(e3.event_type, "status_changed");
+        assert!(e3.detail.contains("Running"));
+        let e4 = rx.try_recv().unwrap();
+        assert_eq!(e4.event_type, "status_changed");
+
+        // Step 3: appchain crashes, deployment still running
+        let old = new;
+        let new = vec![
+            make_appchain("a1", "My Appchain", L2Status::Error),
+            make_deployment("d1", "Docker L2", L2Status::Running),
+        ];
+        diff_and_emit(&old, &new, &tx);
+        let e5 = rx.try_recv().unwrap();
+        assert_eq!(e5.l2_id, "a1");
+        assert_eq!(e5.event_type, "status_changed");
+        assert!(e5.detail.contains("Error"));
+        assert!(rx.try_recv().is_err()); // deployment unchanged
     }
 }
