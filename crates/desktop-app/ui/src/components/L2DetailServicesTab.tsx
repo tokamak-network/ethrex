@@ -358,7 +358,7 @@ export default function L2DetailServicesTab({
           { label: 'Proof Coordinator', key: testnet.proofCoordinatorKeychainKey || deployerKey, isDefault: !testnet.proofCoordinatorKeychainKey },
           { label: 'Bridge Owner', key: testnet.bridgeOwnerKeychainKey || deployerKey, isDefault: !testnet.bridgeOwnerKeychainKey },
         ]
-        const LOW_BALANCE_THRESHOLD = 0.01
+        const LOW_BALANCE_THRESHOLD = 0.01 // ETH — minimum balance to avoid operational issues
         return (
           <div className="bg-[var(--color-bg-sidebar)] rounded-xl p-3 border border-[var(--color-border)]">
             <div className="flex items-center justify-between">

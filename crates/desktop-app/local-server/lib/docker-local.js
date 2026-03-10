@@ -493,6 +493,10 @@ function hasNvidiaGpu() {
 
 /** Find an existing Docker image for a programSlug (e.g. evm-l2, zk-dex) */
 function findImage(programSlug) {
+  // Sanitize slug: only allow alphanumeric, hyphens, and underscores to prevent command injection
+  if (!programSlug || !/^[a-zA-Z0-9_-]+$/.test(programSlug)) {
+    return null;
+  }
   try {
     // First check shared name: tokamak-appchain:{slug}
     const shared = execSync(`docker image inspect "tokamak-appchain:${programSlug}" --format "{{.Id}}"`, { timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });

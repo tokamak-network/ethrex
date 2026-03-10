@@ -246,9 +246,9 @@ export default function MyL2View() {
       const existing = await WebviewWindow.getByLabel('deploy-manager')
       if (existing) {
         if (editId) {
-          try { await existing.emit('edit-deploy', editId) } catch {}
+          try { await existing.emit('edit-deploy', editId) } catch (e) { console.warn('Failed to emit edit-deploy:', e) }
         } else if (view) {
-          try { await existing.emit('navigate-view', view) } catch {}
+          try { await existing.emit('navigate-view', view) } catch (e) { console.warn('Failed to emit navigate-view:', e) }
         }
         await existing.show()
         await existing.setFocus()

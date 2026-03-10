@@ -102,18 +102,20 @@ const ROLE_GAS_ESTIMATES = {
   },
 };
 
-/** Validate RPC URL: must be http(s), no private IPs or metadata endpoints */
-function validateRpcUrl(rpcUrl) {
+/** Validate RPC URL: must be http(s), no private IPs or metadata endpoints.
+ *  allowLocal=true permits localhost/127.0.0.1 (for local L1 dev mode). */
+function validateRpcUrl(rpcUrl, { allowLocal = false } = {}) {
   let parsed;
   try { parsed = new URL(rpcUrl); } catch { throw new Error("Invalid URL format"); }
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("URL must use http or https");
   const host = parsed.hostname;
   // Block cloud metadata endpoints
   if (host === "169.254.169.254" || host === "metadata.google.internal") throw new Error("Blocked: cloud metadata endpoint");
-  // Block private IPs (RFC1918 + loopback) — allow localhost for local dev
+  // Block private IPs (RFC1918)
   if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(host)) throw new Error("Blocked: private IP range");
-  if (host === "127.0.0.1" || host === "::1" || host === "0.0.0.0") {
-    // Allow localhost only for local mode (check-rpc, etc.) — this is a desktop app
+  // Block loopback unless explicitly allowed (local L1 dev mode)
+  if (!allowLocal && (host === "127.0.0.1" || host === "::1" || host === "0.0.0.0" || host === "localhost")) {
+    throw new Error("Blocked: localhost/loopback address. Use an external RPC URL for testnet.");
   }
   return parsed;
 }
@@ -267,7 +269,7 @@ router.post("/testnet/resolve-keys", async (req, res) => {
 
     const errors = Object.values(roles).filter(r => r?.error);
     if (errors.length > 0) {
-      return res.status(400).json({ error: errors[0].error, roles });
+      return res.status(400).json({ error: errors[0].error });
     }
 
     // Fetch balances in parallel using BigInt for precision
