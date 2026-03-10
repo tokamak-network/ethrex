@@ -690,8 +690,11 @@ router.post("/:id/restart-tools", async (req, res) => {
       ...getExternalL1Config(deployment),
     };
 
-    await docker.restartTools(envVars, toolsPorts);
-    res.json({ ok: true, message: "Tools restarted" });
+    // Respond immediately — docker compose up can take 30s+ and WebKit times out
+    res.json({ ok: true, message: "Tools starting..." });
+    docker.restartTools(envVars, toolsPorts).catch(e => {
+      console.error("Tools restart failed:", e.message);
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -700,8 +703,10 @@ router.post("/:id/restart-tools", async (req, res) => {
 // POST /api/deployments/:id/stop-tools
 router.post("/:id/stop-tools", async (req, res) => {
   try {
-    await docker.stopTools();
-    res.json({ ok: true, message: "Tools stopped" });
+    res.json({ ok: true, message: "Tools stopping..." });
+    docker.stopTools().catch(e => {
+      console.error("Tools stop failed:", e.message);
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

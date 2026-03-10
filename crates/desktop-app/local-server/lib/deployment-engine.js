@@ -335,7 +335,7 @@ async function provision(deployment) {
   if (!docker.isDockerAvailable()) {
     const errMsg = "Docker is not running. Please install and start Docker Desktop first.";
     emit(id, "error", { message: errMsg });
-    updateDeployment(id, { phase: "error", error_message: errMsg });
+    updateDeployment(id, { error_message: errMsg });
     activeProvisions.delete(id);
     throw new Error(errMsg);
   }
@@ -413,37 +413,11 @@ async function provision(deployment) {
       // Remove partial project-specific images to prevent "already exists" BuildKit error
       try { execSync(`docker rmi "${l1Tag}" 2>/dev/null`, { stdio: "pipe" }); } catch {}
       try { execSync(`docker rmi "${l2Tag}" 2>/dev/null`, { stdio: "pipe" }); } catch {}
-      // Track per-stage progress across parallel Docker builds
-      const buildStages = {}; // stageKey -> { current, total }
-      let lastEmittedPct = -1;
       await trackedDockerRun(provisionInfo, () =>
         docker.buildImages(projectName, composeFile, { DOCKER_ETHREX_WORKDIR: "/usr/local/bin" }, (chunk) => {
           const lines = chunk.split("\n").filter(Boolean);
           for (const line of lines) {
             emit(id, "log", { message: line });
-            // Parse Docker BuildKit progress: "#N [stageName X/Y]" or legacy "Step X/Y :"
-            const bkMatch = line.match(/#(\d+) \[([^\]]*?) (\d+)\/(\d+)\]/);
-            const legacyMatch = !bkMatch && line.match(/Step (\d+)\/(\d+)/i);
-            if (bkMatch) {
-              const stageKey = bkMatch[2].replace(/\s*\d+\/\d+$/, '').trim() || `stage-${bkMatch[1]}`;
-              buildStages[stageKey] = { current: parseInt(bkMatch[3]), total: parseInt(bkMatch[4]) };
-            } else if (legacyMatch) {
-              buildStages['default'] = { current: parseInt(legacyMatch[1]), total: parseInt(legacyMatch[2]) };
-            } else {
-              continue;
-            }
-            // Compute global progress across all stages
-            let totalSteps = 0, completedSteps = 0;
-            for (const s of Object.values(buildStages)) {
-              totalSteps += s.total;
-              completedSteps += s.current;
-            }
-            const pct = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
-            // Only emit if progress increased (never go backwards)
-            if (pct > lastEmittedPct) {
-              lastEmittedPct = pct;
-              emit(id, "phase", { phase: "building", message: `Building... ${pct}%`, progress: pct });
-            }
           }
         }, { forceRebuild })
       );
@@ -476,9 +450,35 @@ async function provision(deployment) {
 
     let envVars = {};
 
+    // Verify saved contract addresses on-chain before reusing (local L1)
+    let contractsVerifiedLocal = false;
     if (hasExistingContracts && !forceRedeploy) {
-      // Reuse existing contracts
-      emit(id, "phase", { phase: "deploying_contracts", message: `Reusing existing contracts — bridge: ${existingDep.bridge_address}` });
+      emit(id, "log", { message: `Found saved contracts in DB — verifying on-chain...` });
+      try {
+        const { ethers } = require("ethers");
+        const rpcUrl = `http://127.0.0.1:${l1Port}`;
+        const provider = new ethers.JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true });
+        const [bridgeCode, proposerCode] = await Promise.all([
+          Promise.race([provider.getCode(existingDep.bridge_address), new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 5000))]),
+          Promise.race([provider.getCode(existingDep.proposer_address), new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 5000))]),
+        ]);
+        provider.destroy();
+        contractsVerifiedLocal = bridgeCode && bridgeCode !== "0x" && proposerCode && proposerCode !== "0x";
+        if (contractsVerifiedLocal) {
+          emit(id, "log", { message: `Contracts verified on-chain` });
+        } else {
+          emit(id, "log", { message: `Contracts NOT found on-chain. Will redeploy.` });
+          updateDeployment(id, { bridge_address: null, proposer_address: null, timelock_address: null, sp1_verifier_address: null, guest_program_registry_address: null });
+        }
+      } catch (e) {
+        emit(id, "log", { message: `Could not verify contracts: ${e.message}. Will redeploy.` });
+        updateDeployment(id, { bridge_address: null, proposer_address: null, timelock_address: null, sp1_verifier_address: null, guest_program_registry_address: null });
+      }
+    }
+
+    if (contractsVerifiedLocal) {
+      // Reuse verified contracts
+      emit(id, "phase", { phase: "deploying_contracts", message: `Reusing verified contracts — bridge: ${existingDep.bridge_address}` });
       emit(id, "log", { message: `Skipping contract deployment: bridge=${existingDep.bridge_address}, proposer=${existingDep.proposer_address}` });
       bridgeAddress = existingDep.bridge_address;
       proposerAddress = existingDep.proposer_address;
@@ -643,7 +643,7 @@ async function provision(deployment) {
     // Don't overwrite state if already cancelled by user (stop endpoint sets phase)
     if (!provisionInfo.cancelled) {
       emit(id, "error", { message: err.message });
-      updateDeployment(id, { phase: "error", error_message: err.message });
+      updateDeployment(id, { error_message: err.message });
     }
     activeProvisions.delete(id);
     throw err;
@@ -667,7 +667,7 @@ async function provisionTestnet(deployment) {
   if (!docker.isDockerAvailable()) {
     const errMsg = "Docker is not running. Please install and start Docker Desktop first.";
     emit(id, "error", { message: errMsg });
-    updateDeployment(id, { phase: "error", error_message: errMsg });
+    updateDeployment(id, { error_message: errMsg });
     activeProvisions.delete(id);
     throw new Error(errMsg);
   }
@@ -687,7 +687,7 @@ async function provisionTestnet(deployment) {
   if (!l1RpcUrl) {
     const errMsg = "L1 RPC URL is required for testnet deployment.";
     emit(id, "error", { message: errMsg });
-    updateDeployment(id, { phase: "error", error_message: errMsg });
+    updateDeployment(id, { error_message: errMsg });
     activeProvisions.delete(id);
     throw new Error(errMsg);
   }
@@ -703,7 +703,7 @@ async function provisionTestnet(deployment) {
     if (!resolved) {
       const errMsg = `${roleLabel} key "${keychainKeyName}" not found in Keychain. Please re-register the key.`;
       emit(id, "error", { message: errMsg });
-      updateDeployment(id, { phase: "error", error_message: errMsg });
+      updateDeployment(id, { error_message: errMsg });
       activeProvisions.delete(id);
       throw new Error(errMsg);
     }
@@ -807,16 +807,48 @@ async function provisionTestnet(deployment) {
     let guestProgramRegistryAddress = existingDep?.guest_program_registry_address || null;
     let envVars = {};
 
+    // Verify saved contract addresses actually exist on-chain before reusing
+    let contractsVerified = false;
     if (bridgeAddress && proposerAddress) {
-      // Contracts already deployed — skip contract deployment
-      emit(id, "phase", { phase: "deploying_contracts", message: `Reusing existing contracts — bridge: ${bridgeAddress}` });
+      emit(id, "log", { message: `Found saved contracts in DB — verifying on-chain...` });
+      try {
+        const { ethers } = require("ethers");
+        const hostRpcUrl = l1RpcUrl.replace("host.docker.internal", "127.0.0.1");
+        const provider = new ethers.JsonRpcProvider(hostRpcUrl, undefined, { staticNetwork: true });
+        const timeoutMs = 10000;
+        const [bridgeCode, proposerCode] = await Promise.all([
+          Promise.race([provider.getCode(bridgeAddress), new Promise((_, r) => setTimeout(() => r(new Error("timeout")), timeoutMs))]),
+          Promise.race([provider.getCode(proposerAddress), new Promise((_, r) => setTimeout(() => r(new Error("timeout")), timeoutMs))]),
+        ]);
+        provider.destroy();
+        if (bridgeCode && bridgeCode !== "0x" && proposerCode && proposerCode !== "0x") {
+          contractsVerified = true;
+          emit(id, "log", { message: `Contracts verified on-chain: bridge and proposer have deployed code` });
+        } else {
+          emit(id, "log", { message: `Contracts NOT found on-chain (bridge=${bridgeCode === "0x" ? "empty" : "ok"}, proposer=${proposerCode === "0x" ? "empty" : "ok"}). Will redeploy.` });
+          // Clear stale addresses from DB
+          bridgeAddress = null; proposerAddress = null; timelockAddress = null; sp1VerifierAddress = null; guestProgramRegistryAddress = null;
+          updateDeployment(id, { bridge_address: null, proposer_address: null, timelock_address: null, sp1_verifier_address: null, guest_program_registry_address: null });
+        }
+      } catch (verifyErr) {
+        emit(id, "log", { message: `Could not verify contracts on-chain: ${verifyErr.message}. Will redeploy.` });
+        bridgeAddress = null; proposerAddress = null; timelockAddress = null; sp1VerifierAddress = null; guestProgramRegistryAddress = null;
+        updateDeployment(id, { bridge_address: null, proposer_address: null, timelock_address: null, sp1_verifier_address: null, guest_program_registry_address: null });
+      }
+    }
+
+    if (contractsVerified) {
+      // Contracts verified on-chain — skip contract deployment
+      emit(id, "phase", { phase: "deploying_contracts", message: `Reusing verified contracts — bridge: ${bridgeAddress}` });
       emit(id, "log", { message: `Skipping contract deployment: bridge=${bridgeAddress}, proposer=${proposerAddress}` });
       provisionInfo.phase = "deploying_contracts";
       updateDeployment(id, { phase: "deploying_contracts" });
 
       // Try to restore envVars from previous deployment
+      let volumeOk = false;
       try {
         envVars = await docker.extractEnv(projectName, composeFile);
+        if (envVars.ETHREX_WATCHER_BRIDGE_ADDRESS) volumeOk = true;
       } catch {
         // Build envVars from saved addresses
         envVars = {
@@ -825,6 +857,31 @@ async function provisionTestnet(deployment) {
           ETHREX_TIMELOCK_ADDRESS: timelockAddress || "",
           ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS: sp1VerifierAddress || "",
         };
+      }
+
+      // Write env to Docker volume so L2 service can read contract addresses
+      if (!volumeOk) {
+        const ZERO = "0x0000000000000000000000000000000000000000";
+        try {
+          docker.writeEnvToVolume(projectName, {
+            ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS: proposerAddress,
+            ETHREX_TIMELOCK_ADDRESS: timelockAddress || ZERO,
+            ETHREX_WATCHER_BRIDGE_ADDRESS: bridgeAddress,
+            ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS: sp1VerifierAddress || ZERO,
+            ETHREX_DEPLOYER_RISC0_VERIFIER_ADDRESS: ZERO,
+            ETHREX_DEPLOYER_ALIGNED_AGGREGATOR_ADDRESS: ZERO,
+            ETHREX_DEPLOYER_TDX_VERIFIER_ADDRESS: ZERO,
+            ENCLAVE_ID_DAO: ZERO,
+            FMSPC_TCB_DAO: ZERO,
+            PCK_DAO: ZERO,
+            PCS_DAO: ZERO,
+            ETHREX_DEPLOYER_SEQUENCER_REGISTRY_ADDRESS: guestProgramRegistryAddress || ZERO,
+            ETHREX_SHARED_BRIDGE_ROUTER_ADDRESS: ZERO,
+          });
+          emit(id, "log", { message: "Contract addresses written to Docker volume." });
+        } catch (writeErr) {
+          emit(id, "log", { message: `Failed to write env to volume: ${writeErr.message}` });
+        }
       }
     } else {
       // Deploy contracts to L1
@@ -1029,7 +1086,7 @@ async function provisionTestnet(deployment) {
         // External L1 metadata for dashboard/bridge UI
         l1RpcUrl,
         l1ChainId: testnetConfig.l1ChainId,
-        l1ExplorerUrl: testnetConfig.l1ExplorerUrl,
+        l1ExplorerUrl: testnetConfig.l1ExplorerUrl || ({ sepolia: 'https://sepolia.etherscan.io', holesky: 'https://holesky.etherscan.io' }[testnetConfig.network] || ''),
         l1NetworkName: testnetConfig.network,
         isExternalL1: true,
       });
@@ -1090,7 +1147,7 @@ async function provisionTestnet(deployment) {
     // Don't overwrite state if already cancelled by user (stop endpoint sets phase)
     if (!provisionInfo.cancelled) {
       emit(id, "error", { message: err.message });
-      updateDeployment(id, { phase: "error", error_message: err.message });
+      updateDeployment(id, { error_message: err.message });
     }
     activeProvisions.delete(id);
     throw err;
@@ -1221,7 +1278,7 @@ async function provisionRemote(deployment, hostId) {
     return updateDeployment(id, {});
   } catch (err) {
     emit(id, "error", { message: err.message });
-    updateDeployment(id, { phase: "error", error_message: err.message });
+    updateDeployment(id, { error_message: err.message });
     activeProvisions.delete(id);
     // Do NOT auto-destroy remote containers on error.
     // User can inspect logs/state and manually delete or retry.
@@ -1363,7 +1420,7 @@ async function recoverStuckDeployments() {
       if (ACTIVE_PHASES.includes(dep.phase) && !activeProvisions.has(dep.id)) {
         console.log(`[recovery] Deployment ${dep.id} (${dep.name}) stuck in phase "${dep.phase}" -- marking as error`);
         const errMsg = `Server restarted while deployment was in "${dep.phase}" phase. The build process was lost. Please retry.`;
-        updateDeployment(dep.id, { phase: "error", error_message: errMsg });
+        updateDeployment(dep.id, { error_message: errMsg });
         insertDeployEvent(dep.id, "error", dep.phase, errMsg, null);
         continue;
       }
