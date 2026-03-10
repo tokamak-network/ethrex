@@ -703,10 +703,15 @@ lazy_static::lazy_static! {
     static ref SALT: std::sync::Mutex<H256>  = std::sync::Mutex::new(H256::zero());
 }
 
+/// Default chain ID when RPC call fails (local devnet).
+const LOCAL_DEVNET_CHAIN_ID: u64 = 9;
+/// Chain IDs above this threshold are considered external networks (testnets/mainnet).
+const EXTERNAL_CHAIN_ID_THRESHOLD: u64 = 100;
+
 /// Compute receipt polling interval based on chain ID (external L1 ~12s, local ~2s).
 async fn receipt_interval_secs(eth_client: &EthClient) -> u64 {
-    let chain_id = eth_client.get_chain_id().await.unwrap_or(9u64.into());
-    if chain_id > 100u64.into() { 12 } else { 2 }
+    let chain_id = eth_client.get_chain_id().await.unwrap_or(LOCAL_DEVNET_CHAIN_ID.into());
+    if chain_id > EXTERNAL_CHAIN_ID_THRESHOLD.into() { 12 } else { 2 }
 }
 
 /// Wait for both tx hashes of a proxy deployment (impl + proxy) and verify receipts.
@@ -1915,7 +1920,7 @@ async fn make_deposits(
     }
     trace!("Deposits finished");
     if let Some(hash) = last_hash {
-        wait_for_transaction_receipt(hash, eth_client, 5).await?;
+        wait_for_transaction_receipt(hash, eth_client, 20).await?;
     }
     Ok(())
 }
