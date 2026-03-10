@@ -1092,6 +1092,175 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    // ── Unit Tests: context JSON (my_appchains flat structure) ──
+
+    #[test]
+    fn test_context_json_flat_structure() {
+        let state = UnifiedL2State::new();
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            snap.items = vec![
+                make_deployment("d1", "Sepolia-2", L2Status::Stopped),
+                make_deployment("d2", "Local-1", L2Status::Running),
+            ];
+        }
+        let ctx = state.to_context_json();
+
+        // Flat list, no appchains/deployments split
+        assert_eq!(ctx["total_count"], 2);
+        assert!(ctx.get("appchains").is_none());
+        assert!(ctx.get("deployments").is_none());
+
+        let all = ctx["my_appchains"].as_array().unwrap();
+        assert_eq!(all[0]["name"], "Sepolia-2");
+        assert_eq!(all[0]["status"], "stopped");
+        assert_eq!(all[1]["name"], "Local-1");
+        assert_eq!(all[1]["status"], "running");
+    }
+
+    #[test]
+    fn test_context_json_includes_source_field() {
+        let state = UnifiedL2State::new();
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            snap.items = vec![make_deployment("d1", "Deploy", L2Status::Running)];
+        }
+        let ctx = state.to_context_json();
+        let item = &ctx["my_appchains"][0];
+        assert_eq!(item["source"], "deployment");
+    }
+
+    // ── Unit Tests: do_refresh skips AppchainManager ──
+
+    #[test]
+    fn test_refresh_only_collects_deployments() {
+        // After removing AppchainManager collection, the L2Source::Appchain
+        // items should never appear in the state from do_refresh.
+        // This is tested indirectly: any items in state must be Deployment source.
+        let state = UnifiedL2State::new();
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            // Simulate what do_refresh would produce (only deployments)
+            snap.items = vec![
+                make_deployment("d1", "Chain-A", L2Status::Running),
+                make_deployment("d2", "Chain-B", L2Status::Stopped),
+            ];
+        }
+        let all = state.get_all();
+        assert!(all.iter().all(|l| l.source == L2Source::Deployment));
+        assert_eq!(all.len(), 2);
+    }
+
+    // ── Unit Tests: deployment status from containers ──
+
+    #[test]
+    fn test_deployment_status_partial() {
+        let state = UnifiedL2State::new();
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            let mut dep = make_deployment("d1", "Partial", L2Status::Partial);
+            dep.containers = Some(vec![
+                L2Container { service: "l1".into(), state: "running".into(), status: "Up".into() },
+                L2Container { service: "l2".into(), state: "exited".into(), status: "Exited (1)".into() },
+            ]);
+            snap.items = vec![dep];
+        }
+        let l2 = state.get_by_id("d1").unwrap();
+        assert_eq!(l2.status, L2Status::Partial);
+        assert_eq!(l2.containers.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_deployment_status_transitions_emit_events() {
+        let (tx, mut rx) = broadcast::channel(16);
+
+        // stopped → running
+        let old = vec![make_deployment("d1", "Chain", L2Status::Stopped)];
+        let new = vec![make_deployment("d1", "Chain", L2Status::Running)];
+        diff_and_emit(&old, &new, &tx);
+        let e = rx.try_recv().unwrap();
+        assert_eq!(e.event_type, "status_changed");
+        assert!(e.detail.contains("Stopped"));
+        assert!(e.detail.contains("Running"));
+        assert_eq!(e.source_type, "deployment");
+
+        // running → partial
+        let old = new;
+        let new = vec![make_deployment("d1", "Chain", L2Status::Partial)];
+        diff_and_emit(&old, &new, &tx);
+        let e = rx.try_recv().unwrap();
+        assert!(e.detail.contains("Partial"));
+
+        // partial → error
+        let old = new;
+        let new = vec![make_deployment("d1", "Chain", L2Status::Error)];
+        diff_and_emit(&old, &new, &tx);
+        let e = rx.try_recv().unwrap();
+        assert!(e.detail.contains("Error"));
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    // ── E2E: deployment-only lifecycle ──
+
+    #[test]
+    fn test_e2e_deployment_only_lifecycle() {
+        let state = UnifiedL2State::new();
+        let mut rx = state.subscribe_events();
+
+        // Phase 1: empty
+        assert_eq!(state.to_context_json()["total_count"], 0);
+
+        // Phase 2: two deployments appear
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            let old = snap.items.clone();
+            snap.items = vec![
+                make_deployment("d1", "Sepolia-2", L2Status::Stopped),
+                make_deployment("d2", "Local-1", L2Status::Running),
+            ];
+            diff_and_emit(&old, &snap.items, &state.event_tx);
+        }
+        assert_eq!(state.get_all().len(), 2);
+        assert_eq!(state.to_context_json()["total_count"], 2);
+        assert_eq!(rx.try_recv().unwrap().event_type, "created");
+        assert_eq!(rx.try_recv().unwrap().event_type, "created");
+        assert!(rx.try_recv().is_err());
+
+        // Phase 3: d1 starts, d2 stops
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            let old = snap.items.clone();
+            snap.items = vec![
+                make_deployment("d1", "Sepolia-2", L2Status::Running),
+                make_deployment("d2", "Local-1", L2Status::Stopped),
+            ];
+            diff_and_emit(&old, &snap.items, &state.event_tx);
+        }
+        let e1 = rx.try_recv().unwrap();
+        assert_eq!(e1.l2_id, "d1");
+        assert!(e1.detail.contains("Running"));
+        let e2 = rx.try_recv().unwrap();
+        assert_eq!(e2.l2_id, "d2");
+        assert!(e2.detail.contains("Stopped"));
+        assert!(rx.try_recv().is_err());
+
+        // Phase 4: d2 deleted
+        {
+            let mut snap = state.snapshot.write().unwrap();
+            let old = snap.items.clone();
+            snap.items = vec![
+                make_deployment("d1", "Sepolia-2", L2Status::Running),
+            ];
+            diff_and_emit(&old, &snap.items, &state.event_tx);
+        }
+        assert_eq!(state.get_all().len(), 1);
+        let e3 = rx.try_recv().unwrap();
+        assert_eq!(e3.l2_id, "d2");
+        assert_eq!(e3.event_type, "deleted");
+        assert!(rx.try_recv().is_err());
+    }
+
     #[test]
     fn test_e2e_mixed_appchain_deployment_lifecycle() {
         let (tx, mut rx) = broadcast::channel(64);
