@@ -455,6 +455,7 @@
     function getReadProviders() {
       const l1Rpc = CONFIG ? CONFIG.l1_rpc : L1_RPC;
       const l2Rpc = CONFIG ? CONFIG.l2_rpc : L2_RPC;
+      if (!l1Rpc || !l2Rpc) { console.warn('RPC URLs not available'); return { l1: null, l2: null }; }
       if (!l1Provider) l1Provider = new ethers.JsonRpcProvider(l1Rpc);
       if (!l2Provider) l2Provider = new ethers.JsonRpcProvider(l2Rpc);
       return { l1: l1Provider, l2: l2Provider };
