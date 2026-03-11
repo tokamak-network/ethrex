@@ -372,6 +372,19 @@ function onL1NodeChange() {
     document.getElementById('testnet-custom-chainid').style.display = val === 'custom-l1' ? 'block' : 'none';
     document.getElementById('testnet-balance-check').innerHTML = '';
     loadKeychainKeys().then(() => onKeychainKeyChange());
+    // For testnet, set L1 chain ID from network preset
+    if (info.chainId) {
+      l1ChainIdEl.value = info.chainId;
+    } else {
+      l1ChainIdEl.value = '';
+      l1ChainIdEl.placeholder = 'Enter L1 Chain ID';
+    }
+    if (l1ChainIdArea) l1ChainIdArea.style.display = 'block';
+  } else {
+    // Local L1 — set chain ID from preset
+    const localChainId = LOCAL_L1_CHAIN_IDS[val] || 9;
+    l1ChainIdEl.value = localChainId;
+    if (l1ChainIdArea) l1ChainIdArea.style.display = 'block';
   }
 }
 
