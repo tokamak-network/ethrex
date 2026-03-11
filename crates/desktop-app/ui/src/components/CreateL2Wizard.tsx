@@ -93,6 +93,17 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
     setKeysResolution({ state: 'idle' })
   }
 
+  // Auto-fetch next available L2 chain ID
+  useEffect(() => {
+    if (networkMode) {
+      setChainIdLoading(true)
+      localServerAPI.getNextChainId()
+        .then(r => setConfig(prev => prev.chainId ? prev : { ...prev, chainId: String(r.chainId) }))
+        .catch(() => {}) // Leave empty — server auto-assigns unique chain ID during deployment
+        .finally(() => setChainIdLoading(false))
+    }
+  }, [networkMode])
+
   // Load keychain accounts when entering wallet step
   const isWalletStep = isTestnetOrMainnet && getStepContent(step) === 'wallet'
   useEffect(() => {
@@ -157,7 +168,7 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
 
   const canNext = () => {
     const content = getStepContent(step)
-    if (content === 'basic') return config.name && config.chainId
+    if (content === 'basic') return !!config.name
     if (content === 'wallet') return !!config.deployerKeychainKey
     return true
   }
