@@ -265,11 +265,18 @@ function renderPrograms() {
 
 function filterPrograms() { renderPrograms(); }
 
-function selectProgram(id) {
+async function selectProgram(id) {
   selectedProgram = programs.find(p => p.id === id);
   if (!selectedProgram) return;
   document.getElementById('launch-name').value = `${selectedProgram.name} L2`;
-  document.getElementById('launch-chain-id').value = Math.floor(Math.random() * 90000) + 10000;
+  // Fetch a unique L2 chain ID from the server
+  try {
+    const res = await fetch(`${API}/deployments/next-chain-id`);
+    const data = await res.json();
+    document.getElementById('launch-chain-id').value = data.chainId;
+  } catch {
+    document.getElementById('launch-chain-id').value = Math.floor(Math.random() * 90000) + 10000;
+  }
   launchGoStep(2);
 }
 

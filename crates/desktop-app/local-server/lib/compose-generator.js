@@ -88,7 +88,7 @@ function getAppProfile(programSlug) {
  * @returns {string} docker-compose.yaml content
  */
 function generateComposeFile(opts) {
-  const { programSlug, l1Port, l2Port, proofCoordPort = 3900, metricsPort = 3702, projectName, gpu = false, dumpFixtures = false, isPublic = false } = opts;
+  const { programSlug, l1Port, l2Port, proofCoordPort = 3900, metricsPort = 3702, projectName, gpu = false, dumpFixtures = false, isPublic = false, customGenesisPath } = opts;
   const bindAddr = isPublic ? '0.0.0.0' : '127.0.0.1';
   // Proof coordinator and metrics are internal-only — never bind to 0.0.0.0
   const internalBindAddr = '127.0.0.1';
@@ -114,6 +114,9 @@ function generateComposeFile(opts) {
   // L1 build
   const l1Build = `    build: ${ETHREX_ROOT}`;
 
+  // Genesis source: use custom genesis if provided, otherwise stock
+  const genesisSource = customGenesisPath || `${ETHREX_ROOT}/fixtures/genesis/${profile.genesisFile}`;
+
   // Deployer env vars (ETHREX_L2_SP1 is set in the base template from profile.sp1Enabled)
   let deployerExtraEnv = "";
   if (profile.registerGuestPrograms) {
@@ -124,19 +127,12 @@ function generateComposeFile(opts) {
   }
   deployerExtraEnv += `      - ETHREX_DEPLOYER_GENESIS_L2_PATH=${workdir}/fixtures/genesis/${profile.genesisFile}\n`;
 
-  // Extra deployer volumes for custom genesis
+  // No extra deployer genesis volume needed — main mount line already uses genesisSource
   let deployerExtraVolumes = "";
-  if (profile.genesisFile !== "l2.json") {
-    deployerExtraVolumes = `      - ${ETHREX_ROOT}/fixtures/genesis/${profile.genesisFile}:${workdir}/fixtures/genesis/${profile.genesisFile}\n`;
-  }
 
   // L2 extra config
-  // Note: genesis volume is always mounted in the base template via profile.genesisFile,
-  // so we only add the programs.toml volume here (no duplicate genesis mount).
   let l2ExtraVolumes = "";
-  let l2Genesis = profile.genesisFile !== "l2.json"
-    ? `/genesis/${profile.genesisFile}`
-    : "/genesis/l2.json";
+  let l2Genesis = `/genesis/${profile.genesisFile}`;
   if (profile.programsToml) {
     l2ExtraVolumes += `      - ${ETHREX_ROOT}/crates/l2/${profile.programsToml}:/etc/ethrex/programs.toml\n`;
   }
@@ -193,7 +189,7 @@ ${l1Build}
       - ${ETHREX_ROOT}/crates/l2/contracts:${workdir}/contracts
       - env:/env/
       - ${ETHREX_ROOT}/fixtures/genesis/l1.json:${workdir}/fixtures/genesis/l1.json
-      - ${ETHREX_ROOT}/fixtures/genesis/l2.json:${workdir}/fixtures/genesis/l2.json
+      - ${genesisSource}:${workdir}/fixtures/genesis/${profile.genesisFile}
       - ${ETHREX_ROOT}/fixtures/keys/private_keys_l1.txt:${workdir}/fixtures/keys/private_keys_l1.txt
 ${deployerExtraVolumes}    environment:
       - ETHREX_ETH_RPC_URL=http://tokamak-app-l1:8545
@@ -245,7 +241,7 @@ ${buildSection}
       - ETHREX_GUEST_PROGRAM_ID=${programSlug}
       - ETHREX_LOG_LEVEL
 ${dumpFixtures ? `      - ETHREX_DUMP_FIXTURES=/tmp/fixtures\n` : ""}    volumes:
-      - ${ETHREX_ROOT}/fixtures/genesis/${profile.genesisFile}:/genesis/${profile.genesisFile}
+      - ${genesisSource}:/genesis/${profile.genesisFile}
       - env:/env/
 ${dumpFixtures ? `      - /tmp/fixtures:/tmp/fixtures\n` : ""}${l2ExtraVolumes}    entrypoint:
       - /bin/bash
@@ -479,7 +475,7 @@ function generateTestnetComposeFile(opts) {
     programSlug, l2Port, proofCoordPort = 3900, metricsPort = 3702,
     projectName, l1RpcUrl, deployerPrivateKey, gpu = false,
     committerPk: committerPkOpt, proofCoordinatorPk: proofCoordinatorPkOpt,
-    bridgeOwnerPk: bridgeOwnerPkOpt, isPublic = false,
+    bridgeOwnerPk: bridgeOwnerPkOpt, isPublic = false, customGenesisPath,
   } = opts;
   const bindAddr = isPublic ? '0.0.0.0' : '127.0.0.1';
   // Proof coordinator and metrics are internal-only — never bind to 0.0.0.0
@@ -501,6 +497,9 @@ function generateTestnetComposeFile(opts) {
       args:
         - BUILD_FLAGS=${profile.buildFeatures}`;
 
+  // Genesis source: use custom genesis if provided, otherwise stock
+  const genesisSource = customGenesisPath || `${ETHREX_ROOT}/fixtures/genesis/${profile.genesisFile}`;
+
   let deployerExtraEnv = "";
   if (profile.registerGuestPrograms) {
     deployerExtraEnv += `      - ETHREX_REGISTER_GUEST_PROGRAMS=${profile.registerGuestPrograms}\n`;
@@ -511,14 +510,9 @@ function generateTestnetComposeFile(opts) {
   deployerExtraEnv += `      - ETHREX_DEPLOYER_GENESIS_L2_PATH=${workdir}/fixtures/genesis/${profile.genesisFile}\n`;
 
   let deployerExtraVolumes = "";
-  if (profile.genesisFile !== "l2.json") {
-    deployerExtraVolumes = `      - ${ETHREX_ROOT}/fixtures/genesis/${profile.genesisFile}:${workdir}/fixtures/genesis/${profile.genesisFile}\n`;
-  }
 
   let l2ExtraVolumes = "";
-  let l2Genesis = profile.genesisFile !== "l2.json"
-    ? `/genesis/${profile.genesisFile}`
-    : "/genesis/l2.json";
+  let l2Genesis = `/genesis/${profile.genesisFile}`;
   if (profile.programsToml) {
     l2ExtraVolumes += `      - ${ETHREX_ROOT}/crates/l2/${profile.programsToml}:/etc/ethrex/programs.toml\n`;
   }
@@ -573,7 +567,7 @@ ${buildSection}
       - ${ETHREX_ROOT}/crates/l2/contracts:${workdir}/contracts
       - env:/env/
       - ${ETHREX_ROOT}/fixtures/genesis/l1.json:${workdir}/fixtures/genesis/l1.json
-      - ${ETHREX_ROOT}/fixtures/genesis/l2.json:${workdir}/fixtures/genesis/l2.json
+      - ${genesisSource}:${workdir}/fixtures/genesis/${profile.genesisFile}
       - ${ETHREX_ROOT}/fixtures/keys/private_keys_l1.txt:${workdir}/fixtures/keys/private_keys_l1.txt
 ${deployerExtraVolumes}    environment:
       - ETHREX_ETH_RPC_URL=${l1RpcUrl}
@@ -624,7 +618,7 @@ ${deployerExtraEnv}    entrypoint:
       - ETHREX_GUEST_PROGRAM_ID=${programSlug}
       - ETHREX_LOG_LEVEL
     volumes:
-      - ${ETHREX_ROOT}/fixtures/genesis/${profile.genesisFile}:/genesis/${profile.genesisFile}
+      - ${genesisSource}:/genesis/${profile.genesisFile}
       - env:/env/
 ${l2ExtraVolumes}    entrypoint:
       - /bin/bash
@@ -693,12 +687,37 @@ function getDeploymentDir(deploymentId, customDir) {
   return path.join(home, ".tokamak", "deployments", deploymentId);
 }
 
+/**
+ * Create a deployment-specific genesis file with a custom L2 chain ID.
+ * Reads the stock genesis, replaces the chainId, and writes to the deployment dir.
+ *
+ * @param {string} programSlug - App identifier (determines which genesis template to use)
+ * @param {number} l2ChainId - The custom L2 chain ID
+ * @param {string} deploymentId - Deployment ID (for directory)
+ * @param {string} [customDir] - Optional custom deployment directory
+ * @returns {string} Path to the generated genesis file
+ */
+function writeCustomGenesis(programSlug, l2ChainId, deploymentId, customDir) {
+  const profile = getAppProfile(programSlug);
+  const stockPath = path.join(ETHREX_ROOT, "fixtures", "genesis", profile.genesisFile);
+  const genesis = JSON.parse(fs.readFileSync(stockPath, "utf-8"));
+
+  genesis.config.chainId = l2ChainId;
+
+  const deployDir = getDeploymentDir(deploymentId, customDir);
+  fs.mkdirSync(deployDir, { recursive: true });
+  const outPath = path.join(deployDir, profile.genesisFile);
+  fs.writeFileSync(outPath, JSON.stringify(genesis, null, 2), "utf-8");
+  return outPath;
+}
+
 module.exports = {
   generateComposeFile,
   generateTestnetComposeFile,
   generateRemoteComposeFile,
   generateProgramsToml,
   writeComposeFile,
+  writeCustomGenesis,
   getDeploymentDir,
   getAppProfile,
   APP_PROFILES,
