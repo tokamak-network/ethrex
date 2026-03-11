@@ -96,7 +96,7 @@ function getAppProfile(programSlug) {
  * @returns {string} docker-compose.yaml content
  */
 function generateComposeFile(opts) {
-  const { programSlug: rawSlug, l1Port, l2Port, proofCoordPort = 3900, metricsPort = 3702, projectName, gpu = false, dumpFixtures = false, isPublic = false, customGenesisPath } = opts;
+  const { programSlug: rawSlug, l1Port, l2Port, proofCoordPort = 3900, metricsPort = 3702, projectName, gpu = false, dumpFixtures = false, isPublic = false, customGenesisPath, l2ChainId } = opts;
   const programSlug = sanitizeSlug(rawSlug);
   const bindAddr = isPublic ? '0.0.0.0' : '127.0.0.1';
   // Proof coordinator and metrics are internal-only — never bind to 0.0.0.0
@@ -135,6 +135,9 @@ function generateComposeFile(opts) {
     deployerExtraEnv += `      - GUEST_PROGRAMS=${profile.guestPrograms}\n`;
   }
   deployerExtraEnv += `      - ETHREX_DEPLOYER_GENESIS_L2_PATH=${workdir}/fixtures/genesis/${profile.genesisFile}\n`;
+  if (l2ChainId) {
+    deployerExtraEnv += `      - ETHREX_L2_CHAIN_ID=${l2ChainId}\n`;
+  }
 
   // No extra deployer genesis volume needed — main mount line already uses genesisSource
   let deployerExtraVolumes = "";
@@ -220,7 +223,7 @@ ${deployerExtraVolumes}    environment:
       - ETHREX_DEPLOYER_DEPLOY_BASED_CONTRACTS=false
       - ETHREX_L2_VALIDIUM=false
       - COMPILE_CONTRACTS=true
-      - ETHREX_USE_COMPILED_GENESIS=false
+      - ETHREX_USE_COMPILED_GENESIS=true
 ${deployerExtraEnv}    depends_on:
       - tokamak-app-l1
     entrypoint:
@@ -322,7 +325,7 @@ const PULL_IMAGES = {
  * @returns {string} docker-compose.yaml content
  */
 function generateRemoteComposeFile(opts) {
-  const { programSlug: rawSlug, l1Port, l2Port, proofCoordPort = 3900, projectName, dataDir } = opts;
+  const { programSlug: rawSlug, l1Port, l2Port, proofCoordPort = 3900, projectName, dataDir, l2ChainId } = opts;
   const programSlug = sanitizeSlug(rawSlug);
   const profile = getAppProfile(programSlug);
   const workdir = "/usr/local/bin";
@@ -341,6 +344,9 @@ function generateRemoteComposeFile(opts) {
   if (profile.registerGuestPrograms) deployerExtraEnv += `      - ETHREX_REGISTER_GUEST_PROGRAMS=${profile.registerGuestPrograms}\n`;
   if (profile.guestPrograms) deployerExtraEnv += `      - GUEST_PROGRAMS=${profile.guestPrograms}\n`;
   deployerExtraEnv += `      - ETHREX_DEPLOYER_GENESIS_L2_PATH=${workdir}/fixtures/genesis/${profile.genesisFile}\n`;
+  if (l2ChainId) {
+    deployerExtraEnv += `      - ETHREX_L2_CHAIN_ID=${l2ChainId}\n`;
+  }
 
   // Prover config
   let proverExtraEnv = "";
@@ -402,7 +408,7 @@ services:
       - ETHREX_DEPLOYER_DEPLOY_BASED_CONTRACTS=false
       - ETHREX_L2_VALIDIUM=false
       - COMPILE_CONTRACTS=true
-      - ETHREX_USE_COMPILED_GENESIS=false
+      - ETHREX_USE_COMPILED_GENESIS=true
 ${deployerExtraEnv}    depends_on:
       - tokamak-app-l1
     entrypoint:
@@ -485,7 +491,7 @@ function generateTestnetComposeFile(opts) {
     programSlug: rawSlug, l2Port, proofCoordPort = 3900, metricsPort = 3702,
     projectName, l1RpcUrl, deployerPrivateKey, gpu = false,
     committerPk: committerPkOpt, proofCoordinatorPk: proofCoordinatorPkOpt,
-    bridgeOwnerPk: bridgeOwnerPkOpt, isPublic = false, customGenesisPath,
+    bridgeOwnerPk: bridgeOwnerPkOpt, isPublic = false, customGenesisPath, l2ChainId,
   } = opts;
   const programSlug = sanitizeSlug(rawSlug);
   const bindAddr = isPublic ? '0.0.0.0' : '127.0.0.1';
@@ -519,6 +525,9 @@ function generateTestnetComposeFile(opts) {
     deployerExtraEnv += `      - GUEST_PROGRAMS=${profile.guestPrograms}\n`;
   }
   deployerExtraEnv += `      - ETHREX_DEPLOYER_GENESIS_L2_PATH=${workdir}/fixtures/genesis/${profile.genesisFile}\n`;
+  if (l2ChainId) {
+    deployerExtraEnv += `      - ETHREX_L2_CHAIN_ID=${l2ChainId}\n`;
+  }
 
   let deployerExtraVolumes = "";
 
@@ -602,7 +611,7 @@ ${deployerExtraVolumes}    environment:
       - ETHREX_DEPLOYER_DEPLOY_BASED_CONTRACTS=false
       - ETHREX_L2_VALIDIUM=false
       - COMPILE_CONTRACTS=true
-      - ETHREX_USE_COMPILED_GENESIS=false
+      - ETHREX_USE_COMPILED_GENESIS=true
 ${deployerExtraEnv}    entrypoint:
       - /bin/bash
       - -c

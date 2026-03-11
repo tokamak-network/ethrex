@@ -329,7 +329,7 @@ async function ensureL2ChainId(deployment, deployDir) {
   }
   const customGenesisPath = await writeCustomGenesis(programSlug, l2ChainId, id, deployDir);
   emit(id, "log", { message: `L2 Chain ID: ${l2ChainId}` });
-  return customGenesisPath;
+  return { customGenesisPath, l2ChainId };
 }
 
 // ============================================================
@@ -393,12 +393,12 @@ async function provision(deployment) {
   provisionInfo.phase = "building";
   emit(id, "phase", { phase: "building", message: "Generating Docker Compose configuration..." });
 
-  const customGenesisPath = await ensureL2ChainId(deployment, deployDir);
+  const { customGenesisPath, l2ChainId } = await ensureL2ChainId(deployment, deployDir);
 
   let composeFile = null;
   try {
     const gpu = docker.hasNvidiaGpu();
-    const composeContent = generateComposeFile({ programSlug, l1Port, l2Port, proofCoordPort, metricsPort: toolsMetricsPort, projectName, gpu, dumpFixtures, customGenesisPath });
+    const composeContent = generateComposeFile({ programSlug, l1Port, l2Port, proofCoordPort, metricsPort: toolsMetricsPort, projectName, gpu, dumpFixtures, customGenesisPath, l2ChainId });
     composeFile = writeComposeFile(id, composeContent, deployDir);
 
     // Check for existing images to skip rebuild (unless forceRebuild)
@@ -776,7 +776,7 @@ async function provisionTestnet(deployment) {
   provisionInfo.phase = "building";
   emit(id, "phase", { phase: "building", message: "Generating Docker Compose configuration (testnet mode)..." });
 
-  const customGenesisPath = await ensureL2ChainId(deployment, deployDir);
+  const { customGenesisPath, l2ChainId } = await ensureL2ChainId(deployment, deployDir);
 
   let composeFile = null;
   const contractLogLines = []; // Track deployer logs for address recovery on cancel
@@ -788,7 +788,7 @@ async function provisionTestnet(deployment) {
       committerPk: roleKeys.committerPk,
       proofCoordinatorPk: roleKeys.proofCoordinatorPk,
       bridgeOwnerPk: roleKeys.bridgeOwnerPk,
-      customGenesisPath,
+      customGenesisPath, l2ChainId,
     });
     composeFile = writeComposeFile(id, composeContent, deployDir);
     emit(id, "log", { message: `Docker Compose file: ${composeFile}` });
@@ -1538,14 +1538,14 @@ async function setPublicAccess(deployment, isPublic) {
       projectName: updated.docker_project, l1RpcUrl: testnetCfg.l1RpcUrl,
       deployerPrivateKey: testnetCfg.deployerPrivateKey, gpu: !!dConfig.gpu,
       committerPk: roleKeys.committerPk, proofCoordinatorPk: roleKeys.proofCoordinatorPk,
-      bridgeOwnerPk: roleKeys.bridgeOwnerPk, isPublic,
+      bridgeOwnerPk: roleKeys.bridgeOwnerPk, isPublic, l2ChainId: updated.chain_id,
     });
   } else {
     composeContent = generateComposeFile({
       programSlug: updated.program_slug, l1Port: updated.l1_port, l2Port: updated.l2_port,
       proofCoordPort: updated.proof_coord_port, metricsPort: updated.tools_metrics_port,
       projectName: updated.docker_project, gpu: !!dConfig.gpu,
-      dumpFixtures: !!dConfig.dumpFixtures, isPublic,
+      dumpFixtures: !!dConfig.dumpFixtures, isPublic, l2ChainId: updated.chain_id,
     });
   }
   writeComposeFile(id, composeContent, deployDir);
