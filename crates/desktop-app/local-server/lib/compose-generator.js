@@ -96,7 +96,7 @@ function getAppProfile(programSlug) {
  * @returns {string} docker-compose.yaml content
  */
 function generateComposeFile(opts) {
-  const { programSlug: rawSlug, l1Port, l2Port, proofCoordPort = 3900, metricsPort = 3702, projectName, gpu = false, dumpFixtures = false, isPublic = false, customGenesisPath, l2ChainId } = opts;
+  const { programSlug: rawSlug, l1Port, l2Port, proofCoordPort = 3900, metricsPort = 3702, projectName, gpu = false, dumpFixtures = false, isPublic = false, customGenesisPath, l2ChainId, customL1GenesisPath } = opts;
   const programSlug = sanitizeSlug(rawSlug);
   const bindAddr = isPublic ? '0.0.0.0' : '127.0.0.1';
   // Proof coordinator and metrics are internal-only — never bind to 0.0.0.0
@@ -123,8 +123,9 @@ function generateComposeFile(opts) {
   // L1 build
   const l1Build = `    build: ${ETHREX_ROOT}`;
 
-  // Genesis source: use custom genesis if provided, otherwise stock
+  // Genesis sources: use custom genesis if provided, otherwise stock
   const genesisSource = customGenesisPath || `${ETHREX_ROOT}/fixtures/genesis/${profile.genesisFile}`;
+  const l1GenesisSource = customL1GenesisPath || `${ETHREX_ROOT}/fixtures/genesis/l1.json`;
 
   // Deployer env vars (ETHREX_L2_SP1 is set in the base template from profile.sp1Enabled)
   let deployerExtraEnv = "";
@@ -190,7 +191,7 @@ ${l1Build}
     environment:
       - ETHREX_LOG_LEVEL
     volumes:
-      - ${ETHREX_ROOT}/fixtures/genesis/l1.json:/genesis/l1.json
+      - ${l1GenesisSource}:/genesis/l1.json
     command: --network /genesis/l1.json --http.addr 0.0.0.0 --http.port 8545 --dev
 
   tokamak-app-deployer:
@@ -200,7 +201,7 @@ ${l1Build}
     volumes:
       - ${ETHREX_ROOT}/crates/l2/contracts:${workdir}/contracts
       - env:/env/
-      - ${ETHREX_ROOT}/fixtures/genesis/l1.json:${workdir}/fixtures/genesis/l1.json
+      - ${l1GenesisSource}:${workdir}/fixtures/genesis/l1.json
       - ${genesisSource}:${workdir}/fixtures/genesis/${profile.genesisFile}
       - ${ETHREX_ROOT}/fixtures/keys/private_keys_l1.txt:${workdir}/fixtures/keys/private_keys_l1.txt
 ${deployerExtraVolumes}    environment:
@@ -732,6 +733,23 @@ async function writeCustomGenesis(programSlug, l2ChainId, deploymentId, customDi
   return outPath;
 }
 
+/**
+ * Create a deployment-specific L1 genesis file with a custom chain ID.
+ */
+async function writeCustomL1Genesis(l1ChainId, deploymentId, customDir) {
+  const fsp = require("fs").promises;
+  const stockPath = path.join(ETHREX_ROOT, "fixtures", "genesis", "l1.json");
+  const genesis = JSON.parse(await fsp.readFile(stockPath, "utf-8"));
+
+  genesis.config.chainId = l1ChainId;
+
+  const deployDir = getDeploymentDir(deploymentId, customDir);
+  await fsp.mkdir(deployDir, { recursive: true });
+  const outPath = path.join(deployDir, "l1.json");
+  await fsp.writeFile(outPath, JSON.stringify(genesis, null, 2), "utf-8");
+  return outPath;
+}
+
 module.exports = {
   generateComposeFile,
   generateTestnetComposeFile,
@@ -739,6 +757,7 @@ module.exports = {
   generateProgramsToml,
   writeComposeFile,
   writeCustomGenesis,
+  writeCustomL1Genesis,
   getDeploymentDir,
   getAppProfile,
   APP_PROFILES,

@@ -94,6 +94,36 @@ async function run() {
     assert("chain_id persisted", d6.deployment?.chain_id === 17001, `got ${d6.deployment?.chain_id}`);
   }
 
+  // 7. next-chain-id returns L1 chain ID
+  console.log("\n7. next-chain-id returns L1 chain ID");
+  assert("l1ChainId is a number", typeof d1.l1ChainId === "number", `got ${typeof d1.l1ChainId}`);
+  assert("l1ChainId > 0", d1.l1ChainId > 0, `got ${d1.l1ChainId}`);
+  assert("l1ChainId != 9 (default)", d1.l1ChainId !== 9, `got ${d1.l1ChainId}`);
+
+  // 8. L1 chain ID uniqueness — store one and verify next is different
+  console.log("\n8. L1 chain ID uniqueness");
+  const { data: d8a } = await api("/deployments/next-chain-id");
+  const firstL1 = d8a.l1ChainId;
+  // Create deployment and manually set l1_chain_id
+  const { data: d8b } = await api("/deployments", {
+    method: "POST",
+    body: JSON.stringify({ name: "Test L1 Chain", programSlug: "evm-l2" }),
+  });
+  if (d8b.deployment) {
+    createdIds.push(d8b.deployment.id);
+    // Simulate engine storing l1_chain_id via PUT
+    await api(`/deployments/${d8b.deployment.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ l1_chain_id: firstL1 }),
+    });
+    const { data: d8c } = await api("/deployments/next-chain-id");
+    assert("next L1 ID != stored L1 ID", d8c.l1ChainId !== firstL1, `both are ${firstL1}`);
+  }
+
+  // 9. L1 and L2 chain IDs are independent
+  console.log("\n9. L1 and L2 chain IDs are independent");
+  assert("L1 != L2 chain ID", d1.l1ChainId !== d1.chainId, `L1=${d1.l1ChainId}, L2=${d1.chainId}`);
+
   // Cleanup
   await cleanup();
 
