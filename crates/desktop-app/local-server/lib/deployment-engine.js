@@ -30,7 +30,7 @@ const {
   getAppProfile,
 } = require("./compose-generator");
 const { isHealthy } = require("./rpc-client");
-const { updateDeployment, getDeploymentById, getNextAvailablePorts, getNextAvailableL2ChainId, getNextAvailableL1ChainId, getAllDeployments, insertDeployEvent, clearDeployEvents } = require("../db/deployments");
+const { updateDeployment, getDeploymentById, getNextAvailablePorts, getNextAvailableL2ChainId, getNextAvailableL1ChainId, isL1ChainIdTaken, getAllDeployments, insertDeployEvent, clearDeployEvents } = require("../db/deployments");
 const { getHostById } = require("../db/hosts");
 const keychain = require("./keychain");
 const { getExternalL1Config, getPublicAccessConfig, getToolsPorts } = require("./tools-config");
@@ -341,9 +341,11 @@ async function ensureChainIds(deployment, deployDir, { includeL1 = false } = {})
     try {
       const config = deployment.config ? JSON.parse(deployment.config) : {};
       l1ChainId = config.l1ChainId || null;
-    } catch {}
+    } catch (e) {
+      console.error(`[deploy-engine] Failed to parse deployment config for ${id}:`, e.message);
+    }
     l1ChainId = l1ChainId || deployment.l1_chain_id;
-    if (!l1ChainId) {
+    if (!l1ChainId || isL1ChainIdTaken(l1ChainId, id)) {
       l1ChainId = getNextAvailableL1ChainId();
     }
     updateDeployment(id, { l1_chain_id: l1ChainId });

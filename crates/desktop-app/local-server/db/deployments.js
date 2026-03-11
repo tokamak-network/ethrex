@@ -192,9 +192,16 @@ function getNextAvailableL1ChainId() {
   return chainId;
 }
 
+function isL1ChainIdTaken(chainId, excludeDeploymentId) {
+  const row = db.prepare(
+    `SELECT id FROM deployments WHERE l1_chain_id = ? AND id != ?`
+  ).get(chainId, excludeDeploymentId);
+  return !!row;
+}
+
 module.exports = {
   createDeployment, getDeploymentById, getAllDeployments,
   updateDeployment, deleteDeployment, getNextAvailablePorts,
-  getNextAvailableL2ChainId, getNextAvailableL1ChainId,
+  getNextAvailableL2ChainId, getNextAvailableL1ChainId, isL1ChainIdTaken,
   insertDeployEvent, getDeployEvents, clearDeployEvents,
 };

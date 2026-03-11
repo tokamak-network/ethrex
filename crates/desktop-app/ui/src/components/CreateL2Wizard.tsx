@@ -101,7 +101,7 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
       setChainIdLoading(true)
       setChainIdError(false)
       localServerAPI.getNextChainId()
-        .then((r: { chainId: number; l1ChainId: number }) => setConfig(prev => prev.chainId ? prev : { ...prev, chainId: String(r.chainId), l1ChainId: String(r.l1ChainId) }))
+        .then((r: { chainId: number; l1ChainId: number }) => setConfig(prev => ({ ...prev, chainId: String(r.chainId), l1ChainId: String(r.l1ChainId) })))
         .catch(() => setChainIdError(true))
         .finally(() => setChainIdLoading(false))
     }
