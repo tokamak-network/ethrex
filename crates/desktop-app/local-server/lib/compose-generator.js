@@ -63,6 +63,14 @@ const APP_PROFILES = {
 };
 
 /**
+ * Sanitize a program slug to prevent YAML injection.
+ * Only allows lowercase alphanumeric, hyphens, and underscores.
+ */
+function sanitizeSlug(slug) {
+  return String(slug).replace(/[^a-z0-9_-]/g, "");
+}
+
+/**
  * Get the app profile for a given program slug.
  * Falls back to evm-l2 for unknown programs.
  */
@@ -88,7 +96,8 @@ function getAppProfile(programSlug) {
  * @returns {string} docker-compose.yaml content
  */
 function generateComposeFile(opts) {
-  const { programSlug, l1Port, l2Port, proofCoordPort = 3900, metricsPort = 3702, projectName, gpu = false, dumpFixtures = false, isPublic = false, customGenesisPath } = opts;
+  const { programSlug: rawSlug, l1Port, l2Port, proofCoordPort = 3900, metricsPort = 3702, projectName, gpu = false, dumpFixtures = false, isPublic = false, customGenesisPath } = opts;
+  const programSlug = sanitizeSlug(rawSlug);
   const bindAddr = isPublic ? '0.0.0.0' : '127.0.0.1';
   // Proof coordinator and metrics are internal-only — never bind to 0.0.0.0
   const internalBindAddr = '127.0.0.1';
@@ -313,7 +322,8 @@ const PULL_IMAGES = {
  * @returns {string} docker-compose.yaml content
  */
 function generateRemoteComposeFile(opts) {
-  const { programSlug, l1Port, l2Port, proofCoordPort = 3900, projectName, dataDir } = opts;
+  const { programSlug: rawSlug, l1Port, l2Port, proofCoordPort = 3900, projectName, dataDir } = opts;
+  const programSlug = sanitizeSlug(rawSlug);
   const profile = getAppProfile(programSlug);
   const workdir = "/usr/local/bin";
 
@@ -472,11 +482,12 @@ ${proverExtraVolumes}
  */
 function generateTestnetComposeFile(opts) {
   const {
-    programSlug, l2Port, proofCoordPort = 3900, metricsPort = 3702,
+    programSlug: rawSlug, l2Port, proofCoordPort = 3900, metricsPort = 3702,
     projectName, l1RpcUrl, deployerPrivateKey, gpu = false,
     committerPk: committerPkOpt, proofCoordinatorPk: proofCoordinatorPkOpt,
     bridgeOwnerPk: bridgeOwnerPkOpt, isPublic = false, customGenesisPath,
   } = opts;
+  const programSlug = sanitizeSlug(rawSlug);
   const bindAddr = isPublic ? '0.0.0.0' : '127.0.0.1';
   // Proof coordinator and metrics are internal-only — never bind to 0.0.0.0
   const internalBindAddr = '127.0.0.1';
