@@ -147,12 +147,13 @@ function getNextAvailableL2ChainId() {
 
   // Random selection with collision avoidance
   const RANGE = 900000;
+  const MAX_RANDOM_ATTEMPTS = 10000;
   let chainId;
   let attempts = 0;
   do {
     chainId = BASE + Math.floor(Math.random() * RANGE);
     attempts++;
-  } while (usedSet.has(chainId) && attempts < 10000);
+  } while (usedSet.has(chainId) && attempts < MAX_RANDOM_ATTEMPTS);
 
   if (usedSet.has(chainId)) {
     // Fallback: sequential scan for guaranteed uniqueness
