@@ -14,10 +14,10 @@ interface Props {
   initialNetwork?: NetworkMode
 }
 
-const networkPresets: Record<NetworkMode, { l1Rpc: string; chainId: string; proverType: string }> = {
-  local: { l1Rpc: 'http://localhost:8545', chainId: '17001', proverType: 'sp1' },
-  testnet: { l1Rpc: 'https://rpc.sepolia.org', chainId: '17001', proverType: 'sp1' },
-  mainnet: { l1Rpc: 'https://eth.llamarpc.com', chainId: '17001', proverType: 'sp1' },
+const networkPresets: Record<NetworkMode, { l1Rpc: string; chainId: string; l1ChainId: string; proverType: string }> = {
+  local: { l1Rpc: 'http://localhost:8545', chainId: '17001', l1ChainId: '9', proverType: 'sp1' },
+  testnet: { l1Rpc: 'https://rpc.sepolia.org', chainId: '17001', l1ChainId: '11155111', proverType: 'sp1' },
+  mainnet: { l1Rpc: 'https://eth.llamarpc.com', chainId: '17001', l1ChainId: '1', proverType: 'sp1' },
 }
 
 interface RpcStatus {
@@ -48,7 +48,7 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
   const [config, setConfig] = useState(() => {
     const preset = initialNetwork ? networkPresets[initialNetwork] : networkPresets.local
     return {
-      name: '', chainId: preset.chainId, description: '', icon: '🔗',
+      name: '', chainId: preset.chainId, l1ChainId: preset.l1ChainId, description: '', icon: '🔗',
       l1Rpc: preset.l1Rpc, rpcPort: '8550',
       sequencerMode: 'standalone', proverType: preset.proverType,
       nativeToken: 'TON',
@@ -90,7 +90,7 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
   const selectNetwork = (mode: NetworkMode) => {
     const preset = networkPresets[mode]
     setNetworkMode(mode)
-    setConfig(prev => ({ ...prev, l1Rpc: preset.l1Rpc, chainId: preset.chainId, proverType: preset.proverType }))
+    setConfig(prev => ({ ...prev, l1Rpc: preset.l1Rpc, chainId: preset.chainId, l1ChainId: preset.l1ChainId, proverType: preset.proverType }))
     setRpcStatus({ state: 'idle' })
     setKeysResolution({ state: 'idle' })
   }
@@ -101,7 +101,7 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
       setChainIdLoading(true)
       setChainIdError(false)
       localServerAPI.getNextChainId()
-        .then(r => setConfig(prev => prev.chainId ? prev : { ...prev, chainId: String(r.chainId) }))
+        .then((r: { chainId: number; l1ChainId: number }) => setConfig(prev => prev.chainId ? prev : { ...prev, chainId: String(r.chainId), l1ChainId: String(r.l1ChainId) }))
         .catch(() => setChainIdError(true))
         .finally(() => setChainIdLoading(false))
     }
