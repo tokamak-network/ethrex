@@ -280,12 +280,14 @@ async function selectProgram(id) {
         chainId = data.chainId;
       }
     }
-  } catch (_) { /* fallback below */ }
+  } catch (_) { /* server unreachable */ }
   if (Number.isFinite(chainId)) {
     chainIdInput.value = chainId;
+    chainIdInput.placeholder = '';
   } else {
     chainIdInput.value = '';
-    chainIdInput.placeholder = 'Could not fetch ID. Please enter manually.';
+    chainIdInput.placeholder = 'Auto-assigned on deploy';
+    showLaunchError('Could not fetch L2 Chain ID. Please ensure the server is running, then re-select the app.');
   }
   launchGoStep(2);
 }

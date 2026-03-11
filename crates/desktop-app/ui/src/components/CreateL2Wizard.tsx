@@ -56,6 +56,8 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
       deployerKeychainKey: '', committerKeychainKey: '', proofCoordinatorKeychainKey: '', bridgeOwnerKeychainKey: '',
     }
   })
+  const [chainIdLoading, setChainIdLoading] = useState(true)
+  const [chainIdError, setChainIdError] = useState(false)
   const [rpcStatus, setRpcStatus] = useState<RpcStatus>({ state: 'idle' })
   const [keychainAccounts, setKeychainAccounts] = useState<string[]>([])
   const [keysResolution, setKeysResolution] = useState<KeysResolution>({ state: 'idle' })
@@ -97,9 +99,10 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
   useEffect(() => {
     if (networkMode) {
       setChainIdLoading(true)
+      setChainIdError(false)
       localServerAPI.getNextChainId()
         .then(r => setConfig(prev => prev.chainId ? prev : { ...prev, chainId: String(r.chainId) }))
-        .catch(() => {}) // Leave empty — server auto-assigns unique chain ID during deployment
+        .catch(() => setChainIdError(true))
         .finally(() => setChainIdLoading(false))
     }
   }, [networkMode])
@@ -344,8 +347,26 @@ export default function CreateL2Wizard({ onBack, onCreate, initialNetwork }: Pro
             <div className="bg-[var(--color-bg-sidebar)] rounded-xl p-4 border border-[var(--color-border)]">
               <label className="text-[11px] text-[var(--color-text-secondary)] block mb-1">Chain ID *</label>
               <input value={config.chainId} onChange={e => update('chainId', e.target.value)}
-                placeholder="17001" type="number"
+                placeholder={chainIdLoading ? '...' : 'Auto-assigned on deploy'} type="number"
                 className="w-full bg-[var(--color-bg-main)] rounded-lg px-3 py-2 text-sm outline-none placeholder-[var(--color-text-secondary)] border border-[var(--color-border)]" />
+              {chainIdError ? (
+                <p className="text-[10px] text-[var(--color-error)] mt-1">
+                  {lang === 'ko' ? '서버에서 Chain ID를 가져올 수 없습니다. 서버가 실행 중인지 확인해주세요.' : 'Could not fetch Chain ID. Please ensure the server is running.'}
+                </p>
+              ) : (
+                <p className="text-[10px] text-[var(--color-text-secondary)] mt-1">
+                  {lang === 'ko' ? '자동 생성된 고유 번호입니다. 변경 가능합니다.' : 'Auto-generated unique ID. You can change it.'}
+                </p>
+              )}
+            </div>
+            <div className="bg-[var(--color-bg-sidebar)] rounded-xl p-4 border border-[var(--color-border)]">
+              <label className="text-[11px] text-[var(--color-text-secondary)] block mb-1">L1 Chain ID</label>
+              <div className="w-full bg-[var(--color-bg-main)] rounded-lg px-3 py-2 text-sm border border-[var(--color-border)] text-[var(--color-text-primary)]">
+                {config.l1ChainId}
+                <span className="text-[var(--color-text-secondary)] ml-2 text-[11px]">
+                  {config.l1ChainId === '9' ? '(Local Anvil)' : config.l1ChainId === '11155111' ? '(Sepolia)' : config.l1ChainId === '17000' ? '(Holesky)' : config.l1ChainId === '1' ? '(Mainnet)' : ''}
+                </span>
+              </div>
             </div>
             <div className="bg-[var(--color-bg-sidebar)] rounded-xl p-4 border border-[var(--color-border)]">
               <label className="text-[11px] text-[var(--color-text-secondary)] block mb-1">{t('myl2.wizard.icon', lang)}</label>
