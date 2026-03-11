@@ -220,7 +220,7 @@ ${deployerExtraVolumes}    environment:
       - ETHREX_DEPLOYER_DEPLOY_BASED_CONTRACTS=false
       - ETHREX_L2_VALIDIUM=false
       - COMPILE_CONTRACTS=true
-      - ETHREX_USE_COMPILED_GENESIS=true
+      - ETHREX_USE_COMPILED_GENESIS=false
 ${deployerExtraEnv}    depends_on:
       - tokamak-app-l1
     entrypoint:
@@ -402,7 +402,7 @@ services:
       - ETHREX_DEPLOYER_DEPLOY_BASED_CONTRACTS=false
       - ETHREX_L2_VALIDIUM=false
       - COMPILE_CONTRACTS=true
-      - ETHREX_USE_COMPILED_GENESIS=true
+      - ETHREX_USE_COMPILED_GENESIS=false
 ${deployerExtraEnv}    depends_on:
       - tokamak-app-l1
     entrypoint:
@@ -602,7 +602,7 @@ ${deployerExtraVolumes}    environment:
       - ETHREX_DEPLOYER_DEPLOY_BASED_CONTRACTS=false
       - ETHREX_L2_VALIDIUM=false
       - COMPILE_CONTRACTS=true
-      - ETHREX_USE_COMPILED_GENESIS=true
+      - ETHREX_USE_COMPILED_GENESIS=false
 ${deployerExtraEnv}    entrypoint:
       - /bin/bash
       - -c
