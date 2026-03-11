@@ -316,6 +316,22 @@ function getActiveProvisions() {
   return result;
 }
 
+/**
+ * Ensure the deployment has a unique L2 chain ID and write a
+ * deployment-specific genesis file with that chain ID.
+ */
+async function ensureL2ChainId(deployment, deployDir) {
+  const { id, program_slug: programSlug } = deployment;
+  let l2ChainId = deployment.chain_id;
+  if (!l2ChainId) {
+    l2ChainId = getNextAvailableL2ChainId();
+    updateDeployment(id, { chain_id: l2ChainId });
+  }
+  const customGenesisPath = await writeCustomGenesis(programSlug, l2ChainId, id, deployDir);
+  emit(id, "log", { message: `L2 Chain ID: ${l2ChainId}` });
+  return customGenesisPath;
+}
+
 // ============================================================
 // LOCAL PROVISIONING (build from source)
 // ============================================================
@@ -377,16 +393,7 @@ async function provision(deployment) {
   provisionInfo.phase = "building";
   emit(id, "phase", { phase: "building", message: "Generating Docker Compose configuration..." });
 
-  // Ensure L2 chain ID: auto-generate if not set
-  let l2ChainId = deployment.chain_id;
-  if (!l2ChainId) {
-    l2ChainId = getNextAvailableL2ChainId();
-    updateDeployment(id, { chain_id: l2ChainId });
-  }
-
-  // Write a deployment-specific genesis with the custom chain ID
-  const customGenesisPath = await writeCustomGenesis(programSlug, l2ChainId, id, deployDir);
-  emit(id, "log", { message: `L2 Chain ID: ${l2ChainId}` });
+  const customGenesisPath = await ensureL2ChainId(deployment, deployDir);
 
   let composeFile = null;
   try {
@@ -769,16 +776,7 @@ async function provisionTestnet(deployment) {
   provisionInfo.phase = "building";
   emit(id, "phase", { phase: "building", message: "Generating Docker Compose configuration (testnet mode)..." });
 
-  // Ensure L2 chain ID: auto-generate if not set
-  let l2ChainId = deployment.chain_id;
-  if (!l2ChainId) {
-    l2ChainId = getNextAvailableL2ChainId();
-    updateDeployment(id, { chain_id: l2ChainId });
-  }
-
-  // Write a deployment-specific genesis with the custom chain ID
-  const customGenesisPath = await writeCustomGenesis(programSlug, l2ChainId, id, deployDir);
-  emit(id, "log", { message: `L2 Chain ID: ${l2ChainId}` });
+  const customGenesisPath = await ensureL2ChainId(deployment, deployDir);
 
   let composeFile = null;
   const contractLogLines = []; // Track deployer logs for address recovery on cancel
