@@ -706,19 +706,20 @@ function getDeploymentDir(deploymentId, customDir) {
  * @param {number} l2ChainId - The custom L2 chain ID
  * @param {string} deploymentId - Deployment ID (for directory)
  * @param {string} [customDir] - Optional custom deployment directory
- * @returns {string} Path to the generated genesis file
+ * @returns {Promise<string>} Path to the generated genesis file
  */
-function writeCustomGenesis(programSlug, l2ChainId, deploymentId, customDir) {
+async function writeCustomGenesis(programSlug, l2ChainId, deploymentId, customDir) {
+  const fsp = require("fs").promises;
   const profile = getAppProfile(programSlug);
   const stockPath = path.join(ETHREX_ROOT, "fixtures", "genesis", profile.genesisFile);
-  const genesis = JSON.parse(fs.readFileSync(stockPath, "utf-8"));
+  const genesis = JSON.parse(await fsp.readFile(stockPath, "utf-8"));
 
   genesis.config.chainId = l2ChainId;
 
   const deployDir = getDeploymentDir(deploymentId, customDir);
-  fs.mkdirSync(deployDir, { recursive: true });
+  await fsp.mkdir(deployDir, { recursive: true });
   const outPath = path.join(deployDir, profile.genesisFile);
-  fs.writeFileSync(outPath, JSON.stringify(genesis, null, 2), "utf-8");
+  await fsp.writeFile(outPath, JSON.stringify(genesis, null, 2), "utf-8");
   return outPath;
 }
 

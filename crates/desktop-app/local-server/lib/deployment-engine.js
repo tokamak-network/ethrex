@@ -385,7 +385,7 @@ async function provision(deployment) {
   }
 
   // Write a deployment-specific genesis with the custom chain ID
-  const customGenesisPath = writeCustomGenesis(programSlug, l2ChainId, id, deployDir);
+  const customGenesisPath = await writeCustomGenesis(programSlug, l2ChainId, id, deployDir);
   emit(id, "log", { message: `L2 Chain ID: ${l2ChainId}` });
 
   let composeFile = null;
@@ -777,7 +777,7 @@ async function provisionTestnet(deployment) {
   }
 
   // Write a deployment-specific genesis with the custom chain ID
-  const customGenesisPath = writeCustomGenesis(programSlug, l2ChainId, id, deployDir);
+  const customGenesisPath = await writeCustomGenesis(programSlug, l2ChainId, id, deployDir);
   emit(id, "log", { message: `L2 Chain ID: ${l2ChainId}` });
 
   let composeFile = null;
