@@ -14,7 +14,7 @@ on:
         type: choice
         options: ['true', 'false']
   push:
-    branches: [tokamak-dev, feat/app-customized-framework]
+    branches: [tokamak-dev, feat/app-customized-framework, feat/aws-sepolia-deployment]
     paths:
       - 'Dockerfile'
       - 'Dockerfile.sp1'
