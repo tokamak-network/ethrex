@@ -561,7 +561,7 @@ function generateCloudDeployPrompt(opts) {
   sections.push(toolsSection({ dataDir, l2ChainId, isTestnet, l1ChainId, l1Network, l1RpcUrl, programSlug, projectName }));
   sections.push(firewallSection({ cloud, vmName, isTestnet, sgName, region }));
   sections.push(summarySection({ isTestnet, deployment }));
-  sections.push(troubleshootingSection({ projectName, dataDir, sgName, region }));
+  sections.push(troubleshootingSection({ projectName, dataDir, sgName, region, vmName }));
 
   return sections.join("\n\n");
 }
@@ -1223,7 +1223,7 @@ Replace \`VM_IP\` with the actual IP from Step 1.
 | **Currency Symbol** | ETH |`;
 }
 
-function troubleshootingSection({ projectName, dataDir, sgName = "", region = "ap-northeast-2" }) {
+function troubleshootingSection({ projectName, dataDir, sgName = "", region = "ap-northeast-2", vmName = "" }) {
   return `## Troubleshooting
 
 \`\`\`bash
