@@ -523,11 +523,13 @@ function generateCloudDeployPrompt(opts) {
   const programSlug = deployment.program_slug || "evm-l2";
   const profile = getAppProfile(programSlug);
   const l2ChainId = deployment.chain_id || 65536999;
-  const projectName = `tokamak-${deployment.id.slice(0, 8)}`;
-  const isTestnet = l1Mode === "testnet";
+  const shortId = deployment.id.slice(0, 8);
   const safeName = (deployment.name || "l2").replace(/[^a-zA-Z0-9-]/g, "-").toLowerCase().slice(0, 30);
-  const vmName = `tokamak-${safeName}-${deployment.id.slice(0, 8)}`;
-  const dataDir = `/opt/tokamak/${deployment.id.slice(0, 8)}`;
+  const projectName = `tokamak-${safeName}-${shortId}`;
+  const isTestnet = l1Mode === "testnet";
+  const vmName = `tokamak-${safeName}-${shortId}`;
+  const sgName = `tokamak-sg-${shortId}`;
+  const dataDir = `/opt/tokamak/${shortId}`;
 
   // Always generate the local-L1 remote compose as template.
   // For testnet, we provide modification instructions instead of using
@@ -546,7 +548,7 @@ function generateCloudDeployPrompt(opts) {
 
   sections.push(headerSection({ deployment, programSlug, profile, cloud, region, vmType, l2ChainId, isTestnet, l1RpcUrl, l1Network, l1ChainId, storageGB, keyPairName, includeProver }));
   sections.push(prerequisitesSection(cloud, keyPairName));
-  sections.push(vmCreationSection({ cloud, region, vmType, vmName, storageGB, keyPairName }));
+  sections.push(vmCreationSection({ cloud, region, vmType, vmName, storageGB, keyPairName, sgName }));
   sections.push(dockerInstallSection());
   sections.push(composeFileSection({ composeContent, dataDir, projectName }));
 
@@ -557,7 +559,7 @@ function generateCloudDeployPrompt(opts) {
   sections.push(deploySection({ projectName, dataDir, isTestnet }));
   sections.push(verifySection({ l2ChainId, isTestnet }));
   sections.push(toolsSection({ dataDir, l2ChainId, isTestnet, l1ChainId, l1Network, l1RpcUrl, programSlug, projectName }));
-  sections.push(firewallSection({ cloud, vmName, isTestnet }));
+  sections.push(firewallSection({ cloud, vmName, isTestnet, sgName }));
   sections.push(summarySection({ isTestnet, deployment }));
   sections.push(troubleshootingSection({ projectName, dataDir }));
 
@@ -673,7 +675,7 @@ ls -la ~/.ssh/${sshKeyName}.pem || echo "❌ SSH key not found: ~/.ssh/${sshKeyN
 > SSH 키가 없으면: 매니저 AI Deploy Guide에서 키페어를 생성하세요.`;
 }
 
-function vmCreationSection({ cloud, region, vmType, vmName, storageGB = 30, keyPairName = "" }) {
+function vmCreationSection({ cloud, region, vmType, vmName, storageGB = 30, keyPairName = "", sgName = "tokamak-l2-sg" }) {
   if (cloud === "gcp") {
     return `## Step 1: Create VM
 
@@ -765,7 +767,7 @@ if [ -n "$EXISTING" ] && [ "$EXISTING" != "None" ]; then
 else
   # Create a security group (if not exists)
   aws ec2 create-security-group \\
-    --group-name tokamak-l2-sg \\
+    --group-name ${sgName} \\
     --description "Tokamak L2 appchain" \\
     --region ${region} 2>/dev/null || true
 
@@ -773,7 +775,7 @@ else
   # For better security, replace 0.0.0.0/0 with your IP: curl -s ifconfig.me
   MY_IP=$(curl -s ifconfig.me 2>/dev/null || echo "0.0.0.0")
   aws ec2 authorize-security-group-ingress \\
-    --group-name tokamak-l2-sg --protocol tcp --port 22 --cidr $MY_IP/32 \\
+    --group-name ${sgName} --protocol tcp --port 22 --cidr $MY_IP/32 \\
     --region ${region} 2>/dev/null || true
 
   # Launch instance
@@ -784,7 +786,7 @@ else
     --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":${diskSize},"VolumeType":"gp3"}}]' \\
     --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=${vmName}}]' \\
     --key-name ${keyName} \\
-    --security-groups tokamak-l2-sg \\
+    --security-groups ${sgName} \\
     --count 1
 
   # Wait for instance to be running
@@ -1059,7 +1061,7 @@ curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/tokamak-dev/
   -o docker-compose-tools.yaml
 
 # Get the deployed contract addresses from the deployer
-docker cp $(docker ps -aq -f name=deployer | head -1):/env/.env ${dataDir}/deployed.env 2>/dev/null || echo "No deployed env found"
+docker cp ${projectName}-deployer:/env/.env ${dataDir}/deployed.env 2>/dev/null || echo "No deployed env found"
 
 # Set tools environment variables
 export TOOLS_L2_RPC_PORT=${DEFAULT_PORTS.l2}
@@ -1101,7 +1103,7 @@ curl -s http://localhost:${DEFAULT_PORTS.dashboard}/ | head -c 200
 \`\`\``;
 }
 
-function firewallSection({ cloud, vmName, isTestnet }) {
+function firewallSection({ cloud, vmName, isTestnet, sgName = "tokamak-l2-sg" }) {
   if (cloud === "gcp") {
     const ports = isTestnet
       ? `${DEFAULT_PORTS.l2},${DEFAULT_PORTS.l2Explorer},${DEFAULT_PORTS.dashboard}`
@@ -1151,10 +1153,12 @@ sudo ufw enable
   }
 
   const rules = sgRules.map(r =>
-    `aws ec2 authorize-security-group-ingress --group-name tokamak-l2-sg --protocol tcp --port ${r.port} --cidr 0.0.0.0/0  # ${r.desc}`
+    `aws ec2 authorize-security-group-ingress --group-name ${sgName} --protocol tcp --port ${r.port} --cidr 0.0.0.0/0  # ${r.desc}`
   ).join("\n");
 
   return `## Step 7: Open Firewall Ports
+
+> 서비스 포트는 공개 접근을 위해 0.0.0.0/0으로 개방됩니다. 프로덕션에서는 필요에 따라 IP 제한을 고려하세요.
 
 \`\`\`bash
 ${rules}
