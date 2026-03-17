@@ -95,16 +95,8 @@ function showView(name) {
   if (name === 'deployments') loadDeployments();
   if (name === 'hosts') loadHosts();
   if (name === 'launch') {
-    // If there's an active ai-deploy chat, restore it instead of resetting
-    if (window._aiDeployDetailId && aiChatRawPrompt) {
-      // Chat is already rendered in step 3, just show it
-      document.querySelectorAll('.launch-step').forEach(s => s.style.display = 'none');
-      const step3 = document.getElementById('launch-step3');
-      if (step3) step3.style.display = 'block';
-    } else {
-      loadPrograms(); launchGoStep(1); launchDeploymentId = null;
-      resetLaunchForm();
-    }
+    loadPrograms(); launchGoStep(1); launchDeploymentId = null;
+    resetLaunchForm();
   }
 }
 
