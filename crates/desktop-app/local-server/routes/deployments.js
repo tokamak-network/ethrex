@@ -183,17 +183,18 @@ router.post("/ai-deploy/monitor", async (req, res) => {
   let { vmName, region, keyPairName, deploymentId } = req.body;
   const { execFileSync } = require("child_process");
 
-  // If deploymentId provided, load config from DB
-  if (deploymentId && !vmName) {
+  // Load config from DB once (reused for parameter extraction and instance ID save)
+  let deployConfig = null;
+  if (deploymentId) {
     try {
       const dep = db.prepare("SELECT config FROM deployments WHERE id = ?").get(deploymentId);
-      if (dep?.config) {
-        const cfg = JSON.parse(dep.config);
-        vmName = cfg.vmName || vmName;
-        region = cfg.region || region;
-        keyPairName = cfg.keyPairName || keyPairName;
-      }
+      if (dep?.config) deployConfig = JSON.parse(dep.config);
     } catch {}
+  }
+  if (deployConfig && !vmName) {
+    vmName = deployConfig.vmName || vmName;
+    region = deployConfig.region || region;
+    keyPairName = deployConfig.keyPairName || keyPairName;
   }
 
   if (!vmName) return res.status(400).json({ error: "vmName required" });
@@ -224,19 +225,13 @@ router.post("/ai-deploy/monitor", async (req, res) => {
     }
     result.ec2 = parsed || { State: "not_found" };
     if (result.ec2.Name) result.vmName = result.ec2.Name;
-    // Save instance ID and IP to DB for reliable future lookups
-    if (deploymentId && result.ec2.Id) {
-      try {
-        const dep = db.prepare("SELECT config FROM deployments WHERE id = ?").get(deploymentId);
-        if (dep?.config) {
-          const cfg = JSON.parse(dep.config);
-          if (cfg.ec2InstanceId !== result.ec2.Id || cfg.ec2IP !== result.ec2.IP) {
-            cfg.ec2InstanceId = result.ec2.Id;
-            cfg.ec2IP = result.ec2.IP;
-            db.prepare("UPDATE deployments SET config = ? WHERE id = ?").run(JSON.stringify(cfg), deploymentId);
-          }
-        }
-      } catch {}
+    // Save instance ID and IP to DB for reliable future lookups (reuse deployConfig)
+    if (deploymentId && result.ec2.Id && deployConfig) {
+      if (deployConfig.ec2InstanceId !== result.ec2.Id || deployConfig.ec2IP !== result.ec2.IP) {
+        deployConfig.ec2InstanceId = result.ec2.Id;
+        deployConfig.ec2IP = result.ec2.IP;
+        try { db.prepare("UPDATE deployments SET config = ? WHERE id = ?").run(JSON.stringify(deployConfig), deploymentId); } catch {}
+      }
     }
   } catch (e) {
     result.ec2 = { State: "not_found", error: (e.message || "").slice(0, 200) };

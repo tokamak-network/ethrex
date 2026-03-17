@@ -2109,8 +2109,10 @@ function renderAIDeployOverview(d) {
   const savedPrompt = config.prompt || '';
   if (!savedPrompt) return; // No prompt saved — can't restore
 
-  // Switch to launch view and show step 3 (reuse existing chat UI)
-  showView('launch');
+  // Switch to launch view directly (skip loadPrograms/resetLaunchForm — not needed)
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  const launchView = document.getElementById('view-launch');
+  if (launchView) launchView.classList.add('active');
   document.querySelectorAll('.launch-step').forEach(s => s.style.display = 'none');
   const step3 = document.getElementById('launch-step3');
   if (step3) step3.style.display = 'block';
@@ -2221,12 +2223,6 @@ async function cancelAIDeployment(deploymentId) {
 function renderOverviewTab() {
   const d = detailDeployment;
   if (!d) return;
-
-  // AI Deploy phase — show deployment chat + monitoring instead of local Docker UI
-  if (d.phase === 'ai-deploy') {
-    renderAIDeployOverview(d);
-    return;
-  }
 
   const isProvisioned = !!d.docker_project;
   const isDeploying = ['checking_docker','building','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_tools'].includes(d.phase);
@@ -3661,8 +3657,7 @@ function aiChatGoBack() {
   if (window._aiDeployDetailId) {
     const id = window._aiDeployDetailId;
     window._aiDeployDetailId = null;
-    document.getElementById('launch-view').style.display = 'none';
-    document.getElementById('deployment-detail').style.display = '';
+    showView('deployments');
     showDeploymentDetail(id);
     return;
   }
