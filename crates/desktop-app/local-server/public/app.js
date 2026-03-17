@@ -31,6 +31,7 @@ let launchStep = 1;
 let programs = [];
 let selectedProgram = null;
 let launchMode = 'ai-deploy';
+let selectedStackType = 'ethrex';
 let launchDeploymentId = null;
 let cachedDeployList = [];
 let buildLogLines = [];
@@ -170,6 +171,31 @@ const TESTNET_STEPS = [
   { phase: 'running', label: 'Running' },
 ];
 
+const THANOS_LOCAL_STEPS = [
+  { phase: 'checking_docker', label: 'Checking Docker' },
+  { phase: 'pulling', label: 'Pulling Docker Images' },
+  { phase: 'l1_starting', label: 'Starting L1 geth' },
+  { phase: 'deploying_contracts', label: 'Deploying Contracts' },
+  { phase: 'l2_starting', label: 'Starting op-geth (L2)' },
+  { phase: 'starting_op_node', label: 'Starting op-node' },
+  { phase: 'starting_batcher', label: 'Starting op-batcher' },
+  { phase: 'starting_proposer', label: 'Starting op-proposer' },
+  { phase: 'starting_tools', label: 'Starting Tools (Explorer, Bridge)' },
+  { phase: 'running', label: 'Running' },
+];
+
+const THANOS_TESTNET_STEPS = [
+  { phase: 'checking_docker', label: 'Checking Docker' },
+  { phase: 'pulling', label: 'Pulling Docker Images' },
+  { phase: 'deploying_contracts', label: 'Deploying L1 Contracts' },
+  { phase: 'l2_starting', label: 'Starting op-geth (L2)' },
+  { phase: 'starting_op_node', label: 'Starting op-node' },
+  { phase: 'starting_batcher', label: 'Starting op-batcher' },
+  { phase: 'starting_proposer', label: 'Starting op-proposer' },
+  { phase: 'starting_tools', label: 'Starting Tools (Explorer, Bridge)' },
+  { phase: 'running', label: 'Running' },
+];
+
 const TESTNET_L1_VALUES = new Set(['sepolia', 'holesky', 'custom-l1']);
 const TESTNET_NETWORKS = {
   sepolia: { chainId: 11155111, name: 'Sepolia', rpcPlaceholder: 'https://sepolia.infura.io/v3/YOUR_KEY' },
@@ -222,26 +248,9 @@ async function loadPrograms() {
 
 function renderPrograms() {
   const grid = document.getElementById('programs-grid');
-  const search = (document.getElementById('program-search')?.value || '').toLowerCase();
-  const catFilter = document.getElementById('category-filter')?.value || '';
-
-  // Populate category filter
-  const catSelect = document.getElementById('category-filter');
-  if (catSelect && catSelect.options.length <= 1) {
-    const cats = [...new Set(programs.map(p => p.category).filter(Boolean))];
-    cats.forEach(c => {
-      const opt = document.createElement('option');
-      opt.value = c; opt.textContent = c;
-      catSelect.appendChild(opt);
-    });
-  }
 
   const filtered = programs.filter(p => {
-    const matchSearch = p.name.toLowerCase().includes(search) ||
-      (p.description || '').toLowerCase().includes(search) ||
-      (p.program_id || '').toLowerCase().includes(search);
-    const matchCat = !catFilter || p.category === catFilter;
-    return matchSearch && matchCat;
+    return !p.stack || p.stack === selectedStackType;
   });
 
   if (filtered.length === 0) {
@@ -259,6 +268,7 @@ function renderPrograms() {
         </div>
       </div>
       <div class="program-card-badges">
+        ${p.stack === 'thanos' ? '<span class="badge-category" style="background:#fef3c7;color:#92400e">Optimism</span>' : '<span class="badge-category" style="background:#ede9fe;color:#5b21b6">Tokamak-appchain</span>'}
         ${p.category ? `<span class="badge-category">${esc(p.category)}</span>` : ''}
         ${p.is_official ? '<span class="badge-official">Official</span>' : ''}
         ${p.use_count ? `<span class="badge-deploys">${p.use_count} deployments</span>` : ''}
@@ -269,7 +279,7 @@ function renderPrograms() {
   `).join('');
 }
 
-function filterPrograms() { renderPrograms(); }
+
 
 async function selectProgram(id) {
   selectedProgram = programs.find(p => p.id === id);
@@ -328,8 +338,12 @@ function launchGoStep(step) {
 
     // Selected program card with app config inside
     const pid = selectedProgram.program_id || selectedProgram.id;
+    const isThanos = selectedStackType === 'thanos';
+
     let configHtml = '<h4>App Configuration</h4>';
-    if (pid === 'zk-dex') {
+    if (isThanos) {
+      configHtml += '<p>Stack: Thanos (Optimism)<br>Proof: Fault Proofs<br>Images: Pre-built (pull only, no build)</p>';
+    } else if (pid === 'zk-dex') {
       configHtml += '<p>ZK Circuits: SP1 (DEX order matching + settlement)<br>Verification: SP1 Verifier Contract<br>Genesis: Custom L2 genesis with DEX pre-deploys</p>';
     } else if (pid === 'evm-l2') {
       configHtml += '<p>Circuits: Standard EVM execution<br>Verification: Default Verifier Contract<br>Genesis: Standard L2 genesis</p>';
@@ -350,19 +364,35 @@ function launchGoStep(step) {
           <button class="btn-change" onclick="launchGoStep(1)" style="margin-top:4px">Change</button>
         </div>
         <div class="app-config-box" style="padding:6px 12px;margin:0;flex:1;font-size:11px">${configHtml}
-          <div id="docker-image-status" style="margin-top:6px;font-size:11px;color:var(--text-muted)">Checking Docker image...</div>
+          ${isThanos ? '<div style="margin-top:6px;font-size:11px;color:#16a34a">✓ Pre-built Docker images will be pulled</div>' : '<div id="docker-image-status" style="margin-top:6px;font-size:11px;color:var(--text-muted)">Checking Docker image...</div>'}
         </div>
       </div>
     `;
 
+    // Thanos: force L1 to geth, hide L1 node selector
+    if (isThanos) {
+      const l1Select = document.getElementById('launch-l1-image');
+      if (l1Select) l1Select.value = 'geth';
+      const l1NodeArea = document.getElementById('l1-node-area');
+      if (l1NodeArea) l1NodeArea.style.display = 'none';
+    }
+
     setLaunchMode(launchMode);
-    checkDockerImage(pid);
+    if (!isThanos) checkDockerImage(pid);
   }
+}
+
+function setStackType(stack) {
+  selectedStackType = stack;
+  document.querySelectorAll('.mode-card[data-stack]').forEach(b => {
+    b.classList.toggle('active', b.dataset.stack === stack);
+  });
+  renderPrograms();
 }
 
 function setLaunchMode(mode) {
   launchMode = mode;
-  document.querySelectorAll('.mode-card').forEach(b => {
+  document.querySelectorAll('.mode-card[data-mode]').forEach(b => {
     b.classList.toggle('active', b.dataset.mode === mode);
   });
   const remoteArea = document.getElementById('remote-host-area');
@@ -788,6 +818,7 @@ async function handleLaunchDeploy() {
     const body = {
       programSlug: selectedProgram.program_id || selectedProgram.id,
       name,
+      stackType: selectedStackType,
       chainId: parseInt(document.getElementById('launch-chain-id').value) || undefined,
       config: {
         mode: launchMode === 'ai-deploy' ? 'ai-deploy' : launchMode,
@@ -1102,7 +1133,12 @@ function startDeployProgress(id) {
 
 function renderProgressSteps() {
   const container = document.getElementById('deploy-progress-steps');
-  const steps = launchMode === 'remote' ? REMOTE_STEPS : (isTestnetL1() ? TESTNET_STEPS : LOCAL_STEPS);
+  let steps;
+  if (selectedStackType === 'thanos') {
+    steps = isTestnetL1() ? THANOS_TESTNET_STEPS : THANOS_LOCAL_STEPS;
+  } else {
+    steps = launchMode === 'remote' ? REMOTE_STEPS : (isTestnetL1() ? TESTNET_STEPS : LOCAL_STEPS);
+  }
   const currentIdx = steps.findIndex(s => s.phase === currentPhase);
   const hasError = document.getElementById('deploy-error-msg').style.display !== 'none';
   const isTerminal = currentPhase === 'running' || hasError;
@@ -2012,10 +2048,12 @@ function renderPhaseBadge(phase, hasError) {
   const labels = {
     configured: 'Not deployed', 'ai-deploy': 'Deploying (AI)', checking_docker: 'Checking Docker', building: 'Building',
     pulling: 'Pulling Images', l1_starting: 'Starting L1', deploying_contracts: 'Deploying',
-    verifying_contracts: 'Verifying', l2_starting: 'Starting L2', starting_prover: 'Starting Prover', starting_tools: 'Starting Tools',
+    verifying_contracts: 'Verifying', l2_starting: 'Starting L2', starting_prover: 'Starting Prover',
+    starting_op_node: 'Starting op-node', starting_batcher: 'Starting op-batcher', starting_proposer: 'Starting op-proposer',
+    starting_tools: 'Starting Tools',
     running: 'Running', stopped: 'Stopped', error: 'Error',
   };
-  const animating = ['ai-deploy','checking_docker','building','pulling','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_tools'];
+  const animating = ['ai-deploy','checking_docker','building','pulling','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_op_node','starting_batcher','starting_proposer','starting_tools'];
   const label = labels[phase] || phase;
   if (hasError && phase !== 'error') {
     return `<span class="phase-badge phase-error" title="Error during: ${label}">${label} - Error</span>`;
@@ -2032,6 +2070,8 @@ let detailDeployment = null;
 let detailStatus = null;
 let detailMonitoring = null;
 let detailContracts = null;
+let detailHost = null;
+let detailServerCheck = null;
 let detailTab = 'overview';
 
 async function showDeploymentDetail(id) {
@@ -2041,6 +2081,8 @@ async function showDeploymentDetail(id) {
   detailStatus = null;
   detailMonitoring = null;
   detailContracts = null;
+  detailHost = null;
+  detailServerCheck = null;
   detailTab = 'overview';
   if (detailPollInterval) { clearInterval(detailPollInterval); detailPollInterval = null; }
   if (logEventSource) { logEventSource.close(); logEventSource = null; }
@@ -2250,7 +2292,9 @@ function renderOverviewTab() {
   const d = detailDeployment;
   if (!d) return;
 
-  const isProvisioned = !!d.docker_project;
+  const dCfg = d.config ? (typeof d.config === 'string' ? JSON.parse(d.config) : d.config) : {};
+  const isAIDeployOverview = dCfg.mode === 'ai-deploy';
+  const isProvisioned = !!d.docker_project || isAIDeployOverview;
   const isDeploying = ['checking_docker','building','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_tools'].includes(d.phase);
   // Reconcile: use live container state instead of stale DB phase
   const liveContainers = detailStatus?.containers || [];
@@ -2289,6 +2333,10 @@ function renderOverviewTab() {
     return c ? (c.State || 'stopped') : 'stopped';
   }
 
+  // Remote host info
+  const isRemote = !!detailHost;
+  const remoteHostIp = detailHost ? detailHost.hostname : null;
+
   // Helper: render service row
   function svcRow(label, svcName, endpoint, isTools) {
     const state = svcState(svcName);
@@ -2296,10 +2344,14 @@ function renderOverviewTab() {
     const dot = `<span style="width:7px;height:7px;border-radius:50%;background:${running ? 'var(--green-500)' : 'var(--text-muted)'};flex-shrink:0"></span>`;
     const stateText = `<span style="font-size:11px;color:${running ? 'var(--green-600)' : 'var(--text-muted)'}">${state}</span>`;
     const openIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;cursor:pointer"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
+    // Use public_domain or remote host IP instead of localhost for remote deployments
+    const urlHost = isRemote ? (d.public_domain || remoteHostIp) : 'localhost';
+    const fullUrl = endpoint ? `http://${urlHost}${endpoint}` : null;
+    const epLabel = isRemote && fullUrl ? fullUrl : endpoint;
     const ep = endpoint
       ? (running
-        ? `<span style="font-size:11px;font-family:monospace;color:var(--blue-600)">${endpoint}</span> <a href="http://localhost${endpoint}" target="_blank" title="Open in browser" style="color:var(--blue-600)">${openIcon}</a>`
-        : `<span style="font-size:11px;font-family:monospace;color:var(--text-muted)">${endpoint}</span>`)
+        ? `<span style="font-size:11px;font-family:monospace;color:var(--blue-600)">${esc(epLabel)}</span> <a href="${escAttr(fullUrl)}" target="_blank" title="Open in browser" style="color:var(--blue-600)">${openIcon}</a>`
+        : `<span style="font-size:11px;font-family:monospace;color:var(--text-muted)">${esc(epLabel)}</span>`)
       : '';
     const btn = isTools ? '' : (running
       ? `<button class="btn-secondary" style="padding:2px 8px;font-size:10px" onclick="serviceAction('${d.id}','${svcName}','stop',this)">Stop</button>`
@@ -2315,14 +2367,21 @@ function renderOverviewTab() {
   html += '<div class="card">';
   html += '<h3 style="font-size:13px;margin-bottom:8px">Services</h3>';
 
-  // Detect testnet mode
-  const dConfig = d.config ? (typeof d.config === 'string' ? JSON.parse(d.config) : d.config) : {};
+  // Detect testnet mode (reuse dCfg from above)
+  const dConfig = dCfg;
   const isTestnetDeploy = dConfig.mode === 'testnet';
+
+  // For AI Deploy, use default ports if DB ports are null
+  const effL1Port = d.l1_port || (isAIDeployOverview ? 8545 : null);
+  const effL2Port = d.l2_port || (isAIDeployOverview ? 1729 : null);
+  const effExplorerL1Port = d.tools_l1_explorer_port || (isAIDeployOverview ? 8083 : null);
+  const effExplorerL2Port = d.tools_l2_explorer_port || (isAIDeployOverview ? 8082 : null);
+  const effDashboardPort = d.tools_bridge_ui_port || (isAIDeployOverview ? 3000 : null);
 
   // Core services
   html += '<div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:4px">Core</div>';
   if (!isTestnetDeploy) {
-    html += svcRow('L1 Node', 'tokamak-app-l1', d.l1_port ? `:${d.l1_port}` : null);
+    html += svcRow('L1 Node', 'tokamak-app-l1', effL1Port ? `:${effL1Port}` : null);
   } else {
     // Testnet: show external L1 info instead of container
     const testnetCfg = dConfig.testnet || {};
@@ -2334,7 +2393,7 @@ function renderOverviewTab() {
       <span style="font-size:10px;font-family:monospace;color:var(--text-muted);max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${esc(testnetCfg.l1RpcUrl || '')}">${esc((testnetCfg.l1RpcUrl || '').replace(/^https?:\/\//, '').slice(0, 30))}</span>
     </div>`;
   }
-  html += svcRow('L2 Node', 'tokamak-app-l2', d.l2_port ? `:${d.l2_port}` : null);
+  html += svcRow('L2 Node', 'tokamak-app-l2', effL2Port ? `:${effL2Port}` : null);
   html += svcRow('Prover', 'tokamak-app-prover', null);
 
   // Tools services
@@ -2359,7 +2418,7 @@ function renderOverviewTab() {
     html += `<div style="font-size:11px;color:var(--blue-600,#2563eb);padding:4px 8px;margin-bottom:4px;background:var(--blue-50,#eff6ff);border-radius:4px">${pendingMsg}</div>`;
   }
   if (!isTestnetDeploy) {
-    html += svcRow('L1 Explorer', 'frontend-l1', d.tools_l1_explorer_port ? `:${d.tools_l1_explorer_port}` : null, true);
+    html += svcRow('L1 Explorer', 'frontend-l1', effExplorerL1Port ? `:${effExplorerL1Port}` : null, true);
   } else {
     // Testnet: link to public explorer instead of local L1 Explorer
     const explorerUrls = { sepolia: 'https://sepolia.etherscan.io', holesky: 'https://holesky.etherscan.io' };
@@ -2372,8 +2431,8 @@ function renderOverviewTab() {
       </div>`;
     }
   }
-  html += svcRow('L2 Explorer', 'frontend-l2', d.tools_l2_explorer_port ? `:${d.tools_l2_explorer_port}` : null, true);
-  html += svcRow('Dashboard', 'bridge-ui', d.tools_bridge_ui_port ? `:${d.tools_bridge_ui_port}` : null, true);
+  html += svcRow('L2 Explorer', 'frontend-l2', effExplorerL2Port ? `:${effExplorerL2Port}` : null, true);
+  html += svcRow('Dashboard', 'bridge-ui', effDashboardPort ? `:${effDashboardPort}` : null, true);
 
   // Global actions
   html += '<div style="display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">';
@@ -2480,7 +2539,86 @@ function renderOverviewTab() {
   html += '</div>'; // end right
 
   html += '</div>'; // close overview-grid
+
+  // Server Info card — full width below grid (remote/AI-deploy only)
+  if (isRemote && detailHost) {
+    const cpIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    const cmdRow = (label, cmd) => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span style="font-size:11px;color:var(--text-muted);width:100px;flex-shrink:0">${label}</span>
+      <code style="font-size:11px;flex:1;min-width:0;overflow-x:auto;white-space:nowrap;background:var(--bg);padding:4px 8px;border-radius:4px">${esc(cmd)}</code>
+      <button data-copy="${esc(cmd).replace(/"/g,'&quot;')}" onclick="copyCmd(this)" style="background:none;border:none;cursor:pointer;color:var(--text-muted);padding:2px;flex-shrink:0" title="Copy">${cpIcon}</button>
+    </div>`;
+    const hasIP = detailHost.hostname && detailHost.hostname !== '(pending)';
+    const sshKeyPath = detailHost.keyPairName ? `~/.ssh/${detailHost.keyPairName}.pem` : '~/.ssh/key';
+    const deployDir = detailHost.deployDir || `/opt/tokamak/${d.id}`;
+    const cloudLabel = detailHost.cloud ? detailHost.cloud.toUpperCase() : 'Remote';
+    html += `<div class="card" style="margin-top:14px">
+      <h3 style="font-size:13px;margin-bottom:8px">Server Info</h3>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+        <span style="background:var(--blue-100,#dbeafe);color:var(--blue-700,#1d4ed8);padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600">${esc(cloudLabel)}</span>
+        ${hasIP ? '<span style="font-size:12px;font-family:monospace;color:var(--text-secondary);font-weight:600">' + esc(detailHost.hostname) + '</span>' : '<span style="font-size:11px;color:var(--orange-500,#f97316)">IP not assigned yet</span>'}
+        ${detailHost.vmName ? '<span style="font-size:10px;color:var(--text-muted)">(' + esc(detailHost.vmName) + ')</span>' : ''}
+        ${detailHost.region ? '<span style="font-size:10px;color:var(--text-muted)">' + esc(detailHost.region) + '</span>' : ''}
+        ${detailHost.vmType ? '<span style="font-size:10px;color:var(--text-muted)">' + esc(detailHost.vmType) + '</span>' : ''}
+      </div>`;
+    if (hasIP) {
+      const composeProject = d.docker_project || detailHost.vmName || d.id;
+      const sshCmd = `ssh -i ${sshKeyPath} ${detailHost.username}@${detailHost.hostname}`;
+      const dockerCmd = `cd ${deployDir} && docker compose -p ${composeProject} ps`;
+      const logsCmd = `cd ${deployDir} && docker compose -p ${composeProject} logs -f --tail 50`;
+      html += cmdRow('SSH', sshCmd);
+      html += cmdRow('Deploy Dir', deployDir);
+      html += cmdRow('Docker Status', dockerCmd);
+      html += cmdRow('View Logs', logsCmd);
+    } else {
+      if (detailHost.keyPairName) html += `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Key Pair: <code style="font-size:10px">${esc(detailHost.keyPairName)}</code></div>`;
+      html += `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Deploy Dir: <code style="font-size:10px">${esc(deployDir)}</code></div>`;
+    }
+    html += `<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border-light);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <button class="btn-secondary" style="padding:4px 10px;font-size:11px" onclick="checkAIDeployStatus('${d.id}',this)">Check Server Status</button>`;
+    if (detailServerCheck) {
+      const color = detailServerCheck.ok ? 'var(--green-600,#16a34a)' : 'var(--red-500,#ef4444)';
+      html += `<span style="font-size:11px;color:${color}">${esc(detailServerCheck.msg)}</span>`;
+    }
+    html += '</div>';
+    html += '</div>';
+  }
   dynamicEl.innerHTML = html;
+}
+
+async function checkAIDeployStatus(deployId, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  try {
+    const r = await fetch(`${API}/deployments/ai-deploy/monitor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deploymentId: deployId }),
+    });
+    const data = await r.json();
+    let msg = '';
+    if (data.ec2) {
+      msg += `EC2: ${data.ec2.State || 'unknown'}`;
+      if (data.ec2.IP) msg += ` (${data.ec2.IP})`;
+    }
+    if (data.containers && data.containers.length > 0) {
+      const running = data.containers.filter(c => c.status && c.status.startsWith('Up'));
+      msg += ` | Containers: ${running.length}/${data.containers.length} running`;
+    }
+    if (data.services) {
+      const okSvcs = Object.entries(data.services).filter(([,v]) => v.ok).map(([k]) => k);
+      if (okSvcs.length > 0) msg += ` | OK: ${okSvcs.join(', ')}`;
+    }
+    detailServerCheck = { msg: msg || 'No data', ok: true, data };
+  } catch (e) {
+    detailServerCheck = { msg: `Error: ${e.message}`, ok: false };
+  }
+  // Refresh deployment data (monitor may have saved ec2IP to config)
+  try {
+    const dRes = await fetch(`${API}/deployments/${deployId}`);
+    if (dRes.ok) { const dd = await dRes.json(); detailDeployment = dd.deployment || dd; }
+  } catch {}
+  await fetchDetailStatus();
 }
 
 async function deployAction(action) {
@@ -2539,13 +2677,19 @@ function startDetailPolling() {
 }
 
 async function fetchDetailStatus() {
-  if (!currentDeploymentId || !detailDeployment?.docker_project) return;
+  if (!currentDeploymentId) return;
+  const ddConfig = detailDeployment?.config ? (typeof detailDeployment.config === 'string' ? JSON.parse(detailDeployment.config) : detailDeployment.config) : {};
+  const isAIDeployMode = ddConfig.mode === 'ai-deploy';
+  if (!detailDeployment?.docker_project && !isAIDeployMode) return;
   try {
     const [sRes, mRes] = await Promise.all([
       fetch(`${API}/deployments/${currentDeploymentId}/status`),
       fetch(`${API}/deployments/${currentDeploymentId}/monitoring`),
     ]);
-    if (sRes.ok) detailStatus = await sRes.json();
+    if (sRes.ok) {
+      detailStatus = await sRes.json();
+      detailHost = detailStatus.host || null;
+    }
     if (mRes.ok) detailMonitoring = await mRes.json();
     // Fetch contract addresses from bridge-ui config.json (retry until available)
     if (detailDeployment?.tools_bridge_ui_port) {
@@ -2563,7 +2707,9 @@ async function fetchDetailStatus() {
 // ============================================================
 function renderLogsTab() {
   const panel = document.getElementById('tab-logs');
-  if (!detailDeployment?.docker_project) {
+  const logsCfg = detailDeployment?.config ? (typeof detailDeployment.config === 'string' ? JSON.parse(detailDeployment.config) : detailDeployment.config) : {};
+  const logsIsAIDeploy = logsCfg.mode === 'ai-deploy';
+  if (!detailDeployment?.docker_project && !logsIsAIDeploy) {
     panel.innerHTML = '<div class="card"><p style="color:var(--gray-500)">Deploy your L2 first to see logs.</p></div>';
     return;
   }
@@ -2701,6 +2847,36 @@ function renderConfigTab() {
     </div>`;
   }
 
+  // AI Deploy cloud config section
+  let cloudHtml = '';
+  if (config.mode === 'ai-deploy') {
+    const ip = config.ec2IP || '(not assigned)';
+    const vmName = config.vmName || '-';
+    const region = config.region || '-';
+    const vmType = config.vmType || '-';
+    const cloud = (config.cloud || 'aws').toUpperCase();
+    const keyPair = config.keyPairName || '-';
+    const storage = config.storageGB || '-';
+    const l1Mode = config.l1Mode || 'local';
+    const includeProver = config.includeProver !== false ? 'Yes' : 'No';
+    cloudHtml = `
+    <div class="card" style="margin-bottom:24px">
+      <h3 style="margin-bottom:12px">Cloud Deployment</h3>
+      <dl class="info-grid">
+        <dt>Provider</dt><dd><span style="background:var(--blue-100,#dbeafe);color:var(--blue-700,#1d4ed8);padding:1px 6px;border-radius:8px;font-size:11px;font-weight:600">${esc(cloud)}</span></dd>
+        <dt>Server IP</dt><dd><code style="font-size:12px">${esc(ip)}</code></dd>
+        <dt>VM Name</dt><dd><code style="font-size:11px">${esc(vmName)}</code></dd>
+        <dt>Region</dt><dd>${esc(region)}</dd>
+        <dt>Instance Type</dt><dd>${esc(vmType)}</dd>
+        <dt>Storage</dt><dd>${esc(String(storage))} GB</dd>
+        <dt>Key Pair</dt><dd><code style="font-size:11px">${esc(keyPair)}</code></dd>
+        <dt>L1 Mode</dt><dd>${esc(l1Mode)}</dd>
+        <dt>Prover</dt><dd>${esc(includeProver)}</dd>
+        ${config.ec2InstanceId ? '<dt>Instance ID</dt><dd><code style="font-size:11px">' + esc(config.ec2InstanceId) + '</code></dd>' : ''}
+      </dl>
+    </div>`;
+  }
+
   document.getElementById('tab-config').innerHTML = `
     <div class="card" style="margin-bottom:24px">
       <h3 style="margin-bottom:12px">App Configuration</h3>
@@ -2710,6 +2886,7 @@ function renderConfigTab() {
         <dt>Deploy Mode</dt><dd><span class="mode-badge ${config.mode || 'local'}">${esc(config.mode || 'local')}</span></dd>
       </dl>
     </div>
+    ${cloudHtml}
     ${testnetHtml}
     <div class="card" style="margin-bottom:24px">
       <h3 style="margin-bottom:12px">Configuration Files</h3>
@@ -2807,10 +2984,29 @@ async function browseDirPicker() {
 // ============================================================
 // Utilities
 // ============================================================
+// Copy text to clipboard, show "Copied!" feedback on the button
+function copyCmd(btn) {
+  const text = btn.getAttribute('data-copy');
+  if (!text) return;
+  const original = btn.innerHTML;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.innerHTML = original; }, 1500);
+  }).catch(() => {
+    btn.textContent = 'Failed';
+    setTimeout(() => { btn.innerHTML = original; }, 1500);
+  });
+}
+
 function esc(str) {
   const div = document.createElement('div');
   div.textContent = str || '';
   return div.innerHTML;
+}
+
+// Escape for use inside HTML attributes (also escapes quotes)
+function escAttr(str) {
+  return esc(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function toggleRpcUrl(uid, btn) {
