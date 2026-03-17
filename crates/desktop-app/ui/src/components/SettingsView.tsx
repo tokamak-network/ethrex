@@ -41,9 +41,19 @@ export default function SettingsView() {
   const loadConfig = async () => {
     try {
       const cfg = await invoke<AiConfig>('get_ai_config')
-      setProvider(cfg.provider)
+      // If provider is 'tokamak' (removed from UI) but has a key, infer actual provider
+      if (cfg.provider === 'tokamak' && cfg.api_key) {
+        if (cfg.api_key.startsWith('sk-a')) setProvider('claude')
+        else if (cfg.api_key.startsWith('sk-p')) setProvider('gpt')
+        else if (cfg.api_key.startsWith('AIza')) setProvider('gemini')
+        else setProvider('claude')
+      } else if (cfg.provider === 'tokamak') {
+        setProvider('claude')
+      } else {
+        setProvider(cfg.provider)
+      }
       setMaskedKey(cfg.api_key)
-      setModel(cfg.model)
+      setModel(cfg.model || 'claude-sonnet-4-6')
     } catch {
       // defaults
     }
@@ -311,7 +321,6 @@ export default function SettingsView() {
   const [fetchingModels, setFetchingModels] = useState(false)
 
   const models: Record<string, string[]> = {
-    tokamak: [],
     claude: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5-20251001'],
     gpt: ['gpt-4o', 'gpt-4o-mini'],
     gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
@@ -334,7 +343,7 @@ export default function SettingsView() {
   const handleDisconnect = async () => {
     try {
       await invoke('disconnect_ai')
-      setProvider('tokamak')
+      setProvider('claude')
       setApiKey('')
       setMaskedKey('')
       setModel('')
@@ -490,7 +499,20 @@ export default function SettingsView() {
 
         {/* AI Provider */}
         <section className="bg-[var(--color-bg-sidebar)] rounded-xl p-4 space-y-3 border border-[var(--color-border)]">
-          <h2 className="text-[13px] font-medium">{t('settings.aiProvider', lang)}</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-[13px] font-medium">{t('settings.aiProvider', lang)}</h2>
+            {maskedKey ? (
+              <span className="text-[11px] font-medium text-[var(--color-success)] flex items-center gap-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-success)]" />
+                {lang === 'ko' ? '연결됨' : 'Connected'}
+              </span>
+            ) : (
+              <span className="text-[11px] font-medium text-[var(--color-text-secondary)] flex items-center gap-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-text-secondary)]" />
+                {lang === 'ko' ? '미설정' : 'Not configured'}
+              </span>
+            )}
+          </div>
           <div>
             <label className="text-[11px] text-[var(--color-text-secondary)] block mb-1">{t('settings.provider', lang)}</label>
             <select
@@ -498,7 +520,6 @@ export default function SettingsView() {
               onChange={e => { setProvider(e.target.value); setFetchedModels([]); setModel(models[e.target.value]?.[0] || '') }}
               className="w-full bg-[var(--color-bg-main)] rounded-lg px-3 py-2 text-[13px] outline-none border border-[var(--color-border)]"
             >
-              <option value="tokamak">Tokamak AI</option>
               <option value="claude">Claude (Anthropic)</option>
               <option value="gpt">GPT (OpenAI)</option>
               <option value="gemini">Gemini (Google)</option>

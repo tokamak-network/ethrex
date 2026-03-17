@@ -22,9 +22,18 @@ pub enum AiMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiConfig {
     pub provider: String,
-    #[serde(skip_serializing, skip_deserializing)]
+    #[serde(default)]
     pub api_key: String,
+    #[serde(default, deserialize_with = "deserialize_null_string")]
     pub model: String,
+}
+
+fn deserialize_null_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
 }
 
 impl Default for AiConfig {
@@ -126,18 +135,13 @@ impl AiProvider {
     // ---- AI Mode ----
 
     fn load_mode() -> Option<AiMode> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_AI_MODE).ok()?;
-        let data = entry.get_password().ok()?;
+        let data = Self::keychain_get(KEYRING_AI_MODE)?;
         serde_json::from_str(&data).ok()
     }
 
     fn save_mode(mode: &AiMode) -> Result<(), String> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_AI_MODE)
-            .map_err(|e| format!("Keyring error: {e}"))?;
         let data = serde_json::to_string(mode).map_err(|e| e.to_string())?;
-        entry
-            .set_password(&data)
-            .map_err(|e| format!("Failed to save mode: {e}"))
+        Self::keychain_set(KEYRING_AI_MODE, &data)
     }
 
     pub fn get_mode(&self) -> AiMode {
@@ -201,34 +205,67 @@ impl AiProvider {
         Ok(self.get_token_usage())
     }
 
-    // ---- Config persistence (for custom mode) ----
+    // ---- Config persistence (macOS security CLI for Keychain compatibility) ----
+
+    /// Read a secret from macOS Keychain via `security` CLI.
+    /// Uses the same approach as Node.js keychain.js for full compatibility.
+    fn keychain_get(account: &str) -> Option<String> {
+        let output = std::process::Command::new("security")
+            .args(["find-generic-password", "-a", account, "-s", KEYRING_SERVICE, "-w"])
+            .output()
+            .ok()?;
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Write a secret to macOS Keychain via `security` CLI.
+    fn keychain_set(account: &str, secret: &str) -> Result<(), String> {
+        // Delete existing entry first (ignore error if not found)
+        let _ = std::process::Command::new("security")
+            .args(["delete-generic-password", "-a", account, "-s", KEYRING_SERVICE])
+            .output();
+        let output = std::process::Command::new("security")
+            .args(["add-generic-password", "-a", account, "-s", KEYRING_SERVICE, "-w", secret])
+            .output()
+            .map_err(|e| format!("Failed to run security: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!("security add-generic-password failed: {}", String::from_utf8_lossy(&output.stderr)))
+        }
+    }
+
+    /// Delete a secret from macOS Keychain via `security` CLI.
+    fn keychain_delete(account: &str) {
+        let _ = std::process::Command::new("security")
+            .args(["delete-generic-password", "-a", account, "-s", KEYRING_SERVICE])
+            .output();
+    }
 
     fn load_config_meta() -> Option<AiConfig> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_AI_CONFIG).ok()?;
-        let data = entry.get_password().ok()?;
+        let data = Self::keychain_get(KEYRING_AI_CONFIG)?;
         serde_json::from_str(&data).ok()
     }
 
     fn save_config_meta(config: &AiConfig) -> Result<(), String> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_AI_CONFIG)
-            .map_err(|e| format!("Keyring error: {e}"))?;
-        let data = serde_json::to_string(config).map_err(|e| e.to_string())?;
-        entry
-            .set_password(&data)
-            .map_err(|e| format!("Failed to save config: {e}"))
+        // Only save provider + model (api_key is stored separately)
+        let meta = serde_json::json!({
+            "provider": config.provider,
+            "model": config.model,
+        });
+        let data = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
+        Self::keychain_set(KEYRING_AI_CONFIG, &data)
     }
 
     fn load_api_key() -> Option<String> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_API_KEY).ok()?;
-        entry.get_password().ok()
+        Self::keychain_get(KEYRING_API_KEY)
     }
 
     fn save_api_key(key: &str) -> Result<(), String> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_API_KEY)
-            .map_err(|e| format!("Keyring error: {e}"))?;
-        entry
-            .set_password(key)
-            .map_err(|e| format!("Failed to save API key: {e}"))
+        Self::keychain_set(KEYRING_API_KEY, key)
     }
 
     pub fn save_config(&self, config: AiConfig) -> Result<(), String> {
@@ -259,12 +296,8 @@ impl AiProvider {
     }
 
     pub fn clear_config(&self) -> Result<(), String> {
-        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_API_KEY) {
-            let _ = entry.delete_credential();
-        }
-        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_AI_CONFIG) {
-            let _ = entry.delete_credential();
-        }
+        Self::keychain_delete(KEYRING_API_KEY);
+        Self::keychain_delete(KEYRING_AI_CONFIG);
         *self.config.lock().expect("mutex poisoned") = AiConfig::default();
         Ok(())
     }
