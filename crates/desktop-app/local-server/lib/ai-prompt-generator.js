@@ -559,7 +559,7 @@ function generateCloudDeployPrompt(opts) {
   sections.push(deploySection({ projectName, dataDir, isTestnet }));
   sections.push(verifySection({ l2ChainId, isTestnet }));
   sections.push(toolsSection({ dataDir, l2ChainId, isTestnet, l1ChainId, l1Network, l1RpcUrl, programSlug, projectName }));
-  sections.push(firewallSection({ cloud, vmName, isTestnet, sgName }));
+  sections.push(firewallSection({ cloud, vmName, isTestnet, sgName, region }));
   sections.push(summarySection({ isTestnet, deployment }));
   sections.push(troubleshootingSection({ projectName, dataDir, sgName, region }));
 
@@ -765,20 +765,41 @@ if [ -n "$EXISTING" ] && [ "$EXISTING" != "None" ]; then
   echo "✅ Instance already exists: $EXISTING"
   VM_IP=$EXISTING
 else
-  # Create a security group (if not exists)
-  aws ec2 create-security-group \\
-    --group-name ${sgName} \\
-    --description "Tokamak L2 appchain" \\
-    --region ${region} 2>/dev/null || true
+  # Find default VPC and a public subnet (with internet gateway route)
+  VPC_ID=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" \\
+    --query "Vpcs[0].VpcId" --output text --region ${region} 2>/dev/null)
+  if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+    VPC_ID=$(aws ec2 describe-vpcs --query "Vpcs[0].VpcId" --output text --region ${region})
+  fi
+  echo "VPC: $VPC_ID"
 
-  # Open SSH port (required for connection)
-  # For better security, replace 0.0.0.0/0 with your IP: curl -s ifconfig.me
+  # Find a subnet with public IP auto-assign in this VPC
+  SUBNET_ID=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" "Name=map-public-ip-on-launch,Values=true" \\
+    --query "Subnets[0].SubnetId" --output text --region ${region} 2>/dev/null)
+  if [ -z "$SUBNET_ID" ] || [ "$SUBNET_ID" = "None" ]; then
+    SUBNET_ID=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \\
+      --query "Subnets[0].SubnetId" --output text --region ${region})
+  fi
+  echo "Subnet: $SUBNET_ID"
+
+  # Create a security group in the VPC (if not exists)
+  SG_ID=$(aws ec2 create-security-group \\
+    --group-name ${sgName} --vpc-id $VPC_ID \\
+    --description "Tokamak L2 appchain" \\
+    --query "GroupId" --output text \\
+    --region ${region} 2>/dev/null) || \\
+  SG_ID=$(aws ec2 describe-security-groups \\
+    --filters "Name=group-name,Values=${sgName}" "Name=vpc-id,Values=$VPC_ID" \\
+    --query "SecurityGroups[0].GroupId" --output text --region ${region})
+  echo "Security Group: $SG_ID"
+
+  # Open SSH port with current IP
   MY_IP=$(curl -s ifconfig.me 2>/dev/null || echo "0.0.0.0")
   aws ec2 authorize-security-group-ingress \\
-    --group-name ${sgName} --protocol tcp --port 22 --cidr $MY_IP/32 \\
+    --group-id $SG_ID --protocol tcp --port 22 --cidr $MY_IP/32 \\
     --region ${region} 2>/dev/null || true
 
-  # Launch instance
+  # Launch instance in the public subnet
   aws ec2 run-instances \\
     --region ${region} \\
     --instance-type ${vmType} \\
@@ -786,7 +807,7 @@ else
     --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":${diskSize},"VolumeType":"gp3"}}]' \\
     --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=${vmName}}]' \\
     --key-name ${keyName} \\
-    --security-groups ${sgName} \\
+    --network-interfaces "SubnetId=$SUBNET_ID,AssociatePublicIpAddress=true,DeviceIndex=0,Groups=[$SG_ID]" \\
     --count 1
 
   # Wait for instance to be running
@@ -1112,7 +1133,7 @@ curl -s http://localhost:${DEFAULT_PORTS.dashboard}/ | head -c 200
 \`\`\``;
 }
 
-function firewallSection({ cloud, vmName, isTestnet, sgName = "tokamak-l2-sg" }) {
+function firewallSection({ cloud, vmName, isTestnet, sgName = "tokamak-l2-sg", region = "ap-northeast-2" }) {
   if (cloud === "gcp") {
     const ports = isTestnet
       ? `${DEFAULT_PORTS.l2},${DEFAULT_PORTS.l2Explorer},${DEFAULT_PORTS.dashboard}`
@@ -1151,25 +1172,27 @@ sudo ufw enable
   }
 
   // AWS
+  // Only open ports that external users need (L2 services + tools)
+  // L1 RPC/Explorer are internal — accessed within Docker network only
   const sgRules = [
     { port: DEFAULT_PORTS.l2, desc: "L2 RPC" },
     { port: DEFAULT_PORTS.l2Explorer, desc: "L2 Explorer" },
-    { port: DEFAULT_PORTS.dashboard, desc: "Dashboard" },
+    { port: DEFAULT_PORTS.l1Explorer, desc: "L1 Explorer" },
+    { port: DEFAULT_PORTS.dashboard, desc: "Bridge Dashboard" },
   ];
-  if (!isTestnet) {
-    sgRules.push({ port: DEFAULT_PORTS.l1, desc: "L1 RPC" });
-    sgRules.push({ port: DEFAULT_PORTS.l1Explorer, desc: "L1 Explorer" });
-  }
 
   const rules = sgRules.map(r =>
-    `aws ec2 authorize-security-group-ingress --group-name ${sgName} --protocol tcp --port ${r.port} --cidr 0.0.0.0/0  # ${r.desc}`
+    `aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port ${r.port} --cidr 0.0.0.0/0 --region ${region}  # ${r.desc}`
   ).join("\n");
 
   return `## Step 7: Open Firewall Ports
 
-> 서비스 포트는 외부 접근을 위해 전체 공개(0.0.0.0/0)됩니다. 실 운영 환경에서는 IP 제한을 권장합니다.
+> L2 RPC, Explorer, Dashboard 포트를 외부에서 접근할 수 있도록 개방합니다 (SSH 제외).
+> 실 운영 환경에서는 필요한 포트만 특정 IP로 제한하세요.
 
 \`\`\`bash
+# SG_ID가 없으면 조회
+SG_ID=\${SG_ID:-$(aws ec2 describe-security-groups --filters "Name=group-name,Values=${sgName}" --query "SecurityGroups[0].GroupId" --output text --region ${region})}
 ${rules}
 \`\`\``;
 }
@@ -1246,7 +1269,7 @@ aws ec2 stop-instances --instance-ids INSTANCE_ID --region REGION
 aws ec2 terminate-instances --instance-ids INSTANCE_ID --region REGION
 
 # Security Group 삭제 (인스턴스 terminate 후)
-aws ec2 delete-security-group --group-name ${sgName} --region ${region}
+aws ec2 delete-security-group --group-id $(aws ec2 describe-security-groups --filters "Name=group-name,Values=${sgName}" --query "SecurityGroups[0].GroupId" --output text --region ${region}) --region ${region}
 \`\`\`
 
 > terminate하면 EBS, Public IP 모두 삭제되어 과금이 즉시 중지됩니다.
