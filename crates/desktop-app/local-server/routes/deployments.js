@@ -175,7 +175,7 @@ router.get("/ai-deploy/check-cli", async (req, res) => {
 });
 
 // Input sanitizer for shell-safe values
-const SAFE_NAME_RE = /^[a-zA-Z0-9._-]+$/;
+const SAFE_NAME_RE = /^[a-zA-Z0-9_-]+$/;  // No dots or slashes — prevents path traversal
 const SAFE_REGION_RE = /^[a-z]{2}-[a-z]+-\d+$/;
 
 // POST /api/deployments/ai-deploy/monitor — check EC2 + container status via AWS CLI + SSH
@@ -234,6 +234,16 @@ router.post("/ai-deploy/monitor", async (req, res) => {
   }
 
   const ip = result.ec2.IP;
+  // Validate IP is a public address (prevent SSRF to internal services)
+  const ipParts = ip.split(".").map(Number);
+  const isPrivate = (ipParts[0] === 10) ||
+    (ipParts[0] === 172 && ipParts[1] >= 16 && ipParts[1] <= 31) ||
+    (ipParts[0] === 192 && ipParts[1] === 168) ||
+    (ipParts[0] === 127);
+  if (isPrivate) {
+    result.services = {};
+    return res.json(result);
+  }
   const os = require("os");
   const path = require("path");
   const keyPath = keyPairName ? path.join(os.homedir(), ".ssh", `${keyPairName}.pem`) : "";

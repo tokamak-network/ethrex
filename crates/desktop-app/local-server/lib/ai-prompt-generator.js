@@ -769,8 +769,10 @@ else
     --region ${region} 2>/dev/null || true
 
   # Open SSH port (required for connection)
+  # For better security, replace 0.0.0.0/0 with your IP: curl -s ifconfig.me
+  MY_IP=$(curl -s ifconfig.me 2>/dev/null || echo "0.0.0.0")
   aws ec2 authorize-security-group-ingress \\
-    --group-name tokamak-l2-sg --protocol tcp --port 22 --cidr 0.0.0.0/0 \\
+    --group-name tokamak-l2-sg --protocol tcp --port 22 --cidr $MY_IP/32 \\
     --region ${region} 2>/dev/null || true
 
   # Launch instance
@@ -1052,7 +1054,7 @@ Tools 스택:
 cd ${dataDir}
 
 # Download the tools compose file from the repository
-curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/feat/app-customized-framework/crates/l2/docker-compose-zk-dex-tools.yaml \\
+curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/tokamak-dev/crates/l2/docker-compose-zk-dex-tools.yaml \\
   -o docker-compose-tools.yaml
 
 # Get the deployed contract addresses from the deployer
