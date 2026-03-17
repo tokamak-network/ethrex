@@ -13,35 +13,41 @@ const HEADERS: Record<string, string> = {
   "User-Agent": "tokamak-platform-registry",
 };
 
+const TIMEOUT = 15000; // 15s timeout for GitHub API calls
+
 function authHeaders() {
-  if (!GITHUB_TOKEN) throw new Error("GITHUB_BOT_TOKEN is required");
+  if (!GITHUB_TOKEN) throw new Error("GITHUB_BOT_TOKEN or GITHUB_TOKEN env var is required");
   return { ...HEADERS, Authorization: `Bearer ${GITHUB_TOKEN}` };
+}
+
+function fetchOpts(init?: RequestInit): RequestInit {
+  return { ...init, signal: AbortSignal.timeout(TIMEOUT) };
 }
 
 const API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`;
 
 export async function getBranchSHA(branch = "main") {
-  const res = await fetch(`${API}/git/ref/heads/${branch}`, {
+  const res = await fetch(`${API}/git/ref/heads/${branch}`, fetchOpts({
     headers: authHeaders(),
-  });
+  }));
   if (!res.ok) throw new Error(`getBranchSHA: ${res.status} ${await res.text()}`);
   const data = await res.json();
   return data.object.sha as string;
 }
 
 export async function createBranch(branchName: string, baseSha: string) {
-  const res = await fetch(`${API}/git/refs`, {
+  const res = await fetch(`${API}/git/refs`, fetchOpts({
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({ ref: `refs/heads/${branchName}`, sha: baseSha }),
-  });
+  }));
   if (res.status === 422) return; // Branch already exists
   if (!res.ok) throw new Error(`createBranch: ${res.status} ${await res.text()}`);
 }
 
 export async function createOrUpdateFile(filePath: string, content: string, branch: string, commitMessage: string) {
   let existingSHA: string | null = null;
-  const checkRes = await fetch(`${API}/contents/${filePath}?ref=${branch}`, { headers: authHeaders() });
+  const checkRes = await fetch(`${API}/contents/${filePath}?ref=${branch}`, fetchOpts({ headers: authHeaders() }));
   if (checkRes.ok) {
     const existing = await checkRes.json();
     existingSHA = existing.sha;
@@ -54,28 +60,28 @@ export async function createOrUpdateFile(filePath: string, content: string, bran
   };
   if (existingSHA) body.sha = existingSHA;
 
-  const res = await fetch(`${API}/contents/${filePath}`, {
+  const res = await fetch(`${API}/contents/${filePath}`, fetchOpts({
     method: "PUT",
     headers: authHeaders(),
     body: JSON.stringify(body),
-  });
+  }));
   if (!res.ok) throw new Error(`createOrUpdateFile: ${res.status} ${await res.text()}`);
   const data = await res.json();
   return data.commit.sha as string;
 }
 
 export async function createPullRequest(title: string, body: string, head: string, base = "main") {
-  const res = await fetch(`${API}/pulls`, {
+  const res = await fetch(`${API}/pulls`, fetchOpts({
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({ title, body, head, base }),
-  });
+  }));
   if (!res.ok) throw new Error(`createPullRequest: ${res.status} ${await res.text()}`);
   const data = await res.json();
 
   // Enable auto-merge (squash)
   try {
-    await fetch("https://api.github.com/graphql", {
+    await fetch("https://api.github.com/graphql", fetchOpts({
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({
@@ -85,7 +91,7 @@ export async function createPullRequest(title: string, body: string, head: strin
           }
         }`,
       }),
-    });
+    }));
   } catch (e) {
     console.warn("[github-pr] Failed to enable auto-merge:", (e as Error).message);
   }
@@ -94,20 +100,20 @@ export async function createPullRequest(title: string, body: string, head: strin
 }
 
 export async function getPullRequest(prNumber: number) {
-  const res = await fetch(`${API}/pulls/${prNumber}`, { headers: authHeaders() });
+  const res = await fetch(`${API}/pulls/${prNumber}`, fetchOpts({ headers: authHeaders() }));
   if (!res.ok) throw new Error(`getPullRequest: ${res.status} ${await res.text()}`);
   return res.json();
 }
 
 export async function findOpenPR(filePath: string) {
-  const res = await fetch(`${API}/pulls?state=open&per_page=50`, { headers: authHeaders() });
+  const res = await fetch(`${API}/pulls?state=open&per_page=50`, fetchOpts({ headers: authHeaders() }));
   if (!res.ok) return null;
   const prs = await res.json();
   const filename = filePath.split("/").pop()!.replace(".json", "");
   for (const pr of prs) {
     if (!pr.title.includes(filename)) continue;
     try {
-      const filesRes = await fetch(`${API}/pulls/${pr.number}/files`, { headers: authHeaders() });
+      const filesRes = await fetch(`${API}/pulls/${pr.number}/files`, fetchOpts({ headers: authHeaders() }));
       if (!filesRes.ok) continue;
       const files = await filesRes.json();
       if (files.some((f: { filename: string }) => f.filename === filePath)) {
@@ -126,17 +132,17 @@ export async function updatePullRequest(prNumber: number, updates: { title?: str
   if (updates.body) filtered.body = updates.body;
   if (Object.keys(filtered).length === 0) return;
 
-  const res = await fetch(`${API}/pulls/${prNumber}`, {
+  const res = await fetch(`${API}/pulls/${prNumber}`, fetchOpts({
     method: "PATCH",
     headers: authHeaders(),
     body: JSON.stringify(filtered),
-  });
+  }));
   if (!res.ok) throw new Error(`updatePullRequest: ${res.status} ${await res.text()}`);
   return res.json();
 }
 
 export async function getFileContent(filePath: string, branch = "main") {
-  const res = await fetch(`${API}/contents/${filePath}?ref=${branch}`, { headers: authHeaders() });
+  const res = await fetch(`${API}/contents/${filePath}?ref=${branch}`, fetchOpts({ headers: authHeaders() }));
   if (!res.ok) return null;
   const data = await res.json();
   if (!data.content) return null;

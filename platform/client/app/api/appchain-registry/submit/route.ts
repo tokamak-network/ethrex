@@ -84,9 +84,10 @@ export async function POST(req: NextRequest) {
     const ownership = await verifyOnChainOwnership(rpcUrl, timelockAddress, recoveredAddress);
     if (!ownership.valid) {
       console.error("[appchain-registry] Ownership check failed:", ownership.error);
+      const status = ownership.rpcError ? 502 : 403;
       return NextResponse.json(
         { success: false, error: "On-chain ownership verification failed", code: "OWNERSHIP_CHECK_FAILED" },
-        { status: 403 },
+        { status },
       );
     }
 

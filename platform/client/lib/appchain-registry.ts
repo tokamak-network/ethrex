@@ -96,8 +96,11 @@ export function validateMetadataStructure(metadata: Record<string, unknown>): st
     errors.push("Missing l1Contracts.OnChainProposer");
   }
 
-  if (meta?.signature && !/^0x[a-fA-F0-9]{130}$/.test(meta.signature as string)) {
+  if (meta?.signature && (typeof meta.signature !== "string" || !/^0x[a-fA-F0-9]{130}$/.test(meta.signature))) {
     errors.push("Invalid signature format");
+  }
+  if (meta?.signedBy && typeof meta.signedBy !== "string") {
+    errors.push("metadata.signedBy must be a string");
   }
 
   return errors;
@@ -111,7 +114,7 @@ export async function verifyOnChainOwnership(
   rpcUrl: string,
   timelockAddress: string,
   signerAddress: string,
-): Promise<{ valid: boolean; error?: string }> {
+): Promise<{ valid: boolean; error?: string; rpcError?: boolean }> {
   try {
     const provider = new ethers.JsonRpcProvider(rpcUrl);
     const timelock = new ethers.Contract(timelockAddress, TIMELOCK_ABI, provider);
@@ -121,7 +124,7 @@ export async function verifyOnChainOwnership(
     }
     return { valid: true };
   } catch (e) {
-    return { valid: false, error: `On-chain verification failed: ${(e as Error).message}` };
+    return { valid: false, error: `On-chain verification failed: ${(e as Error).message}`, rpcError: true };
   }
 }
 
