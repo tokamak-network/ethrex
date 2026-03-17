@@ -376,7 +376,8 @@ export default function L2DetailPublishTab({ l2, ko }: Props) {
 
   // timelockAddress가 핵심 — proposerAddress와 l1ChainId는 폴백 가능
   const canSubmit = !!(l2.timelockAddress && l2.proposerAddress)
-  const effectiveL1ChainId = l2.l1ChainId || 9 // 로컬 L1 기본 chain ID = 9
+  const LOCAL_L1_CHAIN_ID = 9 // Default chain ID for the bundled local L1 node
+  const effectiveL1ChainId = l2.l1ChainId || LOCAL_L1_CHAIN_ID
   const displayL2ChainId = rpcChainId ?? l2.l2ChainId ?? l2.chainId
 
   return (

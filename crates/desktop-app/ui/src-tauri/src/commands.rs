@@ -837,12 +837,30 @@ pub async fn get_docker_containers(
 }
 
 // ============================================================================
-// Generic Keychain value storage via macOS `security` CLI.
-// Uses the same method as the local server (keychain.js) for compatibility.
+// Generic Keychain value storage — cross-platform.
+// macOS: uses `security` CLI for Keychain (compatible with Node.js keychain.js)
+// Windows/Linux: uses `keyring` crate (Windows Credential Manager / Secret Service)
 // ============================================================================
 
 const KEYRING_SERVICE: &str = "tokamak-appchain";
 
+/// Allowed key prefixes for frontend access (security boundary)
+const ALLOWED_KEY_PREFIXES: &[&str] = &["pinata_", "deployer_pk_", "ai-"];
+
+fn validate_keychain_key(key: &str) -> Result<(), String> {
+    if ALLOWED_KEY_PREFIXES.iter().any(|prefix| key.starts_with(prefix)) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Key '{}' is not allowed. Must start with one of: {}",
+            key,
+            ALLOWED_KEY_PREFIXES.join(", ")
+        ))
+    }
+}
+
+// --- macOS: `security` CLI ---
+#[cfg(target_os = "macos")]
 fn keychain_get(account: &str) -> Result<Option<String>, String> {
     let output = std::process::Command::new("security")
         .args(["find-generic-password", "-a", account, "-s", KEYRING_SERVICE, "-w"])
@@ -860,8 +878,8 @@ fn keychain_get(account: &str) -> Result<Option<String>, String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn keychain_set(account: &str, secret: &str) -> Result<(), String> {
-    // Delete existing entry first (ignore errors)
     let _ = std::process::Command::new("security")
         .args(["delete-generic-password", "-a", account, "-s", KEYRING_SERVICE])
         .output();
@@ -876,6 +894,7 @@ fn keychain_set(account: &str, secret: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn keychain_delete(account: &str) -> Result<(), String> {
     let output = std::process::Command::new("security")
         .args(["delete-generic-password", "-a", account, "-s", KEYRING_SERVICE])
@@ -888,18 +907,50 @@ fn keychain_delete(account: &str) -> Result<(), String> {
     }
 }
 
+// --- Windows/Linux: `keyring` crate ---
+#[cfg(not(target_os = "macos"))]
+fn keychain_get(account: &str) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+        .map_err(|e| format!("Keyring error: {e}"))?;
+    match entry.get_password() {
+        Ok(pw) => Ok(Some(pw)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Keyring error: {e}")),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_set(account: &str, secret: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+        .map_err(|e| format!("Keyring error: {e}"))?;
+    entry.set_password(secret).map_err(|e| format!("Keyring error: {e}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_delete(account: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+        .map_err(|e| format!("Keyring error: {e}"))?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("Keyring error: {e}")),
+    }
+}
+
 #[tauri::command]
 pub fn get_keychain_value(key: String) -> Result<Option<String>, String> {
+    validate_keychain_key(&key)?;
     keychain_get(&key)
 }
 
 #[tauri::command]
 pub fn save_keychain_value(key: String, value: String) -> Result<(), String> {
+    validate_keychain_key(&key)?;
     keychain_set(&key, &value)
 }
 
 #[tauri::command]
 pub fn delete_keychain_value(key: String) -> Result<(), String> {
+    validate_keychain_key(&key)?;
     keychain_delete(&key)
 }
 

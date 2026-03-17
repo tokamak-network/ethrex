@@ -210,6 +210,7 @@ impl AiProvider {
     // macOS: uses `security` CLI for Keychain compatibility with Node.js keychain.js
     // Windows/Linux: uses `keyring` crate (Windows Credential Manager / Secret Service)
 
+    #[cfg(target_os = "macos")]
     fn keychain_get(account: &str) -> Option<String> {
         let output = std::process::Command::new("security")
             .args(["find-generic-password", "-a", account, "-s", KEYRING_SERVICE, "-w"])
@@ -222,8 +223,8 @@ impl AiProvider {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn keychain_set(account: &str, secret: &str) -> Result<(), String> {
-        // Delete existing entry first (ignore errors)
         let _ = std::process::Command::new("security")
             .args(["delete-generic-password", "-a", account, "-s", KEYRING_SERVICE])
             .output();
@@ -238,10 +239,31 @@ impl AiProvider {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn keychain_delete(account: &str) {
         let _ = std::process::Command::new("security")
             .args(["delete-generic-password", "-a", account, "-s", KEYRING_SERVICE])
             .output();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn keychain_get(account: &str) -> Option<String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account).ok()?;
+        entry.get_password().ok()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn keychain_set(account: &str, secret: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+            .map_err(|e| format!("Keyring error: {e}"))?;
+        entry.set_password(secret).map_err(|e| format!("Keyring error: {e}"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn keychain_delete(account: &str) {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, account) {
+            let _ = entry.delete_credential();
+        }
     }
 
     fn load_config_meta() -> Option<AiConfig> {

@@ -1138,7 +1138,9 @@ router.get("/:id/status", async (req, res) => {
           try {
             const toolsContainers = await remote.getStatusRemote(conn, `${deployment.docker_project}-tools`, remoteDir);
             if (toolsContainers.length > 0) containers = containers.concat(toolsContainers);
-          } catch {}
+          } catch (e) {
+            console.warn(`[status] Failed to get tools containers for ${deployment.id}: ${e.message}`);
+          }
         } catch (e) {
           console.error(`[status] Remote SSH failed for ${deployment.id}: ${e.message}`);
         } finally {
