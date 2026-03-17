@@ -34,6 +34,10 @@ interface DeploymentFromDB {
   tools_bridge_ui_port: number | null
   hashtags: string | null
   ever_running: number
+  l1_chain_id: number | null
+  host_id: string | null
+  public_l2_rpc_url: string | null
+  public_domain: string | null
 }
 
 export interface L2Config {
@@ -75,6 +79,10 @@ export interface L2Config {
   testnetL1RpcUrl: string | null
   rawConfig: string | null
   everRunning: boolean
+  // Remote deployment fields
+  hostId: string | null
+  publicRpcUrl: string | null
+  deployMethod: string | null
 }
 
 function deploymentToL2Config(d: DeploymentFromDB): L2Config {
@@ -87,6 +95,25 @@ function deploymentToL2Config(d: DeploymentFromDB): L2Config {
   try { config = d.config ? JSON.parse(d.config as string) : {} } catch { /* ignore */ }
   const isTestnet = config.mode === 'testnet'
   const testnet = (config.testnet || {}) as Record<string, unknown>
+  // Determine networkMode:
+  // 1. config.mode explicitly set (testnet/mainnet) → use it
+  // 2. config.cloud === 'aws' or host_id set → AWS
+  // 3. l1_port set → local (has own L1 node bundled in Docker)
+  // 4. l1_chain_id set but no l1_port → testnet (external L1)
+  // 5. default → local
+  const isAws = !!d.host_id || config.cloud === 'aws'
+  const hasLocalL1 = !!d.l1_port
+  const networkMode = config.mode === 'testnet' ? 'testnet'
+    : config.mode === 'mainnet' ? 'mainnet'
+    : isAws ? 'aws'
+    : hasLocalL1 ? 'local'
+    : d.l1_chain_id ? 'testnet'
+    : 'local'
+  // L1 chain ID: DB field > config.l1ChainId > config.testnet.l1ChainId
+  const l1ChainId = d.l1_chain_id
+    ?? (config.l1ChainId as number | undefined)
+    ?? (isTestnet ? (testnet.l1ChainId as number ?? null) : null)
+    ?? null
   return {
     id: d.id,
     name: d.name,
@@ -94,7 +121,7 @@ function deploymentToL2Config(d: DeploymentFromDB): L2Config {
     chainId: d.chain_id || 0,
     description: `${d.program_slug} · ${d.phase}`,
     status: statusMap[d.status] ?? 'stopped',
-    nativeToken: 'TON',
+    nativeToken: d.native_token || 'ETH',
     l1Rpc: d.rpc_url || '',
     rpcPort: d.l2_port || 0,
     sequencerStatus: d.status === 'running' ? 'running' : 'stopped',
@@ -103,7 +130,7 @@ function deploymentToL2Config(d: DeploymentFromDB): L2Config {
     isPublic: d.is_public === 1,
     platformDeploymentId: d.platform_deployment_id || null,
     createdAt: new Date(d.created_at).toISOString(),
-    networkMode: isTestnet ? 'testnet' : 'local',
+    networkMode,
     source: 'docker',
     programSlug: d.program_slug,
     phase: d.phase,
@@ -118,12 +145,15 @@ function deploymentToL2Config(d: DeploymentFromDB): L2Config {
     toolsL1ExplorerPort: d.tools_l1_explorer_port,
     toolsL2ExplorerPort: d.tools_l2_explorer_port,
     toolsBridgeUIPort: d.tools_bridge_ui_port,
-    l1ChainId: isTestnet ? (testnet.l1ChainId as number ?? null) : null,
+    l1ChainId,
     l2ChainId: null,
     testnetNetwork: isTestnet ? (testnet.network as string ?? null) : null,
     testnetL1RpcUrl: isTestnet ? (testnet.l1RpcUrl as string ?? null) : null,
     rawConfig: d.config as string | null,
     everRunning: !!d.ever_running,
+    hostId: d.host_id || null,
+    publicRpcUrl: d.public_l2_rpc_url || null,
+    deployMethod: d.deploy_method || null,
   }
 }
 
@@ -184,15 +214,20 @@ export default function MyL2View() {
       const rows = await invoke<DeploymentFromDB[]>('list_docker_deployments')
       const configs = rows.map(deploymentToL2Config)
 
-      // Reconcile live Docker status with stale SQLite status
+      // Phase 1: Show DB data immediately
+      setL2s(configs)
+
+      // Phase 2: Reconcile live status in background (non-blocking)
       const updated = await Promise.all(configs.map(async (l2) => {
+        // Skip live status check for stopped/configured deployments
+        if (l2.phase === 'stopped' || l2.phase === 'configured' || l2.status === 'stopped') {
+          return l2
+        }
         try {
           const containers = await invoke<{ name: string; service: string; state: string; status: string; ports: string; image: string; id: string }[]>(
             'get_docker_containers', { id: l2.id }
           )
           if (containers.length === 0) {
-            // No containers → actually stopped
-            // Also fix 'created' status for provisioned deployments (recovery set status=configured)
             if (l2.status === 'running' || l2.status === 'error' || (l2.status === 'created' && l2.dockerProject) || l2.everRunning) {
               return { ...l2, status: 'stopped' as const, phase: 'stopped', description: `${l2.programSlug} · stopped`, sequencerStatus: 'stopped' as const, proverStatus: 'stopped' as const }
             }
@@ -203,7 +238,7 @@ export default function MyL2View() {
           const anyError = containers.some(c => c.state === 'exited' || c.state === 'dead')
 
           // Fetch real chain IDs from monitoring API if running
-          let l1ChainId: number | null = l2.l1ChainId  // keep config-based value as fallback
+          let l1ChainId: number | null = l2.l1ChainId
           let l2ChainId: number | null = l2.l2ChainId
           if (anyRunning) {
             try {
@@ -225,7 +260,6 @@ export default function MyL2View() {
             return { ...l2, status: 'stopped' as const, phase: 'stopped', description: `${l2.programSlug} · stopped`, sequencerStatus: 'stopped' as const, proverStatus: 'stopped' as const }
           }
         } catch {
-          // Can't reach local-server — keep DB status
           return l2
         }
       }))
@@ -433,9 +467,17 @@ export default function MyL2View() {
                     }
                   </div>
                   <div className="flex flex-wrap gap-1 mt-1">
-                    {l2.networkMode === 'testnet' ? (
+                    {l2.networkMode === 'aws' ? (
+                      <span className="text-[10px] text-white bg-[#f97316] px-1.5 py-0.5 rounded font-medium">
+                        AWS
+                      </span>
+                    ) : l2.networkMode === 'testnet' ? (
                       <span className="text-[10px] text-black bg-[var(--color-warning)] px-1.5 py-0.5 rounded font-medium">
                         Testnet
+                      </span>
+                    ) : l2.networkMode === 'mainnet' ? (
+                      <span className="text-[10px] text-white bg-[#22c55e] px-1.5 py-0.5 rounded font-medium">
+                        Mainnet
                       </span>
                     ) : l2.networkMode === 'local' ? (
                       <span className="text-[10px] text-white bg-[#6366f1] px-1.5 py-0.5 rounded font-medium">

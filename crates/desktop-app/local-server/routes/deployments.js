@@ -276,6 +276,33 @@ router.post("/ai-deploy/monitor", async (req, res) => {
     }
   }
 
+  // 2.5. Extract contract addresses from deployer env file via SSH
+  if (keyPath) {
+    try {
+      const envContent = execFileSync("ssh", [
+        "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+        "-i", keyPath, `ubuntu@${ip}`,
+        "docker cp $(docker ps -aq -f name=deployer | head -1):/env/.env /dev/stdout 2>/dev/null || cat /opt/tokamak/*/deployed.env 2>/dev/null || echo ''",
+      ], { timeout: 15000, stdio: "pipe" }).toString().trim();
+      if (envContent) {
+        const contracts = {};
+        for (const line of envContent.split("\n")) {
+          const [key, val] = line.split("=");
+          if (key && val) contracts[key.trim()] = val.trim();
+        }
+        result.contracts = {
+          bridge: contracts.ETHREX_WATCHER_BRIDGE_ADDRESS || null,
+          proposer: contracts.ETHREX_COMMITTER_ON_CHAIN_PROPOSER_ADDRESS || null,
+          timelock: contracts.ETHREX_TIMELOCK_ADDRESS || null,
+          sp1Verifier: contracts.ETHREX_DEPLOYER_SP1_VERIFIER_ADDRESS || null,
+          guestProgramRegistry: contracts.ETHREX_DEPLOYER_GUEST_PROGRAM_REGISTRY_ADDRESS || null,
+        };
+      }
+    } catch {
+      // Contract extraction is best-effort
+    }
+  }
+
   // 3. Check HTTP endpoints (parallel)
   const endpoints = [
     { name: "L2 RPC", port: 1729, type: "rpc" },
@@ -715,7 +742,7 @@ function updateDeploymentHandler(req, res) {
       return res.status(404).json({ error: "Deployment not found" });
     }
 
-    const allowedFields = ["name", "chain_id", "l1_chain_id", "rpc_url", "config", "is_public", "hashtags", "platform_deployment_id", "phase", "status"];
+    const allowedFields = ["name", "chain_id", "l1_chain_id", "rpc_url", "config", "is_public", "hashtags", "platform_deployment_id", "phase", "status", "bridge_address", "proposer_address", "timelock_address", "sp1_verifier_address", "guest_program_registry_address"];
     const updates = [];
     const values = [];
 
@@ -1108,18 +1135,22 @@ router.get("/:id/status", async (req, res) => {
     const deployment = db.prepare("SELECT * FROM deployments WHERE id = ?").get(req.params.id);
     if (!deployment) return res.status(404).json({ error: "Deployment not found" });
 
+    // Skip SSH polling for stopped/configured deployments (no need to probe unreachable servers)
+    if (deployment.phase === 'stopped' || deployment.phase === 'configured' || deployment.status === 'stopped') {
+      return res.json({ phase: deployment.phase, containers: [], endpoints: {} });
+    }
+
     // Determine if this is a remote deployment (SSH host or AI-deploy with EC2)
     const dConfig = deployment.config ? (typeof deployment.config === 'string' ? JSON.parse(deployment.config) : deployment.config) : {};
     const isHostRemote = !!deployment.host_id;
-    const isAIDeploy = dConfig.mode === 'ai-deploy';
+    const isAIDeployRemote = dConfig.mode === 'ai-deploy' && !!dConfig.ec2IP;
 
-    if (!deployment.docker_project && !isAIDeploy) {
+    if (!deployment.docker_project && !isAIDeployRemote) {
       return res.json({ phase: deployment.phase, containers: [], endpoints: {} });
     }
 
     let containers = [];
     let host = null;
-    const isRemote = isHostRemote || isAIDeploy;
 
     if (isHostRemote) {
       // Remote deployment via hosts table: query containers via SSH
@@ -1136,28 +1167,27 @@ router.get("/:id/status", async (req, res) => {
           conn = await remote.connect(hostRecord);
           const remoteDir = host.deployDir;
           containers = await remote.getStatusRemote(conn, deployment.docker_project, remoteDir);
-          // Also fetch tools containers on remote
           try {
             const toolsContainers = await remote.getStatusRemote(conn, `${deployment.docker_project}-tools`, remoteDir);
-            if (toolsContainers.length > 0) {
-              containers = containers.concat(toolsContainers);
-            }
-          } catch {}
+            if (toolsContainers.length > 0) containers = containers.concat(toolsContainers);
+          } catch (e) {
+            console.warn(`[status] Failed to get tools containers for ${deployment.id}: ${e.message}`);
+          }
         } catch (e) {
           console.error(`[status] Remote SSH failed for ${deployment.id}: ${e.message}`);
         } finally {
           if (conn) try { conn.end(); } catch {}
         }
       }
-    } else if (isAIDeploy) {
-      // AI Deploy: EC2 instance info from config
-      const ip = dConfig.ec2IP || null;
+    } else if (isAIDeployRemote) {
+      // AI Deploy with EC2 instance: query via SSH
+      const ip = dConfig.ec2IP;
       const keyPairName = dConfig.keyPairName || null;
       const username = 'ubuntu';
       const shortId = deployment.id.slice(0, 8);
       const remoteDir = `/opt/tokamak/${shortId}`;
       host = {
-        hostname: ip || '(pending)',
+        hostname: ip,
         username,
         port: 22,
         deployDir: remoteDir,
@@ -1168,7 +1198,6 @@ router.get("/:id/status", async (req, res) => {
         vmType: dConfig.vmType || null,
         awsAccount: dConfig.awsAccount || null,
       };
-      // Query containers via SSH only if we have an IP and key
       if (ip && keyPairName) {
         const os = require("os");
         const keyPath = path.join(os.homedir(), ".ssh", `${keyPairName}.pem`);
@@ -1178,10 +1207,7 @@ router.get("/:id/status", async (req, res) => {
             const hostRecord = { hostname: ip, port: 22, username, auth_method: 'key', private_key: fs.readFileSync(keyPath, 'utf-8') };
             conn = await remote.connect(hostRecord);
             const projectName = deployment.docker_project || dConfig.vmName || deployment.id;
-            try {
-              containers = await remote.getStatusRemote(conn, projectName, remoteDir);
-            } catch {}
-            // Also fetch tools containers
+            try { containers = await remote.getStatusRemote(conn, projectName, remoteDir); } catch {}
             try {
               const toolsContainers = await remote.getStatusRemote(conn, `${projectName}-tools`, remoteDir);
               if (toolsContainers.length > 0) containers = containers.concat(toolsContainers);
@@ -1199,18 +1225,14 @@ router.get("/:id/status", async (req, res) => {
       if (fs.existsSync(composeFile)) {
         containers = await docker.getStatus(deployment.docker_project, composeFile);
       }
-      // Also fetch tools containers (Explorer, Bridge UI, etc.)
       try {
         const toolsContainers = await docker.getToolsStatus(`${deployment.docker_project}-tools`);
-        if (toolsContainers.length > 0) {
-          containers = containers.concat(toolsContainers);
-        }
+        if (toolsContainers.length > 0) containers = containers.concat(toolsContainers);
       } catch {}
     }
 
-    // Use remote host IP for endpoints when applicable
-    const hasValidHost = isRemote && host && host.hostname && host.hostname !== '(pending)';
-    const rpcHost = hasValidHost ? host.hostname : (isRemote ? null : "127.0.0.1");
+    const isRemote = isHostRemote || isAIDeployRemote;
+    const rpcHost = (isRemote && host?.hostname) ? host.hostname : "127.0.0.1";
 
     res.json({
       phase: deployment.phase,
