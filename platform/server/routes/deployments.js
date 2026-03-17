@@ -20,6 +20,9 @@ router.post("/", (req, res) => {
     if (!programId || !name) {
       return res.status(400).json({ error: "programId and name are required" });
     }
+    if (typeof name !== 'string' || name.trim().length > 200) {
+      return res.status(400).json({ error: "name must be a string of 200 characters or fewer" });
+    }
 
     const program = getProgramById(programId);
     if (!program || program.status !== "active") {
@@ -72,7 +75,12 @@ router.put("/:id", (req, res) => {
     if (!deployment || deployment.user_id !== req.user.id) {
       return res.status(404).json({ error: "Deployment not found" });
     }
-    const updated = updateDeployment(req.params.id, req.body);
+    // Prevent setting status to 'active' directly; use /activate endpoint instead
+    const fields = { ...req.body };
+    if (fields.status === 'active') {
+      delete fields.status;
+    }
+    const updated = updateDeployment(req.params.id, fields);
     res.json({ deployment: updated });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -103,6 +111,43 @@ router.post("/:id/activate", (req, res) => {
     const updated = updateDeployment(req.params.id, { status: "active" });
     res.json({ deployment: updated });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/deployments/:id/push-metadata — push metadata to GitHub repo
+router.post("/:id/push-metadata", async (req, res) => {
+  try {
+    const deployment = getDeploymentById(req.params.id);
+    if (!deployment || deployment.user_id !== req.user.id) {
+      return res.status(404).json({ error: "Deployment not found" });
+    }
+    if (deployment.status !== "active") {
+      return res.status(400).json({ error: "Deployment must be active to push metadata" });
+    }
+
+    const { pushMetadataToRepo } = require("../lib/metadata-push");
+    const result = await pushMetadataToRepo(deployment);
+    res.json({ success: true, path: result.path });
+  } catch (e) {
+    console.error("[push-metadata]", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/deployments/:id/delete-metadata — delete metadata from GitHub repo
+router.post("/:id/delete-metadata", async (req, res) => {
+  try {
+    const deployment = getDeploymentById(req.params.id);
+    if (!deployment || deployment.user_id !== req.user.id) {
+      return res.status(404).json({ error: "Deployment not found" });
+    }
+
+    const { deleteMetadataFromRepo } = require("../lib/metadata-push");
+    const result = await deleteMetadataFromRepo(deployment);
+    res.json({ success: true, deleted: result.deleted });
+  } catch (e) {
+    console.error("[delete-metadata]", e.message);
     res.status(500).json({ error: e.message });
   }
 });
