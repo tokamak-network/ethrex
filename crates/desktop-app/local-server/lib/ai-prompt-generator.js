@@ -1274,9 +1274,15 @@ aws ec2 describe-instances --filters "Name=tag:Name,Values=${vmName}" \\
 \`\`\`bash
 aws ec2 stop-instances --instance-ids INSTANCE_ID --region ${region}
 \`\`\`
-> stop: 인스턴스 비용 중지. EBS($0.096/GB/월)와 IP($3.60/월)는 계속 과금.
+> stop하면 인스턴스 비용 즉시 중지. EBS($0.096/GB/월)와 IP($3.60/월)는 계속 과금.
+> 💡 당장 삭제하지 않아도 stop만으로 인스턴스 비용을 절약할 수 있습니다. 나중에 start로 재시작 가능.
 
-**3단계: 인스턴스 완전 삭제 (복구 불가)**
+**참고: AWS EC2 과금 방식**
+- 인스턴스는 **초 단위 과금** (최소 1분). stop/terminate 즉시 과금 중지.
+- start할 때마다 최소 1분 과금. 자주 stop/start하면 오히려 비효율적.
+- 테스트 중이면 켜둔 채로 쓰고, 끝나면 한 번에 stop 또는 terminate 권장.
+
+**3단계: 인스턴스 완전 삭제 (복구 불가 — 필요할 때만)**
 \`\`\`bash
 aws ec2 terminate-instances --instance-ids INSTANCE_ID --region ${region}
 \`\`\`
