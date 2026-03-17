@@ -8,6 +8,23 @@ import { uploadFileToIPFS, ipfsToHttp, uploadJSONToIPFS, buildMetadata, isPinata
 import { SectionHeader } from './ui-atoms'
 import type { L2Config } from './MyL2View'
 
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+/** Convert screenshot URL to displayable HTTP URL */
+function screenshotUrl(uri: string, platformBaseUrl?: string): string {
+  if (uri.startsWith('ipfs://')) return ipfsToHttp(uri)
+  if (uri.startsWith('data:')) return uri
+  if (uri.startsWith('/uploads/')) return `${platformBaseUrl || ''}${uri}`
+  return uri
+}
+
 interface Props {
   l2: L2Config
   ko: boolean
@@ -167,33 +184,41 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
     }
   }
 
-  // Screenshot upload handler
+  // Screenshot upload handler — uses Platform server (no Pinata needed), falls back to IPFS
   const handleScreenshotUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files || files.length === 0) return
     setUploading(true)
     setUploadError('')
     try {
-      const newUris: string[] = []
-      const errors: string[] = []
-      for (const file of Array.from(files)) {
-        try {
-          const uri = await uploadFileToIPFS(file)
-          newUris.push(uri)
-        } catch (err) {
-          errors.push(file.name + ': ' + (err instanceof Error ? err.message : String(err)))
-        }
-      }
-      if (errors.length > 0) {
-        setUploadError(errors.join('; '))
-      }
-      const updated = [...screenshots, ...newUris]
-      setScreenshots(updated)
-      // Save to Platform if already published
       const platformId = l2.platformDeploymentId
+      let newUrls: string[]
+
       if (platformId) {
-        await platformAPI.updateDeployment(platformId, { screenshots: JSON.stringify(updated) })
+        // Upload to Platform server directly
+        const result = await platformAPI.uploadScreenshots(platformId, Array.from(files))
+        newUrls = result.urls
+        // Server already merged and saved to DB — just update local state
+        setScreenshots(result.screenshots)
         debouncedMetadataPush()
+      } else if (pinataReady) {
+        // Fallback to IPFS if no platform deployment yet
+        newUrls = []
+        for (const file of Array.from(files)) {
+          const uri = await uploadFileToIPFS(file)
+          newUrls.push(uri)
+        }
+        const updated = [...screenshots, ...newUrls]
+        setScreenshots(updated)
+      } else {
+        // No upload destination available — store as data URLs temporarily
+        newUrls = []
+        for (const file of Array.from(files)) {
+          const dataUrl = await fileToDataUrl(file)
+          newUrls.push(dataUrl)
+        }
+        const updated = [...screenshots, ...newUrls]
+        setScreenshots(updated)
       }
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : String(err))
@@ -291,7 +316,7 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
           {screenshots.map((uri, i) => (
             <div key={i} className="relative group">
               <img
-                src={ipfsToHttp(uri)}
+                src={screenshotUrl(uri, platformAPI.getBaseUrl())}
                 alt={`Screenshot ${i + 1}`}
                 className="w-20 h-14 rounded-lg border object-cover"
               />
@@ -304,7 +329,7 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
             </div>
           ))}
           <button
-            disabled={uploading || !pinataReady}
+            disabled={uploading}
             onClick={() => fileInputRef.current?.click()}
             className="w-20 h-14 rounded-lg border-2 border-dashed border-[var(--color-border)] flex items-center justify-center text-[var(--color-text-secondary)] hover:border-[#3b82f6] hover:text-[#3b82f6] cursor-pointer transition-colors disabled:opacity-50"
           >
@@ -317,9 +342,9 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
             )}
           </button>
         </div>
-        {!pinataReady && (
-          <div className="text-[9px] text-[var(--color-warning)] mt-1">
-            {ko ? 'Settings에서 Pinata API 키를 설정하세요' : 'Set Pinata API key in Settings'}
+        {!pinataReady && !l2.platformDeploymentId && (
+          <div className="text-[9px] text-[var(--color-text-secondary)] mt-1">
+            {ko ? '공개 후 서버에 업로드됩니다. IPFS 업로드는 Settings에서 Pinata 키 설정 필요' : 'Uploaded to server after publishing. For IPFS, set Pinata key in Settings'}
           </div>
         )}
         {uploadError && <div className="text-[9px] text-[var(--color-error)] mt-1">{uploadError}</div>}

@@ -96,6 +96,10 @@ class PlatformAPI {
     this.baseUrl = url.replace(/\/$/, '')
   }
 
+  getBaseUrl() {
+    return this.baseUrl
+  }
+
   setToken(token: string | null) {
     this.token = token
   }
@@ -328,6 +332,31 @@ class PlatformAPI {
     return this.fetch<{ success: boolean }>(`/api/deployments/${deploymentId}/delete-metadata`, {
       method: 'POST',
     })
+  }
+
+  // ============================================================
+  // Screenshot Upload — Upload images to Platform server
+  // ============================================================
+
+  async uploadScreenshots(deploymentId: string, files: File[]): Promise<{ urls: string[]; screenshots: string[] }> {
+    const formData = new FormData()
+    for (const file of files) {
+      formData.append('screenshots', file)
+    }
+
+    const headers: Record<string, string> = {}
+    if (this.token) {
+      headers['Authorization'] = `Bearer ${this.token}`
+    }
+
+    const resp = await window.fetch(`${this.baseUrl}/api/deployments/${deploymentId}/screenshots`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    })
+    const data = await resp.json()
+    if (!resp.ok) throw new Error(data.error || resp.statusText)
+    return data
   }
 }
 

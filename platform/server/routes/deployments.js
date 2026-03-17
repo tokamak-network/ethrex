@@ -1,5 +1,8 @@
 const express = require("express");
 const router = express.Router();
+const multer = require("multer");
+const path = require("path");
+const crypto = require("crypto");
 
 const { requireAuth } = require("../middleware/auth");
 const {
@@ -10,6 +13,29 @@ const {
   deleteDeployment,
 } = require("../db/deployments");
 const { getProgramById, incrementUseCount } = require("../db/programs");
+
+// Screenshot upload config
+const UPLOAD_DIR = path.join(__dirname, "..", "uploads", "screenshots");
+const screenshotStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const fs = require("fs");
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    cb(null, UPLOAD_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".png";
+    const hash = crypto.randomBytes(8).toString("hex");
+    cb(null, `${Date.now()}-${hash}${ext}`);
+  },
+});
+const screenshotUpload = multer({
+  storage: screenshotStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files are allowed"));
+  },
+});
 
 router.use(requireAuth);
 
@@ -148,6 +174,35 @@ router.post("/:id/delete-metadata", async (req, res) => {
     res.json({ success: true, deleted: result.deleted });
   } catch (e) {
     console.error("[delete-metadata]", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/deployments/:id/screenshots — upload screenshot images
+router.post("/:id/screenshots", screenshotUpload.array("screenshots", 10), (req, res) => {
+  try {
+    const deployment = getDeploymentById(req.params.id);
+    if (!deployment || deployment.user_id !== req.user.id) {
+      return res.status(404).json({ error: "Deployment not found" });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: "No files uploaded" });
+    }
+
+    // Build URLs for uploaded files
+    const urls = req.files.map((f) => `/uploads/screenshots/${f.filename}`);
+
+    // Merge with existing screenshots
+    let existing = [];
+    try { existing = deployment.screenshots ? JSON.parse(deployment.screenshots) : []; } catch { /* ignore */ }
+    const merged = [...existing, ...urls];
+
+    // Save to DB
+    updateDeployment(req.params.id, { screenshots: JSON.stringify(merged) });
+
+    res.json({ urls, screenshots: merged });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
