@@ -34,6 +34,10 @@ interface DeploymentFromDB {
   tools_bridge_ui_port: number | null
   hashtags: string | null
   ever_running: number
+  l1_chain_id: number | null
+  host_id: string | null
+  public_l2_rpc_url: string | null
+  public_domain: string | null
 }
 
 export interface L2Config {

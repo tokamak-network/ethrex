@@ -32,6 +32,11 @@ pub struct DeploymentRow {
     pub tools_bridge_ui_port: Option<i64>,
     pub hashtags: Option<String>,
     pub ever_running: i64,
+    pub l1_chain_id: Option<i64>,
+    pub host_id: Option<String>,
+    pub platform_deployment_id: Option<String>,
+    pub public_l2_rpc_url: Option<String>,
+    pub public_domain: Option<String>,
 }
 
 /// Container info returned by local-server status endpoint.
@@ -82,7 +87,8 @@ pub fn list_deployments_from_db() -> Result<Vec<DeploymentRow>, String> {
                     guest_program_registry_address, verification_status,
                     error_message, config, is_public, created_at,
                     tools_l1_explorer_port, tools_l2_explorer_port, tools_bridge_ui_port,
-                    hashtags, ever_running
+                    hashtags, ever_running,
+                    l1_chain_id, host_id, platform_deployment_id, public_l2_rpc_url, public_domain
              FROM deployments ORDER BY created_at DESC",
         )
         .map_err(|e| format!("SQL prepare error: {e}"))?;
@@ -117,6 +123,11 @@ pub fn list_deployments_from_db() -> Result<Vec<DeploymentRow>, String> {
                 tools_bridge_ui_port: row.get(24)?,
                 hashtags: row.get(25)?,
                 ever_running: row.get::<_, Option<i64>>(26)?.unwrap_or(0),
+                l1_chain_id: row.get(27)?,
+                host_id: row.get(28)?,
+                platform_deployment_id: row.get(29)?,
+                public_l2_rpc_url: row.get(30)?,
+                public_domain: row.get(31)?,
             })
         })
         .map_err(|e| format!("SQL query error: {e}"))?;
