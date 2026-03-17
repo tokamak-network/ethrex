@@ -2052,6 +2052,13 @@ async function showDeploymentDetail(id) {
     const res = await fetch(`${API}/deployments/${id}`);
     const data = await res.json();
     detailDeployment = data.deployment || data;
+
+    // AI Deploy phase — show chat UI directly instead of dashboard
+    if (detailDeployment.phase === 'ai-deploy') {
+      renderAIDeployOverview(detailDeployment);
+      return;
+    }
+
     renderDetail();
     startDetailPolling();
   } catch {
@@ -2102,9 +2109,8 @@ function renderAIDeployOverview(d) {
   const savedPrompt = config.prompt || '';
   if (!savedPrompt) return; // No prompt saved — can't restore
 
-  // Hide detail view, show launch step 3 (reuse existing chat UI)
-  document.getElementById('deployment-detail')?.style && (document.getElementById('deployment-detail').style.display = 'none');
-  document.getElementById('launch-view').style.display = '';
+  // Switch to launch view and show step 3 (reuse existing chat UI)
+  showView('launch');
   document.querySelectorAll('.launch-step').forEach(s => s.style.display = 'none');
   const step3 = document.getElementById('launch-step3');
   if (step3) step3.style.display = 'block';
