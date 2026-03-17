@@ -753,33 +753,54 @@ Save the server IP as \`VM_IP\` — you'll need it later.`;
   const diskSize = storageGB || 30;
   return `## Step 1: Create VM
 
+> **IMPORTANT**: 같은 이름의 인스턴스가 이미 존재하면 생성을 건너뛰세요. 중복 생성 시 불필요한 비용이 발생합니다.
+
 \`\`\`bash
-# Create a security group (if not exists)
-aws ec2 create-security-group \\
-  --group-name tokamak-l2-sg \\
-  --description "Tokamak L2 appchain" \\
-  --region ${region}
+# Check if instance already exists
+EXISTING=$(aws ec2 describe-instances \\
+  --filters "Name=tag:Name,Values=${vmName}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \\
+  --query "Reservations[].Instances[0].PublicIpAddress" \\
+  --output text --region ${region} 2>/dev/null)
 
-# Launch instance
-aws ec2 run-instances \\
-  --region ${region} \\
-  --instance-type ${vmType} \\
-  --image-id resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \\
-  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":${diskSize},"VolumeType":"gp3"}}]' \\
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=${vmName}}]' \\
-  --key-name ${keyName} \\
-  --security-groups tokamak-l2-sg \\
-  --count 1
+if [ -n "$EXISTING" ] && [ "$EXISTING" != "None" ]; then
+  echo "✅ Instance already exists: $EXISTING"
+  VM_IP=$EXISTING
+else
+  # Create a security group (if not exists)
+  aws ec2 create-security-group \\
+    --group-name tokamak-l2-sg \\
+    --description "Tokamak L2 appchain" \\
+    --region ${region} 2>/dev/null || true
 
-# Get the public IP
-aws ec2 describe-instances \\
-  --filters "Name=tag:Name,Values=${vmName}" \\
-  --query 'Reservations[0].Instances[0].PublicIpAddress' \\
-  --output text \\
-  --region ${region}
+  # Launch instance
+  aws ec2 run-instances \\
+    --region ${region} \\
+    --instance-type ${vmType} \\
+    --image-id resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \\
+    --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":${diskSize},"VolumeType":"gp3"}}]' \\
+    --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=${vmName}}]' \\
+    --key-name ${keyName} \\
+    --security-groups tokamak-l2-sg \\
+    --count 1
 
-# SSH into the instance
-ssh -i ~/.ssh/${keyName}.pem ubuntu@VM_IP
+  # Wait for instance to be running
+  echo "Waiting for instance to start..."
+  aws ec2 wait instance-running \\
+    --filters "Name=tag:Name,Values=${vmName}" \\
+    --region ${region}
+
+  # Get the public IP
+  VM_IP=$(aws ec2 describe-instances \\
+    --filters "Name=tag:Name,Values=${vmName}" "Name=instance-state-name,Values=running" \\
+    --query 'Reservations[0].Instances[0].PublicIpAddress' \\
+    --output text --region ${region})
+  echo "✅ Instance created: $VM_IP"
+fi
+
+echo "VM_IP=$VM_IP"
+
+# SSH into the instance (may need to wait 30s for SSH to be ready)
+ssh -o StrictHostKeyChecking=no -i ~/.ssh/${keyName}.pem ubuntu@$VM_IP
 \`\`\`
 
 Save the public IP as \`VM_IP\` — you'll need it later.
