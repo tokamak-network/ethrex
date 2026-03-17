@@ -711,14 +711,14 @@ router.get("/:id", (req, res) => {
 });
 
 // PUT /api/deployments/:id — update deployment
-router.put("/:id", (req, res) => {
+function updateDeploymentHandler(req, res) {
   try {
     const deployment = db.prepare("SELECT * FROM deployments WHERE id = ?").get(req.params.id);
     if (!deployment) {
       return res.status(404).json({ error: "Deployment not found" });
     }
 
-    const allowedFields = ["name", "chain_id", "l1_chain_id", "rpc_url", "config", "is_public", "hashtags", "platform_deployment_id"];
+    const allowedFields = ["name", "chain_id", "l1_chain_id", "rpc_url", "config", "is_public", "hashtags", "platform_deployment_id", "phase", "status"];
     const updates = [];
     const values = [];
 
@@ -739,7 +739,9 @@ router.put("/:id", (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
-});
+}
+router.put("/:id", updateDeploymentHandler);
+router.patch("/:id", updateDeploymentHandler);
 
 // DELETE /api/deployments/:id — remove deployment
 router.delete("/:id", async (req, res) => {

@@ -2177,7 +2177,7 @@ async function monitorAIDeployment(deploymentId) {
       }
     }
     // Show in chat messages if available
-    const statusMsg = `🖥️ 배포 상태 (${data.vmName || vmName})\n\n${lines.join('\n')}`;
+    const statusMsg = `🖥️ 배포 상태 (${data.vmName || 'unknown'})\n\n${lines.join('\n')}`;
     aiChatMessages.push({ role: 'assistant', content: statusMsg });
     if (document.getElementById('ai-chat-messages')) renderChatMessages();
     // Also show in status bar
@@ -3935,8 +3935,6 @@ ${prompt}`;
 
   const userMsg = `다음 구성으로 배포해줘. 먼저 배포 계획을 알려줘.\n\n${configLines}`;
   aiChatUserMessage = userMsg;
-
-
 
   // Show guide message first, then user config
   const tokenEstimate = Math.ceil(prompt.length / 3.5);
