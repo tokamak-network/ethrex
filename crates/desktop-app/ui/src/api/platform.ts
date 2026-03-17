@@ -8,7 +8,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
-const DEFAULT_PLATFORM_URL = 'https://tokamak-appchain.vercel.app'
+const DEFAULT_PLATFORM_URL = import.meta.env.VITE_PLATFORM_URL || 'https://tokamak-appchain.vercel.app'
 
 // Keychain-backed token management
 export const platformAuth = {
