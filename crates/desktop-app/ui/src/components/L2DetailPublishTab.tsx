@@ -406,7 +406,7 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
 
       {/* Public Toggle */}
       <div className="bg-[var(--color-bg-sidebar)] rounded-xl p-3 border border-[var(--color-border)]">
-        <SectionHeader title={ko ? '오픈 앱체인 공개' : 'Open Appchain Publishing'} />
+        <SectionHeader title={ko ? '앱체인 공개 설정' : 'Publish Appchain'} />
         <div className="mt-2 flex items-center justify-between">
           <div>
             <div className="text-[11px] font-medium">{t('myl2.detail.configPublic', lang)}</div>
@@ -422,7 +422,7 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
                   setPublishing(true); setPublishError('')
                   try {
                     const r = await platformAPI.registerDeployment({
-                      programId: 'ethrex-appchain',
+                      programId: l2.programSlug || 'evm-l2',
                       name: l2.name,
                       chainId: l2.chainId,
                       rpcUrl: l2.publicRpcUrl || `http://localhost:${l2.rpcPort}`,

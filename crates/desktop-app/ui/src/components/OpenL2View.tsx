@@ -137,7 +137,7 @@ export default function OpenL2View() {
     setRegisterError('')
     try {
       const r = await platformAPI.registerDeployment({
-        programId: 'ethrex-appchain',
+        programId: 'evm-l2',
         name: registerForm.name.trim(),
         chainId: registerForm.chainId ? (parseInt(registerForm.chainId, 10) || undefined) : undefined,
         rpcUrl: registerForm.rpcUrl.trim(),

@@ -73,8 +73,8 @@ const translations: Record<Lang, Record<string, string>> = {
     'myl2.detail.configPort': 'RPC 포트',
     'myl2.detail.configDesc': '설명',
     'myl2.detail.configHashtags': '해시태그',
-    'myl2.detail.configPublic': '오픈 앱체인으로 공개',
-    'myl2.detail.configPublicDesc': '다른 사람이 이 앱체인을 탐색하고 연결할 수 있습니다',
+    'myl2.detail.configPublic': '앱체인 공개',
+    'myl2.detail.configPublicDesc': '다른 사용자가 이 앱체인을 탐색하고 연결할 수 있습니다',
     // Create Appchain Wizard
     'myl2.wizard.title': '새 앱체인 만들기',
     'myl2.wizard.selectNetwork': '네트워크 선택',
@@ -342,7 +342,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'myl2.detail.configPort': 'RPC Port',
     'myl2.detail.configDesc': 'Description',
     'myl2.detail.configHashtags': 'Hashtags',
-    'myl2.detail.configPublic': 'Publish as Open Appchain',
+    'myl2.detail.configPublic': 'Publish Appchain',
     'myl2.detail.configPublicDesc': 'Others can discover and connect to this appchain',
     // Create Appchain Wizard
     'myl2.wizard.title': 'Create New Appchain',
