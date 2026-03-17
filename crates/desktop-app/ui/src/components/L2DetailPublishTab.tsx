@@ -235,16 +235,18 @@ export default function L2DetailPublishTab({ l2, ko }: Props) {
     } catch { /* ignore */ }
   }, [draftKey])
 
-  const saveDraft = useCallback(() => {
+  const saveDraft = useCallback((prResult?: SubmitResult | null) => {
     const filteredSocial = Object.fromEntries(Object.entries(socialLinks).filter(([, v]) => v.trim()))
     const draft: Record<string, unknown> = {
       description: publishDesc,
       socialLinks: Object.keys(filteredSocial).length > 0 ? filteredSocial : undefined,
       screenshots: screenshots.length > 0 ? screenshots : undefined,
     }
-    if (submitResult?.prNumber) {
-      draft.prNumber = submitResult.prNumber
-      draft.prUrl = submitResult.prUrl
+    // Use passed result (fresh) or fall back to state (may be stale in same render)
+    const pr = prResult ?? submitResult
+    if (pr?.prNumber) {
+      draft.prNumber = pr.prNumber
+      draft.prUrl = pr.prUrl
     }
     localStorage.setItem(draftKey, JSON.stringify(draft))
     setSaved(true)
@@ -347,7 +349,7 @@ export default function L2DetailPublishTab({ l2, ko }: Props) {
       setSubmitResult(result)
 
       if (result.success) {
-        saveDraft()
+        saveDraft(result)
       } else {
         setSubmitError(result.error || 'Submission failed')
       }

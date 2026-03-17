@@ -1079,16 +1079,16 @@ pub fn sign_appchain_metadata(
         SigningKey::from_bytes(pk_bytes.as_slice().into()).map_err(|e| format!("Invalid private key: {e}"))?;
 
     // Build signing message (must match signature-validator.ts format exactly)
-    let message = format!(
-        "Tokamak Appchain Registry\n\
-         L1 Chain ID: {l1_chain_id}\n\
-         L2 Chain ID: {l2_chain_id}\n\
-         Stack: {stack_type}\n\
-         Operation: {operation}\n\
-         Contract: {contract}\n\
-         Timestamp: {timestamp}",
-        contract = identity_contract.to_lowercase(),
-    );
+    let contract = identity_contract.to_lowercase();
+    let message = [
+        "Tokamak Appchain Registry",
+        &format!("L1 Chain ID: {l1_chain_id}"),
+        &format!("L2 Chain ID: {l2_chain_id}"),
+        &format!("Stack: {stack_type}"),
+        &format!("Operation: {operation}"),
+        &format!("Contract: {contract}"),
+        &format!("Timestamp: {timestamp}"),
+    ].join("\n");
 
     // EIP-191 personal_sign: keccak256("\x19Ethereum Signed Message:\n" + len + message)
     let prefix = format!("\x19Ethereum Signed Message:\n{}", message.len());

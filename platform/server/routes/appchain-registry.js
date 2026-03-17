@@ -52,6 +52,12 @@ const SUBMIT_RATE_MAX = 5;
 
 function checkSubmitRateLimit(ip) {
   const now = Date.now();
+  // Evict stale entries periodically (every 100 checks)
+  if (submitRateLimit.size > 100) {
+    for (const [key, rec] of submitRateLimit) {
+      if (now - rec.windowStart > SUBMIT_RATE_WINDOW) submitRateLimit.delete(key);
+    }
+  }
   const record = submitRateLimit.get(ip);
   if (!record || now - record.windowStart > SUBMIT_RATE_WINDOW) {
     submitRateLimit.set(ip, { windowStart: now, count: 1 });
@@ -205,6 +211,9 @@ router.post("/submit", async (req, res) => {
     const ts = operation === "register"
       ? Math.floor(new Date(metadata.createdAt).getTime() / 1000)
       : Math.floor(new Date(metadata.lastUpdated).getTime() / 1000);
+    if (!Number.isFinite(ts)) {
+      return res.status(400).json({ success: false, error: "Invalid timestamp in createdAt/lastUpdated", code: "INVALID_METADATA" });
+    }
     const now = Math.floor(Date.now() / 1000);
     if (ts > now + 300) {
       return res.status(400).json({ success: false, error: "Timestamp is in the future", code: "SIGNATURE_EXPIRED" });

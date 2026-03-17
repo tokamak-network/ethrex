@@ -140,17 +140,29 @@ async function getPullRequest(prNumber) {
  * Check if there's an open PR for a given file path (to prevent duplicates).
  */
 async function findOpenPR(filePath) {
-  // Search open PRs that modify this file
+  // Search open PRs and verify by checking actual changed files
   const res = await fetch(
     `${API}/pulls?state=open&per_page=50`,
     { headers: authHeaders(), signal: AbortSignal.timeout(10000) }
   );
   if (!res.ok) return null;
   const prs = await res.json();
+  const filename = filePath.split("/").pop().replace(".json", "");
   for (const pr of prs) {
-    if (pr.title.includes(filePath.split("/").pop().replace(".json", ""))) {
-      return { prUrl: pr.html_url, prNumber: pr.number, headBranch: pr.head.ref };
-    }
+    // Quick title check first to narrow candidates
+    if (!pr.title.includes(filename)) continue;
+    // Verify by checking actual files changed in the PR
+    try {
+      const filesRes = await fetch(
+        `${API}/pulls/${pr.number}/files`,
+        { headers: authHeaders(), signal: AbortSignal.timeout(10000) }
+      );
+      if (!filesRes.ok) continue;
+      const files = await filesRes.json();
+      if (files.some((f) => f.filename === filePath)) {
+        return { prUrl: pr.html_url, prNumber: pr.number, headBranch: pr.head.ref };
+      }
+    } catch { /* skip */ }
   }
   return null;
 }

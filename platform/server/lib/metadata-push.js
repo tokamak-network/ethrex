@@ -92,7 +92,7 @@ function getRepoFilePath(deployment) {
   const l1ChainId = deployment.l1_chain_id || 1;
   const stackType = deployment.program_slug || "tokamak-appchain";
   const proposerAddr = (deployment.proposer_address || "").toLowerCase();
-  if (!proposerAddr || !proposerAddr.startsWith("0x")) return null;
+  if (!proposerAddr || !/^0x[0-9a-f]{40}$/.test(proposerAddr)) return null;
   return `tokamak-appchain-data/${l1ChainId}/${stackType}/${proposerAddr}.json`;
 }
 
