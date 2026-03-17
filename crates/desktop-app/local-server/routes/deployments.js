@@ -1092,36 +1092,98 @@ router.get("/:id/status", async (req, res) => {
     const deployment = db.prepare("SELECT * FROM deployments WHERE id = ?").get(req.params.id);
     if (!deployment) return res.status(404).json({ error: "Deployment not found" });
 
-    if (!deployment.docker_project) {
+    const dConfig = deployment.config ? (typeof deployment.config === 'string' ? JSON.parse(deployment.config) : deployment.config) : {};
+    const isHostRemote = !!deployment.host_id;
+    const isAIDeployRemote = dConfig.mode === 'ai-deploy' && !!dConfig.ec2IP;
+
+    if (!deployment.docker_project && !isAIDeployRemote) {
       return res.json({ phase: deployment.phase, containers: [], endpoints: {} });
     }
 
-    const composeFile = path.join(getDeploymentDir(deployment.id, deployment.deploy_dir), "docker-compose.yaml");
     let containers = [];
-    if (fs.existsSync(composeFile)) {
-      containers = await docker.getStatus(deployment.docker_project, composeFile);
-    }
-    // Also fetch tools containers (Explorer, Bridge UI, etc.)
-    try {
-      const toolsContainers = await docker.getToolsStatus(`${deployment.docker_project}-tools`);
-      if (toolsContainers.length > 0) {
-        containers = containers.concat(toolsContainers);
-      }
-    } catch {}
+    let host = null;
 
+    if (isHostRemote) {
+      // Remote deployment via hosts table: query containers via SSH
+      const hostRecord = db.prepare("SELECT * FROM hosts WHERE id = ?").get(deployment.host_id);
+      if (hostRecord) {
+        host = { hostname: hostRecord.hostname, username: hostRecord.username, port: hostRecord.port || 22,
+          deployDir: deployment.deploy_dir || `/opt/tokamak/${deployment.id}` };
+        let conn;
+        try {
+          const remote = require("../lib/remote");
+          conn = await remote.connect(hostRecord);
+          containers = await remote.getStatusRemote(conn, deployment.docker_project, host.deployDir);
+          try {
+            const toolsContainers = await remote.getStatusRemote(conn, `${deployment.docker_project}-tools`, host.deployDir);
+            if (toolsContainers.length > 0) containers = containers.concat(toolsContainers);
+          } catch {}
+        } catch (e) {
+          console.error(`[status] Remote SSH failed for ${deployment.id}: ${e.message}`);
+        } finally {
+          if (conn) try { conn.end(); } catch {}
+        }
+      }
+    } else if (isAIDeployRemote) {
+      // AI Deploy with EC2 instance: query via SSH
+      const ip = dConfig.ec2IP;
+      const keyPairName = dConfig.keyPairName || null;
+      const username = 'ubuntu';
+      const shortId = deployment.id.slice(0, 8);
+      const remoteDir = `/opt/tokamak/${shortId}`;
+      host = { hostname: ip, username, port: 22, deployDir: remoteDir,
+        keyPairName, vmName: dConfig.vmName || null, region: dConfig.region || null,
+        cloud: dConfig.cloud || 'aws', vmType: dConfig.vmType || null, awsAccount: dConfig.awsAccount || null };
+      if (ip && keyPairName) {
+        const os = require("os");
+        const keyPath = path.join(os.homedir(), ".ssh", `${keyPairName}.pem`);
+        if (fs.existsSync(keyPath)) {
+          let conn;
+          try {
+            const remote = require("../lib/remote");
+            const hostRecord = { hostname: ip, port: 22, username, auth_method: 'key', private_key: fs.readFileSync(keyPath, 'utf-8') };
+            conn = await remote.connect(hostRecord);
+            const projectName = deployment.docker_project || dConfig.vmName || deployment.id;
+            try { containers = await remote.getStatusRemote(conn, projectName, remoteDir); } catch {}
+            try {
+              const toolsContainers = await remote.getStatusRemote(conn, `${projectName}-tools`, remoteDir);
+              if (toolsContainers.length > 0) containers = containers.concat(toolsContainers);
+            } catch {}
+          } catch (e) {
+            console.error(`[status] AI-deploy SSH failed for ${deployment.id}: ${e.message}`);
+          } finally {
+            if (conn) try { conn.end(); } catch {}
+          }
+        }
+      }
+    } else {
+      // Local deployment: query containers via local Docker
+      const composeFile = path.join(getDeploymentDir(deployment.id, deployment.deploy_dir), "docker-compose.yaml");
+      if (fs.existsSync(composeFile)) {
+        containers = await docker.getStatus(deployment.docker_project, composeFile);
+      }
+      try {
+        const toolsContainers = await docker.getToolsStatus(`${deployment.docker_project}-tools`);
+        if (toolsContainers.length > 0) containers = containers.concat(toolsContainers);
+      } catch {}
+    }
+
+    const isRemote = isHostRemote || isAIDeployRemote;
+    const rpcHost = (isRemote && host?.hostname) ? host.hostname : "127.0.0.1";
 
     res.json({
       phase: deployment.phase,
       containers,
       endpoints: {
-        l1Rpc: deployment.l1_port ? `http://127.0.0.1:${deployment.l1_port}` : null,
-        l2Rpc: deployment.l2_port ? `http://127.0.0.1:${deployment.l2_port}` : null,
+        l1Rpc: deployment.l1_port ? `http://${rpcHost}:${deployment.l1_port}` : null,
+        l2Rpc: deployment.l2_port ? `http://${rpcHost}:${deployment.l2_port}` : null,
       },
       contracts: {
         bridge: deployment.bridge_address,
         proposer: deployment.proposer_address,
       },
       error: deployment.error_message,
+      ...(host ? { host } : {}),
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
