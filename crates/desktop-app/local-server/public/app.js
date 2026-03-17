@@ -2118,7 +2118,7 @@ function renderAIDeployOverview(d) {
   // Store deployment ID for completion/cancel
   window._aiDeployDetailId = d.id;
 
-  // Call showAIPromptResult with saved prompt and reconstructed context
+  // Call showAIPromptResult with saved prompt and full context from config
   showAIPromptResult(savedPrompt, {
     cloud: config.cloud || 'aws',
     l1Mode: config.l1Mode || 'local',
@@ -2127,9 +2127,14 @@ function renderAIDeployOverview(d) {
     l1ChainId: config.l1ChainId || '',
     l2Name: d.name,
     l2ChainId: d.chain_id,
-    programName: d.program_slug || 'zk-dex',
+    programName: config.programName || d.program_slug || 'zk-dex',
     includeProver: config.includeProver !== false,
-    cliInfo: {},
+    cliInfo: { auth: { account: config.awsAccount || '' } },
+    // Pass AWS-specific fields so configLines matches the original
+    _awsRegion: config.region || '',
+    _awsInstanceType: config.vmType || '',
+    _awsStorageGB: config.storageGB || '',
+    _awsKeyPair: config.keyPairName || '',
   });
 }
 
@@ -3604,7 +3609,7 @@ async function generateAndShowAIPrompt(deploymentId) {
     const res = await fetch(`${API}/deployments/${deploymentId}/ai-prompt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cloud: promptCloud, l1Mode: l1Mode === 'local' ? 'local' : 'testnet', l1RpcUrl, l1ChainId, l1Network, includeProver, walletConfig, region: awsRegion, vmType: awsInstanceType, storageGB: awsStorageGB, keyPairName: awsKeyPair }),
+      body: JSON.stringify({ cloud: promptCloud, l1Mode: l1Mode === 'local' ? 'local' : 'testnet', l1RpcUrl, l1ChainId, l1Network, includeProver, walletConfig, region: awsRegion, vmType: awsInstanceType, storageGB: awsStorageGB, keyPairName: awsKeyPair, awsAccount: cliInfo?.auth?.account || '', programName: (document.querySelector('.program-card.selected .program-name')?.textContent || selectedProgram?.name || selectedProgram?.id || 'evm-l2') }),
     });
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Failed to generate prompt'); }
     const { prompt } = await res.json();
@@ -3907,11 +3912,11 @@ ${prompt}`;
   components.push('L2 노드');
   if (includeProver) components.push('SP1 Prover');
   components.push('Tools (Explorer, Dashboard, Bridge)');
-  // Collect AWS-specific settings from UI
-  const awsRegion = document.getElementById('aws-region')?.value || 'ap-northeast-2';
-  const awsInstanceType = document.getElementById('aws-instance-type')?.value || recSpec.type || 't3.xlarge';
-  const awsStorageGB = document.getElementById('aws-storage-gb')?.value || '30';
-  const awsKeyPair = document.getElementById('aws-key-pair-select')?.value || '';
+  // Collect AWS-specific settings (from UI or restored context)
+  const awsRegion = document.getElementById('aws-region')?.value || cloudCtx._awsRegion || 'ap-northeast-2';
+  const awsInstanceType = document.getElementById('aws-instance-type')?.value || cloudCtx._awsInstanceType || recSpec.type || 't3.xlarge';
+  const awsStorageGB = document.getElementById('aws-storage-gb')?.value || cloudCtx._awsStorageGB || '30';
+  const awsKeyPair = document.getElementById('aws-key-pair-select')?.value || cloudCtx._awsKeyPair || '';
   const awsAccount = cliInfo.auth?.account || '';
 
   const configLines = [
@@ -3930,6 +3935,8 @@ ${prompt}`;
 
   const userMsg = `다음 구성으로 배포해줘. 먼저 배포 계획을 알려줘.\n\n${configLines}`;
   aiChatUserMessage = userMsg;
+
+
 
   // Show guide message first, then user config
   const tokenEstimate = Math.ceil(prompt.length / 3.5);

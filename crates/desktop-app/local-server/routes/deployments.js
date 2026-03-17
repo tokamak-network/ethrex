@@ -1301,7 +1301,7 @@ router.post("/:id/ai-prompt", async (req, res) => {
     const deployment = db.prepare("SELECT * FROM deployments WHERE id = ?").get(req.params.id);
     if (!deployment) return res.status(404).json({ error: "Deployment not found" });
 
-    const { cloud, region, vmType, l1Mode, l1RpcUrl, l1ChainId, l1Network, includeProver, walletConfig, storageGB, keyPairName } = req.body;
+    const { cloud, region, vmType, l1Mode, l1RpcUrl, l1ChainId, l1Network, includeProver, walletConfig, storageGB, keyPairName, awsAccount, programName } = req.body;
     if (!cloud) {
       return res.status(400).json({ error: "cloud is required" });
     }
@@ -1349,6 +1349,8 @@ router.post("/:id/ai-prompt", async (req, res) => {
       l1Mode: l1Mode || "local",
       l1RpcUrl, l1ChainId, l1Network,
       includeProver,
+      awsAccount: awsAccount || "",
+      programName: programName || deployment.program_slug || "evm-l2",
       prompt,
     };
     db.prepare("UPDATE deployments SET config = ?, phase = 'ai-deploy' WHERE id = ?")
