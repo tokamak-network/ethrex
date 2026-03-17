@@ -773,14 +773,21 @@ else
   fi
   echo "VPC: $VPC_ID"
 
-  # Find a subnet with public IP auto-assign in this VPC
-  SUBNET_ID=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" "Name=map-public-ip-on-launch,Values=true" \\
-    --query "Subnets[0].SubnetId" --output text --region ${region} 2>/dev/null)
-  if [ -z "$SUBNET_ID" ] || [ "$SUBNET_ID" = "None" ]; then
-    SUBNET_ID=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \\
-      --query "Subnets[0].SubnetId" --output text --region ${region})
+  # Find a public subnet (with IGW route, not NAT)
+  SUBNET_ID=""
+  for RT_ID in $(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" \\
+    --query "RouteTables[?Routes[?GatewayId!=\`local\` && starts_with(GatewayId,\`igw-\`)]].Associations[].SubnetId" \\
+    --output text --region ${region} 2>/dev/null); do
+    if [ -n "$RT_ID" ] && [ "$RT_ID" != "None" ]; then
+      SUBNET_ID=$RT_ID
+      break
+    fi
+  done
+  if [ -z "$SUBNET_ID" ]; then
+    echo "❌ No public subnet with IGW route found. Check VPC route tables."
+    exit 1
   fi
-  echo "Subnet: $SUBNET_ID"
+  echo "Subnet: $SUBNET_ID (IGW route confirmed)"
 
   # Create a security group in the VPC (if not exists)
   SG_ID=$(aws ec2 create-security-group \\
