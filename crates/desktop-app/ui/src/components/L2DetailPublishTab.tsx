@@ -280,7 +280,9 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
     }
   }, [])
 
-  const cannotPublish = l2.networkMode === 'local'
+  // 공개 가능 조건: 외부에서 접근 가능한 RPC URL이 있어야 함
+  const hasPublicUrl = !!(l2.publicRpcUrl || l2.testnetL1RpcUrl || l2.hostId)
+  const cannotPublish = !hasPublicUrl && l2.networkMode === 'local'
 
   return (
     <>
