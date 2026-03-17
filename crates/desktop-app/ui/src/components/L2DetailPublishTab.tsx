@@ -73,7 +73,9 @@ function buildAppchainMetadata(
   const l1RpcUrl = l2.testnetL1RpcUrl || (hostIp ? `http://${hostIp}:${l2.l1Port || 8545}` : l2.l1Port ? `http://localhost:${l2.l1Port}` : undefined)
   const l2ExplorerUrl = l2.toolsL2ExplorerPort ? (hostIp ? `http://${hostIp}:${l2.toolsL2ExplorerPort}` : `http://localhost:${l2.toolsL2ExplorerPort}`) : undefined
   const l1ExplorerUrl = l2.toolsL1ExplorerPort ? (hostIp ? `http://${hostIp}:${l2.toolsL1ExplorerPort}` : `http://localhost:${l2.toolsL1ExplorerPort}`) : undefined
-  const dashboardUrl = l2.toolsBridgeUIPort ? (hostIp ? `http://${hostIp}:${l2.toolsBridgeUIPort}` : `http://localhost:${l2.toolsBridgeUIPort}`) : undefined
+  // Dashboard: use DB port if available, fallback to default 3000 for remote deployments
+  const bridgeUIPort = l2.toolsBridgeUIPort || (hostIp ? 3000 : null)
+  const dashboardUrl = bridgeUIPort ? (hostIp ? `http://${hostIp}:${bridgeUIPort}` : `http://localhost:${bridgeUIPort}`) : undefined
 
   // Use overrides for immutable fields (from existing registry data or RPC)
   const l2ChainId = overrides?.l2ChainId ?? l2.l2ChainId ?? l2.chainId
