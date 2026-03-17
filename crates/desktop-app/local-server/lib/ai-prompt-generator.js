@@ -1279,8 +1279,8 @@ aws ec2 stop-instances --instance-ids INSTANCE_ID --region ${region}
 
 **참고: AWS EC2 과금 방식**
 - 인스턴스는 **초 단위 과금** (최소 1분). stop/terminate 즉시 과금 중지.
-- start할 때마다 최소 1분 과금. 자주 stop/start하면 오히려 비효율적.
-- 테스트 중이면 켜둔 채로 쓰고, 끝나면 한 번에 stop 또는 terminate 권장.
+- 안 쓸 때는 **stop하면 인스턴스 비용 0원**. start로 언제든 재시작 가능.
+- 단, stop하면 Public IP가 바뀌고 Docker 컨테이너 재시작이 필요합니다.
 
 **3단계: 인스턴스 완전 삭제 (복구 불가 — 필요할 때만)**
 \`\`\`bash
