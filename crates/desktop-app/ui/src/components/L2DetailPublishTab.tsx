@@ -255,9 +255,7 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
     }
   }, [])
 
-  const rpcUrl = l2.publicRpcUrl || `http://localhost:${l2.rpcPort}`
-  const isLocalRpc = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:|\/|$)/.test(rpcUrl)
-  const cannotPublish = l2.networkMode === 'local' || isLocalRpc
+  const cannotPublish = l2.networkMode === 'local'
 
   return (
     <>
@@ -471,9 +469,7 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
         </div>
         {cannotPublish && (
           <p className="text-[9px] text-[var(--color-warning)] mt-1">
-            {isLocalRpc
-              ? (ko ? '외부에서 접근 가능한 RPC URL이 필요합니다 (localhost 불가)' : 'A publicly accessible RPC URL is required (localhost not allowed)')
-              : (ko ? '테스트넷 또는 메인넷 앱체인만 공개할 수 있습니다' : 'Only testnet or mainnet appchains can be published')}
+            {ko ? '테스트넷 또는 메인넷 앱체인만 공개할 수 있습니다' : 'Only testnet or mainnet appchains can be published'}
           </p>
         )}
         {publishError && <p className="text-[9px] text-[var(--color-error)] mt-1">{publishError}</p>}
