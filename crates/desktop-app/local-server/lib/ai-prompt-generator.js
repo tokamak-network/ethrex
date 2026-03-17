@@ -864,8 +864,23 @@ function composeFileSection({ composeContent, dataDir, projectName }) {
   return `## Step 3: Write Docker Compose File
 
 \`\`\`bash
-sudo mkdir -p ${dataDir}
+sudo mkdir -p ${dataDir}/genesis
 cd ${dataDir}
+
+# Download genesis files (L1 + L2) from repository
+curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/tokamak-dev/fixtures/genesis/l1.json \\
+  -o ${dataDir}/genesis/l1.json 2>/dev/null || \\
+curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/feat/app-customized-framework/fixtures/genesis/l1.json \\
+  -o ${dataDir}/genesis/l1.json
+curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/tokamak-dev/fixtures/genesis/${profile.genesisFile} \\
+  -o ${dataDir}/genesis/${profile.genesisFile} 2>/dev/null || \\
+curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/feat/app-customized-framework/fixtures/genesis/${profile.genesisFile} \\
+  -o ${dataDir}/genesis/${profile.genesisFile}
+curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/tokamak-dev/fixtures/keys/private_keys_l1.txt \\
+  -o ${dataDir}/genesis/private_keys_l1.txt 2>/dev/null || \\
+curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/feat/app-customized-framework/fixtures/keys/private_keys_l1.txt \\
+  -o ${dataDir}/genesis/private_keys_l1.txt
+echo "✅ Genesis files downloaded"
 
 cat > docker-compose.yaml << 'COMPOSE_EOF'
 ${composeContent.trimEnd()}
