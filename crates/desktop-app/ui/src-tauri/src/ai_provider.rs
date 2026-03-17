@@ -227,6 +227,10 @@ impl AiProvider {
         }
     }
 
+    // NOTE: On macOS, the secret is passed as a command-line argument to `security`,
+    // which means it is briefly visible in the process list (e.g. via `ps`). This is a
+    // known limitation of the macOS `security` CLI. A future improvement could use the
+    // Security framework via FFI to avoid argv exposure.
     fn keychain_set(account: &str, secret: &str) -> Result<(), String> {
         if cfg!(target_os = "macos") {
             let output = std::process::Command::new("security")

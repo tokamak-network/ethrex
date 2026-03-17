@@ -42,18 +42,25 @@ export default function SettingsView() {
     try {
       const cfg = await invoke<AiConfig>('get_ai_config')
       // If provider is 'tokamak' (removed from UI) but has a key, infer actual provider
+      let inferredProvider: string
       if (cfg.provider === 'tokamak' && cfg.api_key) {
-        if (cfg.api_key.startsWith('sk-a')) setProvider('claude')
-        else if (cfg.api_key.startsWith('sk-p')) setProvider('gpt')
-        else if (cfg.api_key.startsWith('AIza')) setProvider('gemini')
-        else setProvider('claude')
+        if (cfg.api_key.startsWith('sk-a')) inferredProvider = 'claude'
+        else if (cfg.api_key.startsWith('sk-p')) inferredProvider = 'gpt'
+        else if (cfg.api_key.startsWith('AIza')) inferredProvider = 'gemini'
+        else inferredProvider = 'claude'
       } else if (cfg.provider === 'tokamak') {
-        setProvider('claude')
+        inferredProvider = 'claude'
       } else {
-        setProvider(cfg.provider)
+        inferredProvider = cfg.provider
       }
+      setProvider(inferredProvider)
       setMaskedKey(cfg.api_key)
-      setModel(cfg.model || 'claude-sonnet-4-6')
+      const models: Record<string, string[]> = {
+        claude: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5-20251001'],
+        gpt: ['gpt-4o', 'gpt-4o-mini'],
+        gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+      }
+      setModel(cfg.model || models[inferredProvider]?.[0] || '')
     } catch {
       // defaults
     }

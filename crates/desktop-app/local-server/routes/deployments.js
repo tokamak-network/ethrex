@@ -92,7 +92,7 @@ router.get("/ai-deploy/check-cli", async (req, res) => {
   if (!cloud || !["gcp", "aws", "vultr"].includes(cloud)) {
     return res.status(400).json({ error: "cloud must be gcp, aws, or vultr" });
   }
-  const { execSync } = require("child_process");
+  const { execSync, execFileSync } = require("child_process");
   const result = { cloud, cli: { installed: false, name: "" }, auth: { authenticated: false, account: "" } };
 
   // Add known SDK paths to PATH for detection
@@ -281,7 +281,9 @@ router.post("/ai-deploy/monitor", async (req, res) => {
           body: JSON.stringify({ jsonrpc: "2.0", method: "eth_blockNumber", params: [], id: 1 }),
           signal,
         });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
+        if (!data.result) throw new Error("Missing result in RPC response");
         result.services[ep.name] = { ok: true, block: parseInt(data.result, 16) };
       } else {
         const r = await fetch(`http://${ip}:${ep.port}/`, { signal });

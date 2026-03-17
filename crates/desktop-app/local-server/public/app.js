@@ -2897,8 +2897,8 @@ function onAIDeployTargetChange() {
   const vultrLabel = document.getElementById('vultr-apikey-label');
   if (vultrLabel) vultrLabel.style.display = target === 'vultr' ? '' : 'none';
   const vmOptions = document.getElementById('cloud-vm-options');
-  if (vmOptions) vmOptions.style.display = isCloud ? '' : 'none';
-  if (isCloud) onCloudOptionChange();
+  if (vmOptions) vmOptions.style.display = target === 'aws' ? '' : 'none';
+  if (target === 'aws') onCloudOptionChange();
   const statusEl = document.getElementById('cloud-cli-status');
   if (statusEl && !isCloud) statusEl.style.display = 'none';
 
@@ -2947,7 +2947,8 @@ async function checkCloudCLI() {
   statusEl.innerHTML = '<div style="padding:10px 14px;background:var(--bg-surface,#1a1a2e);border:1px solid var(--border,#333);border-radius:8px;font-size:12px;color:var(--text-muted,#888)">Checking CLI...</div>';
 
   try {
-    const res = await fetch(`${API}/deployments/ai-deploy/check-cli?cloud=${cloud}`);
+    const awsRegion = document.getElementById('aws-region')?.value || 'ap-northeast-2';
+    const res = await fetch(`${API}/deployments/ai-deploy/check-cli?cloud=${cloud}&region=${awsRegion}`);
     if (!res.ok) throw new Error('Check failed');
     const r = await res.json();
 
@@ -3174,7 +3175,7 @@ async function createAWSKeyPair() {
     const res = await fetch(`${API}/deployments/ai-deploy/create-key-pair`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keyName }),
+      body: JSON.stringify({ keyName, region: document.getElementById('aws-region')?.value || 'ap-northeast-2' }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed');
@@ -3463,11 +3464,14 @@ async function generateAndShowAIPrompt(deploymentId) {
     } catch {}
   }
 
-  // Collect VM options
-  const awsRegion = document.getElementById('aws-region')?.value || 'ap-northeast-2';
-  const awsInstanceType = document.getElementById('aws-instance-type')?.value || 't3.xlarge';
-  const awsStorageGB = parseInt(document.getElementById('aws-storage-gb')?.value) || 30;
-  const awsKeyPair = document.getElementById('aws-key-pair-select')?.value || '';
+  // Collect VM options (AWS-specific)
+  let awsRegion = '', awsInstanceType = '', awsStorageGB = 30, awsKeyPair = '';
+  if (cloud === 'aws') {
+    awsRegion = document.getElementById('aws-region')?.value || 'ap-northeast-2';
+    awsInstanceType = document.getElementById('aws-instance-type')?.value || 't3.xlarge';
+    awsStorageGB = parseInt(document.getElementById('aws-storage-gb')?.value) || 30;
+    awsKeyPair = document.getElementById('aws-key-pair-select')?.value || '';
+  }
 
   const promptCloud = cloud === 'local-docker' ? 'local' : cloud;
   try {

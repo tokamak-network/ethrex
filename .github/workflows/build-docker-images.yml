@@ -28,7 +28,7 @@ jobs:
   build-l1:
     name: Build L1 Node Image
     if: ${{ inputs.build_target == 'all' || inputs.build_target == 'l1-only' }}
-    runs-on: ubuntu-latest-16-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
@@ -56,7 +56,7 @@ jobs:
   build-sp1:
     name: Build SP1 Image (L2 + Prover)
     if: ${{ inputs.build_target == 'all' || inputs.build_target == 'sp1-only' }}
-    runs-on: ubuntu-latest-16-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
