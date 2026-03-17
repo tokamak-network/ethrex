@@ -561,7 +561,7 @@ function generateCloudDeployPrompt(opts) {
   sections.push(toolsSection({ dataDir, l2ChainId, isTestnet, l1ChainId, l1Network, l1RpcUrl, programSlug, projectName }));
   sections.push(firewallSection({ cloud, vmName, isTestnet, sgName }));
   sections.push(summarySection({ isTestnet, deployment }));
-  sections.push(troubleshootingSection({ projectName, dataDir }));
+  sections.push(troubleshootingSection({ projectName, dataDir, sgName, region }));
 
   return sections.join("\n\n");
 }
@@ -816,18 +816,20 @@ SSH Key: \`~/.ssh/${keyName}.pem\``;
 function dockerInstallSection() {
   return `## Step 2: Install Docker
 
-Run these commands on the VM:
-
 \`\`\`bash
 # Install Docker
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
+
+# newgrp으로 그룹 적용 (세션이 끊기면 SSH 재접속)
 newgrp docker
 
 # Verify
 docker --version
 docker compose version
-\`\`\``;
+\`\`\`
+
+> \`newgrp docker\` 실행 후 셸이 끊기면 SSH로 재접속하세요. 재접속 후 \`docker ps\`가 sudo 없이 동작하면 OK.`;
 }
 
 function composeFileSection({ composeContent, dataDir, projectName }) {
@@ -1003,17 +1005,22 @@ docker compose -p ${projectName} pull
 # Start the deployment
 docker compose -p ${projectName} up -d
 
-# Watch the deployer logs (wait for "Contract deployment complete")
+# Deployer 로그 확인 (완료될 때까지 대기 — 보통 3-5분)
 docker logs -f ${projectName}-deployer
+
+# Deployer 종료 확인 (exit code 0이어야 정상)
+docker wait ${projectName}-deployer
+docker inspect ${projectName}-deployer --format='{{.State.ExitCode}}'
 \`\`\`
 
-The deployer container will:
+Deployer 동작 순서:
 1. ${isTestnet ? "외부 L1 RPC에 연결" : "Built-in L1이 준비될 때까지 대기"}
 2. L1 컨트랙트 컴파일 및 배포 (CommonBridge, OnChainProposer, Timelock, SP1Verifier, GuestProgramRegistry)
 3. 배포된 주소를 공유 볼륨(\`/env/.env\`)에 기록
 4. 성공 시 exit code 0으로 종료
 
-Deployer가 종료되면 L2 노드와 Prover가 자동으로 시작됩니다.`;
+> Deployer가 종료되면 L2 노드와 Prover가 자동으로 시작됩니다.
+> exit code가 0이 아니면 \`docker logs ${projectName}-deployer\`로 에러를 확인하세요.`;
 }
 
 function verifySection({ l2ChainId, isTestnet }) {
@@ -1057,7 +1064,10 @@ Tools 스택:
 cd ${dataDir}
 
 # Download the tools compose file from the repository
+# Download tools compose (try tokamak-dev first, fallback to feature branch)
 curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/tokamak-dev/crates/l2/docker-compose-zk-dex-tools.yaml \\
+  -o docker-compose-tools.yaml 2>/dev/null || \\
+curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/feat/app-customized-framework/crates/l2/docker-compose-zk-dex-tools.yaml \\
   -o docker-compose-tools.yaml
 
 # Get the deployed contract addresses from the deployer
@@ -1158,7 +1168,7 @@ sudo ufw enable
 
   return `## Step 7: Open Firewall Ports
 
-> 서비스 포트는 공개 접근을 위해 0.0.0.0/0으로 개방됩니다. 프로덕션에서는 필요에 따라 IP 제한을 고려하세요.
+> 서비스 포트는 외부 접근을 위해 전체 공개(0.0.0.0/0)됩니다. 실 운영 환경에서는 IP 제한을 권장합니다.
 
 \`\`\`bash
 ${rules}
@@ -1191,7 +1201,7 @@ Replace \`VM_IP\` with the actual IP from Step 1.
 | **Currency Symbol** | ETH |`;
 }
 
-function troubleshootingSection({ projectName, dataDir }) {
+function troubleshootingSection({ projectName, dataDir, sgName = "", region = "ap-northeast-2" }) {
   return `## Troubleshooting
 
 \`\`\`bash
@@ -1225,7 +1235,23 @@ docker system df
 3. **Explorer 데이터 없음**: Blockscout 인덱서 초기화에 1-2분 소요
 4. **포트 충돌**: docker-compose.yaml에서 포트 매핑 변경
 5. **이미지 pull 실패**: \`docker login ghcr.io\` 또는 네트워크 확인
-6. **Prover 크래시**: 메모리 부족일 수 있음. VM 사양 업그레이드 고려`;
+6. **Prover 크래시**: 메모리 부족일 수 있음. VM 사양 업그레이드 고려
+
+### 테스트 후 정리 (비용 절약)
+
+\`\`\`bash
+# 인스턴스 중지 (EBS 비용만 유지, 인스턴스 비용 없음)
+aws ec2 stop-instances --instance-ids INSTANCE_ID --region REGION
+
+# 인스턴스 완전 삭제 (모든 비용 중지)
+aws ec2 terminate-instances --instance-ids INSTANCE_ID --region REGION
+
+# Security Group 삭제 (인스턴스 terminate 후)
+aws ec2 delete-security-group --group-name ${sgName} --region ${region}
+\`\`\`
+
+> terminate하면 EBS, Public IP 모두 삭제되어 과금이 즉시 중지됩니다.
+> stop은 인스턴스 비용만 중지, EBS($0.096/GB/월)와 IP($3.60/월)는 계속 과금됩니다.`;
 }
 
 // ---------------------------------------------------------------------------
