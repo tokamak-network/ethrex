@@ -13,14 +13,12 @@ on:
         default: 'true'
         type: choice
         options: ['true', 'false']
-  push:
-    branches: [tokamak-dev, feat/app-customized-framework, feat/aws-sepolia-deployment]
-    paths:
-      - 'Dockerfile'
-      - 'Dockerfile.sp1'
-      - 'crates/**'
-      - 'cmd/**'
-      - 'Cargo.*'
+      build_target:
+        description: 'What to build'
+        required: false
+        default: 'all'
+        type: choice
+        options: ['all', 'sp1-only', 'l1-only']
 
 env:
   REGISTRY: ghcr.io
@@ -29,6 +27,7 @@ env:
 jobs:
   build-l1:
     name: Build L1 Node Image
+    if: ${{ inputs.build_target == 'all' || inputs.build_target == 'l1-only' }}
     runs-on: ubuntu-latest-16-cores
     timeout-minutes: 60
     permissions:
@@ -56,6 +55,7 @@ jobs:
 
   build-sp1:
     name: Build SP1 Image (L2 + Prover)
+    if: ${{ inputs.build_target == 'all' || inputs.build_target == 'sp1-only' }}
     runs-on: ubuntu-latest-16-cores
     timeout-minutes: 90
     permissions:
