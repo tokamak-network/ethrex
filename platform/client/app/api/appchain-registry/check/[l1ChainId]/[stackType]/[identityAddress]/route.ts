@@ -19,7 +19,10 @@ export async function GET(
     }
     return NextResponse.json({ exists: false });
   } catch (e) {
-    console.warn("[appchain-registry] check failed:", (e as Error).message);
-    return NextResponse.json({ exists: false });
+    console.error("[appchain-registry] check failed:", (e as Error).message);
+    return NextResponse.json(
+      { error: "Failed to check metadata registry" },
+      { status: 503 },
+    );
   }
 }

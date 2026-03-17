@@ -23,7 +23,7 @@ export const IDENTITY_CONTRACT_FIELD: Record<string, string> = {
   "tokamak-appchain": "Timelock",
 };
 
-// Rate limit (in-memory, per-instance)
+// Rate limit (in-memory, per-instance — best-effort on serverless; each instance has its own map)
 const submitRateLimit = new Map<string, { windowStart: number; count: number }>();
 const SUBMIT_RATE_WINDOW = 60 * 60 * 1000;
 const SUBMIT_RATE_MAX = 5;

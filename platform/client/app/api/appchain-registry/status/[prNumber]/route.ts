@@ -22,6 +22,7 @@ export async function GET(
       htmlUrl: pr.html_url,
     });
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+    console.error("[appchain-registry] status failed:", (e as Error).message);
+    return NextResponse.json({ error: "Failed to fetch PR status" }, { status: 500 });
   }
 }

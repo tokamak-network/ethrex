@@ -40,8 +40,9 @@ export async function POST(req: NextRequest) {
       const message = buildSigningMessage(metadata, operation);
       recoveredAddress = ethers.verifyMessage(message, metadata.metadata.signature);
     } catch (e) {
+      console.error("[appchain-registry] Signature verification failed:", (e as Error).message);
       return NextResponse.json(
-        { success: false, error: `Signature verification failed: ${(e as Error).message}`, code: "INVALID_SIGNATURE" },
+        { success: false, error: "Signature verification failed", code: "INVALID_SIGNATURE" },
         { status: 400 },
       );
     }
@@ -82,7 +83,11 @@ export async function POST(req: NextRequest) {
 
     const ownership = await verifyOnChainOwnership(rpcUrl, timelockAddress, recoveredAddress);
     if (!ownership.valid) {
-      return NextResponse.json({ success: false, error: ownership.error, code: "OWNERSHIP_CHECK_FAILED" }, { status: 403 });
+      console.error("[appchain-registry] Ownership check failed:", ownership.error);
+      return NextResponse.json(
+        { success: false, error: "On-chain ownership verification failed", code: "OWNERSHIP_CHECK_FAILED" },
+        { status: 403 },
+      );
     }
 
     // 5. Determine file path
@@ -121,7 +126,7 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     console.error("[appchain-registry] Error:", e);
     return NextResponse.json(
-      { success: false, error: (e as Error).message, code: "GITHUB_API_ERROR" },
+      { success: false, error: "Internal server error", code: "GITHUB_API_ERROR" },
       { status: 500 },
     );
   }

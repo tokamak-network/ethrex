@@ -86,7 +86,9 @@ export async function createPullRequest(title: string, body: string, head: strin
         }`,
       }),
     });
-  } catch { /* ignore */ }
+  } catch (e) {
+    console.warn("[github-pr] Failed to enable auto-merge:", (e as Error).message);
+  }
 
   return { prUrl: data.html_url as string, prNumber: data.number as number };
 }
@@ -111,7 +113,9 @@ export async function findOpenPR(filePath: string) {
       if (files.some((f: { filename: string }) => f.filename === filePath)) {
         return { prUrl: pr.html_url as string, prNumber: pr.number as number, headBranch: pr.head.ref as string };
       }
-    } catch { /* skip */ }
+    } catch (e) {
+      console.warn("[github-pr] Failed to check PR files:", (e as Error).message);
+    }
   }
   return null;
 }
@@ -139,7 +143,8 @@ export async function getFileContent(filePath: string, branch = "main") {
   const decoded = Buffer.from(data.content, "base64").toString("utf-8");
   try {
     return JSON.parse(decoded);
-  } catch {
+  } catch (e) {
+    console.warn("[github-pr] Failed to parse file content:", (e as Error).message);
     return null;
   }
 }
