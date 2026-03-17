@@ -445,7 +445,7 @@ export L2_CHAIN_ID=${l2ChainId}
 ${isTestnet ? `export L1_CHAIN_ID=${l1ChainId || 11155111}
 export IS_EXTERNAL_L1=true
 export L1_RPC_URL=${l1RpcUrl || "$L1_RPC_URL"}
-export L1_NETWORK_NAME=${l1Network || "sepolia"}` : `export L1_CHAIN_ID=9`}
+export L1_NETWORK_NAME=${l1Network || "sepolia"}` : `export L1_CHAIN_ID=${l1ChainId || 9}`}
 
 # Tools 이미지 빌드 및 시작
 cd ${ETHREX_ROOT}/crates/l2
@@ -544,7 +544,7 @@ function generateCloudDeployPrompt(opts) {
   const sections = [];
 
   sections.push(headerSection({ deployment, programSlug, profile, cloud, region, vmType, l2ChainId, isTestnet, l1RpcUrl, l1Network, l1ChainId, storageGB, keyPairName, includeProver }));
-  sections.push(prerequisitesSection(cloud));
+  sections.push(prerequisitesSection(cloud, keyPairName));
   sections.push(vmCreationSection({ cloud, region, vmType, vmName, storageGB, keyPairName }));
   sections.push(dockerInstallSection());
   sections.push(composeFileSection({ composeContent, dataDir, projectName }));
@@ -578,6 +578,7 @@ function headerSection({ deployment, programSlug, profile, cloud, region, vmType
 > **AI에게**: 사용자가 확인하면 이 프롬프트의 모든 명령을 직접 실행하세요 (안내가 아니라 직접 배포).
 > 각 단계를 직접 실행하고, 진행 상황을 보고하세요 (예: "[Step 3/8] Compose 파일 작성 중... ✅ 완료").
 > 결과를 확인한 후 다음 단계로 자동 진행하세요.
+> ⚠️ SP1 Prover: 현재 Docker 이미지는 exec backend만 지원합니다. 체인 운영(블록 생성, 트랜잭션)은 정상 동작하지만 ZK 증명 생성은 이미지 업데이트가 필요합니다.
 
 ## Deployment Summary
 
@@ -596,7 +597,7 @@ ${keyPairName ? `| **SSH Key Pair** | ${keyPairName} |\n` : ""}| **Components** 
 ${isTestnet ? `| **L1 RPC** | \`$L1_RPC_URL\` (set in .env) |\n` : ""}| **Docker Images** | \`ghcr.io/tokamak-network/tokamak-appchain:{l1,l2,sp1}\` |`;
 }
 
-function prerequisitesSection(cloud) {
+function prerequisitesSection(cloud, keyPairName = "") {
   if (cloud === "gcp") {
     return `## Step 0: Prerequisites (gcloud CLI 설치 + 로그인)
 
@@ -654,26 +655,21 @@ vultr ssh-key create --name "tokamak" --key "$(cat ~/.ssh/id_rsa.pub)"
   }
 
   // AWS
-  return `## Step 0: Prerequisites (AWS CLI 설치 + 설정)
-
-아래 명령어를 순서대로 실행하세요. 이미 설치되어 있으면 건너뛰세요.
+  const sshKeyName = keyPairName || "tokamak-key";
+  return `## Step 0: Prerequisites 확인
 
 \`\`\`bash
-# 1. AWS CLI 설치 확인 (없으면 설치)
-which aws || (curl "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "AWSCLIV2.pkg" && sudo installer -pkg AWSCLIV2.pkg -target /)
-
-# 2. 설정 (Access Key ID + Secret Access Key 입력)
-aws configure
-
-# 3. SSH 키 생성 (없으면)
-aws ec2 create-key-pair --key-name tokamak-key --query 'KeyMaterial' --output text > tokamak-key.pem
-chmod 400 tokamak-key.pem
-
-# 4. 확인
+# AWS CLI 및 인증 확인
+aws --version
 aws sts get-caller-identity
+
+# SSH 키 확인
+ls -la ~/.ssh/${sshKeyName}.pem || echo "❌ SSH key not found: ~/.ssh/${sshKeyName}.pem"
 \`\`\`
 
-> 사용자에게 AWS Access Key를 확인하세요. EC2 권한이 필요합니다.`;
+> 위 명령어가 모두 정상이면 Step 1로 진행하세요.
+> AWS CLI가 없으면: \`brew install awscli\` 후 \`aws configure\`
+> SSH 키가 없으면: 매니저 AI Deploy Guide에서 키페어를 생성하세요.`;
 }
 
 function vmCreationSection({ cloud, region, vmType, vmName, storageGB = 30, keyPairName = "" }) {
@@ -772,6 +768,11 @@ else
     --description "Tokamak L2 appchain" \\
     --region ${region} 2>/dev/null || true
 
+  # Open SSH port (required for connection)
+  aws ec2 authorize-security-group-ingress \\
+    --group-name tokamak-l2-sg --protocol tcp --port 22 --cidr 0.0.0.0/0 \\
+    --region ${region} 2>/dev/null || true
+
   # Launch instance
   aws ec2 run-instances \\
     --region ${region} \\
@@ -837,7 +838,15 @@ COMPOSE_EOF
 \`\`\`
 
 The compose project name is \`${projectName}\`.
-이 파일은 사전 빌드된 Docker 이미지(\`ghcr.io/tokamak-network/tokamak-appchain\`)를 pull합니다.`;
+이 파일은 사전 빌드된 Docker 이미지(\`ghcr.io/tokamak-network/tokamak-appchain\`)를 pull합니다.
+
+\`\`\`bash
+# Prover에 필요한 programs.toml 생성
+cat > ${dataDir}/programs.toml << 'TOML_EOF'
+default_program = "evm-l2"
+enabled_programs = ["evm-l2", "zk-dex", "tokamon"]
+TOML_EOF
+\`\`\``;
 }
 
 function testnetEnvSection({ cloud, l1RpcUrl, l1ChainId, l1Network, dataDir, walletConfig }) {
@@ -1063,7 +1072,7 @@ export L2_CHAIN_ID=${l2ChainId}
 ${isTestnet ? `export L1_CHAIN_ID=${l1ChainId || 11155111}
 export IS_EXTERNAL_L1=true
 export L1_RPC_URL=${l1RpcUrl || "$L1_RPC_URL"}
-export L1_NETWORK_NAME=${l1Network || "sepolia"}` : `export L1_CHAIN_ID=9`}
+export L1_NETWORK_NAME=${l1Network || "sepolia"}` : `export L1_CHAIN_ID=${l1ChainId || 9}`}
 
 # Public URLs — VM IP 또는 도메인으로 설정 (나중에 도메인 연결 시 변경)
 VM_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "localhost")
