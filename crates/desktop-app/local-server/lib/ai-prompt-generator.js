@@ -525,7 +525,8 @@ function generateCloudDeployPrompt(opts) {
   const l2ChainId = deployment.chain_id || 65536999;
   const projectName = `tokamak-${deployment.id.slice(0, 8)}`;
   const isTestnet = l1Mode === "testnet";
-  const vmName = `tokamak-l2-${deployment.id.slice(0, 8)}`;
+  const safeName = (deployment.name || "l2").replace(/[^a-zA-Z0-9-]/g, "-").toLowerCase().slice(0, 30);
+  const vmName = `tokamak-${safeName}-${deployment.id.slice(0, 8)}`;
   const dataDir = `/opt/tokamak/${deployment.id.slice(0, 8)}`;
 
   // Always generate the local-L1 remote compose as template.

@@ -213,11 +213,11 @@ router.post("/ai-deploy/monitor", async (req, res) => {
       "--query", jmesQuery, "--output", "json", "--region", awsRegion,
     ], { timeout: 10000, stdio: "pipe" }).toString().trim();
     let parsed = JSON.parse(ec2Json);
-    // Fallback: search all tokamak-l2-* instances
+    // Fallback: search all tokamak-* instances
     if (!parsed) {
       ec2Json = execFileSync("aws", [
         "ec2", "describe-instances",
-        "--filters", "Name=tag:Name,Values=tokamak-l2-*", "Name=instance-state-name,Values=pending,running,stopping,stopped",
+        "--filters", "Name=tag:Name,Values=tokamak-*", "Name=instance-state-name,Values=pending,running,stopping,stopped",
         "--query", jmesQuery, "--output", "json", "--region", awsRegion,
       ], { timeout: 10000, stdio: "pipe" }).toString().trim();
       parsed = JSON.parse(ec2Json);
@@ -1322,7 +1322,8 @@ router.post("/:id/ai-prompt", async (req, res) => {
     });
 
     // Save cloud config to deployment for persistent monitoring
-    const vmName = `tokamak-l2-${deployment.id.slice(0, 8)}`;
+    const safeName = (deployment.name || "l2").replace(/[^a-zA-Z0-9-]/g, "-").toLowerCase().slice(0, 30);
+    const vmName = `tokamak-${safeName}-${deployment.id.slice(0, 8)}`;
     const cloudConfig = {
       mode: "ai-deploy",
       cloud,
