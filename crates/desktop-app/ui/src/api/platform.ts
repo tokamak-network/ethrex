@@ -113,11 +113,17 @@ class PlatformAPI {
     }
 
     const resp = await window.fetch(`${this.baseUrl}${path}`, {
-      headers,
       ...options,
+      headers: { ...headers, ...(options?.headers as Record<string, string> || {}) },
     })
     const data = await resp.json()
-    if (!resp.ok) throw new Error(data.error || resp.statusText)
+    if (!resp.ok) {
+      if (resp.status === 401 && this.token) {
+        this.token = null
+        platformAuth.deleteToken().catch(() => {})
+      }
+      throw new Error(data.error || resp.statusText)
+    }
     return data
   }
 

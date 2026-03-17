@@ -12,7 +12,7 @@ const {
   updateDeployment,
   deleteDeployment,
 } = require("../db/deployments");
-const { getProgramById, incrementUseCount } = require("../db/programs");
+const { getProgramById, getProgramByProgramId, incrementUseCount } = require("../db/programs");
 
 // Screenshot upload config
 const UPLOAD_DIR = path.join(__dirname, "..", "uploads", "screenshots");
@@ -50,21 +50,22 @@ router.post("/", (req, res) => {
       return res.status(400).json({ error: "name must be a string of 200 characters or fewer" });
     }
 
-    const program = getProgramById(programId);
+    // Look up program by slug (program_id), not by UUID (id)
+    const program = getProgramByProgramId(programId) || getProgramById(programId);
     if (!program || program.status !== "active") {
       return res.status(404).json({ error: "Program not found or not active" });
     }
 
     const deployment = createDeployment({
       userId: req.user.id,
-      programId,
+      programId: program.id,  // Use UUID, not slug
       name: name.trim(),
       chainId: chainId || null,
       rpcUrl: rpcUrl || null,
       config: config || null,
     });
 
-    incrementUseCount(programId);
+    incrementUseCount(program.id);
     res.status(201).json({ deployment });
   } catch (e) {
     res.status(500).json({ error: e.message });
