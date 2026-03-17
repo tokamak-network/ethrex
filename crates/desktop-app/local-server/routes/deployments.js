@@ -715,7 +715,7 @@ function updateDeploymentHandler(req, res) {
       return res.status(404).json({ error: "Deployment not found" });
     }
 
-    const allowedFields = ["name", "chain_id", "l1_chain_id", "rpc_url", "config", "is_public", "hashtags", "platform_deployment_id", "phase", "status"];
+    const allowedFields = ["name", "chain_id", "l1_chain_id", "rpc_url", "config", "is_public", "hashtags", "platform_deployment_id", "phase", "status", "bridge_address", "proposer_address", "timelock_address", "sp1_verifier_address", "guest_program_registry_address"];
     const updates = [];
     const values = [];
 
