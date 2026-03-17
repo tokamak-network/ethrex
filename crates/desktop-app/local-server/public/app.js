@@ -2010,12 +2010,12 @@ async function deleteDeploy(id, event) {
 
 function renderPhaseBadge(phase, hasError) {
   const labels = {
-    configured: 'Not deployed', checking_docker: 'Checking Docker', building: 'Building',
+    configured: 'Not deployed', 'ai-deploy': 'Deploying (AI)', checking_docker: 'Checking Docker', building: 'Building',
     pulling: 'Pulling Images', l1_starting: 'Starting L1', deploying_contracts: 'Deploying',
     verifying_contracts: 'Verifying', l2_starting: 'Starting L2', starting_prover: 'Starting Prover', starting_tools: 'Starting Tools',
     running: 'Running', stopped: 'Stopped', error: 'Error',
   };
-  const animating = ['checking_docker','building','pulling','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_tools'];
+  const animating = ['ai-deploy','checking_docker','building','pulling','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_tools'];
   const label = labels[phase] || phase;
   if (hasError && phase !== 'error') {
     return `<span class="phase-badge phase-error" title="Error during: ${label}">${label} - Error</span>`;
@@ -2094,9 +2094,141 @@ function renderDetailTab() {
   if (detailTab === 'config') renderConfigTab();
 }
 
+// ---------------------------------------------------------------------------
+// AI Deploy Overview — shown in My L2 detail when phase === 'ai-deploy'
+// ---------------------------------------------------------------------------
+function renderAIDeployOverview(d) {
+  const panel = document.getElementById('tab-overview');
+  if (!panel) return;
+  const config = typeof d.config === 'string' ? JSON.parse(d.config || '{}') : (d.config || {});
+  const vmName = config.vmName || '';
+  const region = config.region || 'ap-northeast-2';
+  const vmType = config.vmType || '';
+  const keyPairName = config.keyPairName || '';
+  const cloud = config.cloud || 'aws';
+  const storageGB = config.storageGB || 30;
+
+  panel.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <!-- Config Summary -->
+      <div style="padding:12px 16px;border-radius:8px;background:var(--bg-surface,#1a1a2e);border:1px solid var(--border,#333);font-size:12px;line-height:1.8">
+        <div style="font-weight:600;margin-bottom:6px;font-size:13px">☁️ 배포 설정</div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px">
+          <span style="color:var(--text-muted,#888)">Cloud</span><span>${cloud.toUpperCase()}</span>
+          <span style="color:var(--text-muted,#888)">Region</span><span>${region}</span>
+          <span style="color:var(--text-muted,#888)">Instance</span><span>${vmType}</span>
+          <span style="color:var(--text-muted,#888)">Storage</span><span>${storageGB}GB gp3</span>
+          ${keyPairName ? `<span style="color:var(--text-muted,#888)">SSH Key</span><span>${keyPairName}</span>` : ''}
+          <span style="color:var(--text-muted,#888)">VM Name</span><span>${vmName}</span>
+          <span style="color:var(--text-muted,#888)">L2 Chain ID</span><span>${d.chain_id || ''}</span>
+        </div>
+      </div>
+
+      <!-- Monitoring -->
+      <div style="display:flex;gap:8px;align-items:center">
+        <button onclick="monitorAIDeployment('${d.id}')" class="btn-primary" style="padding:6px 16px;font-size:12px">🖥️ 배포 상태 확인</button>
+        <span id="ai-deploy-monitor-status" style="font-size:11px;color:var(--text-muted,#888)"></span>
+      </div>
+      <div id="ai-deploy-monitor-result" style="padding:12px 16px;border-radius:8px;background:var(--bg-surface,#1a1a2e);border:1px solid var(--border,#333);font-size:12px;line-height:1.8;display:none"></div>
+
+      <!-- Complete Deployment Button -->
+      <div style="padding:12px 16px;border-radius:8px;background:#eff6ff;border:1px solid #93c5fd;font-size:12px;line-height:1.6">
+        <div style="font-weight:600;color:#1d4ed8;margin-bottom:6px">📋 배포 상태</div>
+        <p style="color:#374151;margin-bottom:8px">Claude.ai에서 배포가 완료되면 아래 버튼을 눌러 배포 완료를 확인하세요.</p>
+        <div style="display:flex;gap:8px">
+          <button onclick="confirmAIDeployComplete('${d.id}')" class="btn-primary" style="padding:8px 20px;font-size:13px;background:#22c55e;border-color:#22c55e">✅ 배포 완료 확인</button>
+          <button onclick="cancelAIDeployment('${d.id}')" style="padding:8px 16px;font-size:12px;border:1px solid #ef4444;border-radius:6px;background:transparent;color:#ef4444;cursor:pointer">취소</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function monitorAIDeployment(deploymentId) {
+  const statusEl = document.getElementById('ai-deploy-monitor-status');
+  const resultEl = document.getElementById('ai-deploy-monitor-result');
+  if (statusEl) statusEl.textContent = 'AWS CLI로 확인 중...';
+  try {
+    const res = await fetch(`${API}/deployments/ai-deploy/monitor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deploymentId }),
+    });
+    const data = await res.json();
+    const lines = [];
+    const state = data.ec2?.State || 'not_found';
+    if (state === 'not_found') {
+      lines.push('⚪ EC2 인스턴스 미발견 — 아직 생성되지 않았습니다');
+    } else {
+      const icon = state === 'running' ? '🟢' : state === 'stopped' ? '🟡' : '🔴';
+      lines.push(`${icon} EC2: ${state} (${data.ec2.Type || ''}, ${data.ec2.IP || 'no IP'})`);
+      if (data.ec2.Id) lines.push(`Instance ID: ${data.ec2.Id}`);
+    }
+    if (data.containers && data.containers.length > 0) {
+      lines.push('');
+      lines.push('📦 컨테이너:');
+      data.containers.forEach(c => {
+        const icon = c.status?.startsWith('Up') ? '✅' : c.status?.includes('Exited (0)') ? '☑️' : '❌';
+        lines.push(`  ${icon} ${c.name} — ${c.status}`);
+      });
+    } else if (state === 'running' && !data.containers) {
+      lines.push('');
+      lines.push('📦 컨테이너: SSH 연결 불가');
+    }
+    if (data.services && Object.keys(data.services).length > 0) {
+      lines.push('');
+      lines.push('🌐 서비스:');
+      for (const [name, svc] of Object.entries(data.services)) {
+        lines.push(svc.ok ? `  ✅ ${name}${svc.block !== undefined ? ` (block #${svc.block})` : ''}` : `  ❌ ${name}`);
+      }
+    }
+    if (resultEl) { resultEl.style.display = ''; resultEl.textContent = lines.join('\n'); }
+    const ec2Status = state === 'running' ? '🟢 Running' : state === 'not_found' ? '⚪ 미발견' : `🟡 ${state}`;
+    if (statusEl) statusEl.textContent = `${ec2Status}${data.ec2?.IP ? ' · ' + data.ec2.IP : ''}`;
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `❌ ${e.message}`;
+  }
+}
+
+async function confirmAIDeployComplete(deploymentId) {
+  if (!confirm('배포가 완료되었나요? 완료 확인 후 상태가 "running"으로 변경됩니다.')) return;
+  try {
+    const res = await fetch(`${API}/deployments/${deploymentId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phase: 'running', status: 'running' }),
+    });
+    if (!res.ok) throw new Error('Failed to update');
+    showDeploymentDetail(deploymentId);
+  } catch (e) {
+    alert(`오류: ${e.message}`);
+  }
+}
+
+async function cancelAIDeployment(deploymentId) {
+  if (!confirm('이 배포를 취소하시겠습니까?')) return;
+  try {
+    const res = await fetch(`${API}/deployments/${deploymentId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phase: 'configured', status: 'configured' }),
+    });
+    if (!res.ok) throw new Error('Failed to update');
+    loadMyL2s();
+  } catch (e) {
+    alert(`오류: ${e.message}`);
+  }
+}
+
 function renderOverviewTab() {
   const d = detailDeployment;
   if (!d) return;
+
+  // AI Deploy phase — show deployment chat + monitoring instead of local Docker UI
+  if (d.phase === 'ai-deploy') {
+    renderAIDeployOverview(d);
+    return;
+  }
+
   const isProvisioned = !!d.docker_project;
   const isDeploying = ['checking_docker','building','l1_starting','deploying_contracts','verifying_contracts','l2_starting','starting_prover','starting_tools'].includes(d.phase);
   // Reconcile: use live container state instead of stale DB phase
