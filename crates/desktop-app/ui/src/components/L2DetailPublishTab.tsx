@@ -35,25 +35,58 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
   const socialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const metadataPushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // localStorage key for pre-publish draft
+  const draftKey = `tokamak_publish_draft_${l2.id}`
+
   // Sync isPublic when parent re-fetches
   useEffect(() => { setIsPublic(l2.isPublic) }, [l2.isPublic])
 
   // Check Pinata configuration
   useEffect(() => { isPinataConfigured().then(setPinataReady) }, [])
 
-  // Load existing data from Platform on mount (if already published)
+  // Load existing data: from Platform if published, from localStorage if draft
   useEffect(() => {
-    if (!l2.platformDeploymentId) return
-    platformAPI.getPublicAppchain(l2.platformDeploymentId).then(appchain => {
-      if (appchain?.description) setPublishDesc(appchain.description)
-      if (appchain?.social_links && Object.keys(appchain.social_links).length > 0) {
-        setSocialLinks(appchain.social_links)
-      }
-      if (appchain?.screenshots && appchain.screenshots.length > 0) {
-        setScreenshots(appchain.screenshots)
-      }
-    }).catch((err) => console.warn('[publish] Failed to load appchain data:', err))
-  }, [l2.platformDeploymentId])
+    if (l2.platformDeploymentId) {
+      platformAPI.getPublicAppchain(l2.platformDeploymentId).then(appchain => {
+        if (appchain?.description) setPublishDesc(appchain.description)
+        if (appchain?.social_links && Object.keys(appchain.social_links).length > 0) {
+          setSocialLinks(appchain.social_links)
+        }
+        if (appchain?.screenshots && appchain.screenshots.length > 0) {
+          setScreenshots(appchain.screenshots)
+        }
+      }).catch((err) => console.warn('[publish] Failed to load appchain data:', err))
+    } else {
+      // Load draft from localStorage
+      try {
+        const raw = localStorage.getItem(draftKey)
+        if (raw) {
+          const draft = JSON.parse(raw)
+          if (draft.description) setPublishDesc(draft.description)
+          if (draft.socialLinks) setSocialLinks(draft.socialLinks)
+          if (draft.screenshots) setScreenshots(draft.screenshots)
+        }
+      } catch { /* ignore */ }
+    }
+  }, [l2.platformDeploymentId, draftKey])
+
+  // Save draft to localStorage (for pre-publish state)
+  const saveDraft = useCallback(() => {
+    const filteredSocial = Object.fromEntries(Object.entries(socialLinks).filter(([, v]) => v.trim()))
+    const draft = {
+      description: publishDesc,
+      socialLinks: Object.keys(filteredSocial).length > 0 ? filteredSocial : undefined,
+      screenshots: screenshots.length > 0 ? screenshots : undefined,
+    }
+    localStorage.setItem(draftKey, JSON.stringify(draft))
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }, [draftKey, publishDesc, socialLinks, screenshots])
+
+  // Clear draft after successful publish
+  const clearDraft = useCallback(() => {
+    localStorage.removeItem(draftKey)
+  }, [draftKey])
 
   // Debounced metadata push to GitHub repo (5s after any save)
   const debouncedMetadataPush = useCallback(() => {
@@ -311,6 +344,39 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
         </div>
       </div>
 
+      {/* Save button — visible when not yet published (saves to localStorage) or when published (saves to Platform) */}
+      <div className="flex items-center justify-between">
+        <button
+          onClick={() => {
+            if (l2.platformDeploymentId) {
+              // Save all fields to Platform
+              const platformId = l2.platformDeploymentId
+              const filteredSocial = Object.fromEntries(Object.entries(socialLinks).filter(([, v]) => v.trim()))
+              setSaving(true)
+              platformAPI.updateDeployment(platformId, {
+                description: publishDesc || undefined,
+                screenshots: screenshots.length > 0 ? JSON.stringify(screenshots) : undefined,
+                social_links: Object.keys(filteredSocial).length > 0 ? JSON.stringify(filteredSocial) : undefined,
+              }).then(() => {
+                setSaved(true)
+                setTimeout(() => setSaved(false), 2000)
+                debouncedMetadataPush()
+              }).catch(err => console.warn('[publish] save failed:', err))
+              .finally(() => setSaving(false))
+            } else {
+              saveDraft()
+            }
+          }}
+          disabled={saving}
+          className="bg-[var(--color-accent)] text-[var(--color-accent-text)] text-[11px] font-medium px-4 py-1.5 rounded-lg cursor-pointer disabled:opacity-50 transition-colors hover:opacity-90"
+        >
+          {saving ? (ko ? '저장 중...' : 'Saving...') : (ko ? '저장' : 'Save')}
+        </button>
+        <span className="text-[9px] text-[var(--color-text-secondary)]">
+          {saved ? (ko ? '저장됨 ✓' : 'Saved ✓') : !l2.platformDeploymentId ? (ko ? '로컬에 저장됩니다' : 'Saved locally') : ''}
+        </span>
+      </div>
+
       {/* Public Toggle */}
       <div className="bg-[var(--color-bg-sidebar)] rounded-xl p-3 border border-[var(--color-border)]">
         <SectionHeader title={ko ? '오픈 앱체인 공개' : 'Open Appchain Publishing'} />
@@ -354,6 +420,7 @@ export default function L2DetailPublishTab({ l2, ko, platformLoggedIn, onRefresh
 
                     await platformAPI.activateDeployment(platformId)
                     setIsPublic(true)
+                    clearDraft()
 
                     // Push metadata to GitHub repo (non-blocking)
                     platformAPI.pushMetadata(platformId).catch(err =>
