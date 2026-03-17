@@ -205,41 +205,57 @@ impl AiProvider {
         Ok(self.get_token_usage())
     }
 
-    // ---- Config persistence (macOS security CLI for Keychain compatibility) ----
+    // ---- Config persistence (platform-aware credential storage) ----
+    //
+    // macOS: uses `security` CLI for Keychain compatibility with Node.js keychain.js
+    // Windows/Linux: uses `keyring` crate (Windows Credential Manager / Secret Service)
 
-    /// Read a secret from macOS Keychain via `security` CLI.
-    /// Uses the same approach as Node.js keychain.js for full compatibility.
     fn keychain_get(account: &str) -> Option<String> {
-        let output = std::process::Command::new("security")
-            .args(["find-generic-password", "-a", account, "-s", KEYRING_SERVICE, "-w"])
-            .output()
-            .ok()?;
-        if output.status.success() {
-            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        if cfg!(target_os = "macos") {
+            let output = std::process::Command::new("security")
+                .args(["find-generic-password", "-a", account, "-s", KEYRING_SERVICE, "-w"])
+                .output()
+                .ok()?;
+            if output.status.success() {
+                Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            } else {
+                None
+            }
         } else {
-            None
+            let entry = keyring::Entry::new(KEYRING_SERVICE, account).ok()?;
+            entry.get_password().ok()
         }
     }
 
-    /// Write a secret to macOS Keychain via `security` CLI.
-    /// Uses -U (update) flag to create or update in a single command.
     fn keychain_set(account: &str, secret: &str) -> Result<(), String> {
-        let output = std::process::Command::new("security")
-            .args(["add-generic-password", "-a", account, "-s", KEYRING_SERVICE, "-w", secret, "-U"])
-            .output()
-            .map_err(|e| format!("Failed to run security: {e}"))?;
-        if output.status.success() {
-            Ok(())
+        if cfg!(target_os = "macos") {
+            let output = std::process::Command::new("security")
+                .args(["add-generic-password", "-a", account, "-s", KEYRING_SERVICE, "-w", secret, "-U"])
+                .output()
+                .map_err(|e| format!("Failed to run security: {e}"))?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(format!("security add-generic-password failed: {}", String::from_utf8_lossy(&output.stderr)))
+            }
         } else {
-            Err(format!("security add-generic-password failed: {}", String::from_utf8_lossy(&output.stderr)))
+            let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+                .map_err(|e| format!("Keyring error: {e}"))?;
+            entry.set_password(secret)
+                .map_err(|e| format!("Failed to save: {e}"))
         }
     }
 
-    /// Delete a secret from macOS Keychain via `security` CLI.
     fn keychain_delete(account: &str) {
-        let _ = std::process::Command::new("security")
-            .args(["delete-generic-password", "-a", account, "-s", KEYRING_SERVICE])
-            .output();
+        if cfg!(target_os = "macos") {
+            let _ = std::process::Command::new("security")
+                .args(["delete-generic-password", "-a", account, "-s", KEYRING_SERVICE])
+                .output();
+        } else {
+            if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, account) {
+                let _ = entry.delete_credential();
+            }
+        }
     }
 
     fn load_config_meta() -> Option<AiConfig> {
