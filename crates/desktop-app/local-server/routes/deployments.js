@@ -158,12 +158,148 @@ router.get("/ai-deploy/check-cli", async (req, res) => {
         result.auth.authenticated = true;
         result.auth.account = parsed.Arn || parsed.Account || "";
       } catch {}
+      // List SSH key pairs
+      try {
+        const region = req.query.region || "ap-northeast-2";
+        const kpJson = execSync(`aws ec2 describe-key-pairs --query "KeyPairs[*].[KeyName,KeyPairId]" --output json --region ${region} 2>/dev/null`, { timeout: 5000 }).toString();
+        result.keyPairs = JSON.parse(kpJson).map(([name, id]) => ({ name, id }));
+      } catch {
+        result.keyPairs = [];
+      }
     }
   } catch (e) {
     // Unexpected error — return what we have
   }
 
   res.json(result);
+});
+
+// POST /api/deployments/ai-deploy/monitor — check EC2 + container status via AWS CLI + SSH
+router.post("/ai-deploy/monitor", async (req, res) => {
+  let { vmName, region, keyPairName, deploymentId } = req.body;
+
+  // If deploymentId provided, load config from DB
+  if (deploymentId && !vmName) {
+    try {
+      const dep = db.prepare("SELECT config FROM deployments WHERE id = ?").get(deploymentId);
+      if (dep?.config) {
+        const cfg = JSON.parse(dep.config);
+        vmName = cfg.vmName || vmName;
+        region = cfg.region || region;
+        keyPairName = cfg.keyPairName || keyPairName;
+      }
+    } catch {}
+  }
+
+  if (!vmName) return res.status(400).json({ error: "vmName required" });
+  const awsRegion = region || "ap-northeast-2";
+  const { execSync } = require("child_process");
+  const result = { vmName, ec2: null, containers: null, services: {} };
+
+  try {
+    // 1. Get EC2 instance info — search exact name first, then wildcard tokamak-l2-*
+    let ec2Json = execSync(
+      `aws ec2 describe-instances --filters "Name=tag:Name,Values=${vmName}" "Name=instance-state-name,Values=pending,running,stopping,stopped" --query "Reservations[].Instances[] | sort_by(@, &LaunchTime) | [-1].{State:State.Name,IP:PublicIpAddress,Id:InstanceId,Type:InstanceType,LaunchTime:LaunchTime,Name:Tags[?Key=='Name'].Value|[0]}" --output json --region ${awsRegion} 2>/dev/null`,
+      { timeout: 10000 }
+    ).toString().trim();
+    let parsed = JSON.parse(ec2Json);
+    // Fallback: search all tokamak-l2-* instances
+    if (!parsed) {
+      ec2Json = execSync(
+        `aws ec2 describe-instances --filters "Name=tag:Name,Values=tokamak-l2-*" "Name=instance-state-name,Values=pending,running,stopping,stopped" --query "Reservations[].Instances[] | sort_by(@, &LaunchTime) | [-1].{State:State.Name,IP:PublicIpAddress,Id:InstanceId,Type:InstanceType,LaunchTime:LaunchTime,Name:Tags[?Key=='Name'].Value|[0]}" --output json --region ${awsRegion} 2>/dev/null`,
+        { timeout: 10000 }
+      ).toString().trim();
+      parsed = JSON.parse(ec2Json);
+    }
+    result.ec2 = parsed || { State: "not_found" };
+    if (result.ec2.Name) result.vmName = result.ec2.Name;
+  } catch (e) {
+    result.ec2 = { State: "not_found", error: e.message.slice(0, 200) };
+    return res.json(result);
+  }
+
+  if (result.ec2.State !== "running" || !result.ec2.IP) {
+    return res.json(result);
+  }
+
+  const ip = result.ec2.IP;
+  const keyPath = keyPairName ? `~/.ssh/${keyPairName}.pem` : "";
+
+  // 2. Check containers via SSH
+  if (keyPath) {
+    try {
+      const sshCmd = `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ${keyPath} ubuntu@${ip}`;
+      const containers = execSync(
+        `${sshCmd} "docker ps --format '{{.Names}}|{{.Status}}|{{.Ports}}' 2>/dev/null" 2>/dev/null`,
+        { timeout: 15000 }
+      ).toString().trim();
+      result.containers = containers.split("\n").filter(Boolean).map(line => {
+        const [name, status, ports] = line.split("|");
+        return { name, status, ports };
+      });
+    } catch {
+      result.containers = null; // SSH failed
+    }
+  }
+
+  // 3. Check HTTP endpoints
+  const endpoints = [
+    { name: "L2 RPC", port: 1729, type: "rpc" },
+    { name: "L1 RPC", port: 8545, type: "rpc" },
+    { name: "L2 Explorer", port: 8082, type: "http" },
+    { name: "Dashboard", port: 3000, type: "http" },
+  ];
+  for (const ep of endpoints) {
+    try {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 3000);
+      if (ep.type === "rpc") {
+        const r = await fetch(`http://${ip}:${ep.port}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", method: "eth_blockNumber", params: [], id: 1 }),
+          signal: controller.signal,
+        });
+        const data = await r.json();
+        result.services[ep.name] = { ok: true, block: parseInt(data.result, 16) };
+      } else {
+        const r = await fetch(`http://${ip}:${ep.port}/`, { signal: controller.signal });
+        result.services[ep.name] = { ok: r.ok, status: r.status };
+      }
+    } catch {
+      result.services[ep.name] = { ok: false };
+    }
+  }
+
+  res.json(result);
+});
+
+// POST /api/deployments/ai-deploy/create-key-pair — create AWS SSH key pair
+router.post("/ai-deploy/create-key-pair", (req, res) => {
+  const { keyName, region } = req.body;
+  if (!keyName) return res.status(400).json({ error: "keyName required" });
+  const awsRegion = region || "ap-northeast-2";
+  const { execSync } = require("child_process");
+  try {
+    const result = execSync(
+      `aws ec2 create-key-pair --key-name "${keyName}" --query "KeyMaterial" --output text --region ${awsRegion} 2>&1`,
+      { timeout: 10000 }
+    ).toString();
+    // Save the private key to ~/.ssh/
+    const fs = require("fs");
+    const path = require("path");
+    const sshDir = path.join(require("os").homedir(), ".ssh");
+    if (!fs.existsSync(sshDir)) fs.mkdirSync(sshDir, { mode: 0o700 });
+    const pemPath = path.join(sshDir, `${keyName}.pem`);
+    fs.writeFileSync(pemPath, result, { mode: 0o400 });
+    res.json({ ok: true, keyName, pemPath });
+  } catch (e) {
+    const msg = e.message || "";
+    if (msg.includes("InvalidKeyPair.Duplicate")) {
+      res.status(409).json({ error: `Key pair "${keyName}" already exists` });
+    } else {
+      res.status(500).json({ error: msg.slice(0, 300) });
+    }
+  }
 });
 
 // GET /api/deployments/next-chain-id — get unique L1 and L2 chain IDs
@@ -1126,7 +1262,7 @@ router.post("/:id/ai-prompt", async (req, res) => {
     const deployment = db.prepare("SELECT * FROM deployments WHERE id = ?").get(req.params.id);
     if (!deployment) return res.status(404).json({ error: "Deployment not found" });
 
-    const { cloud, region, vmType, l1Mode, l1RpcUrl, l1ChainId, l1Network, includeProver, walletConfig } = req.body;
+    const { cloud, region, vmType, l1Mode, l1RpcUrl, l1ChainId, l1Network, includeProver, walletConfig, storageGB, keyPairName } = req.body;
     if (!cloud) {
       return res.status(400).json({ error: "cloud is required" });
     }
@@ -1155,8 +1291,27 @@ router.post("/:id/ai-prompt", async (req, res) => {
       l1Mode: l1Mode || "local",
       l1RpcUrl, l1ChainId, l1Network,
       includeProver, walletConfig,
+      storageGB: storageGB || 30,
+      keyPairName: keyPairName || "",
       ports,
     });
+
+    // Save cloud config to deployment for persistent monitoring
+    const vmName = `tokamak-l2-${deployment.id.slice(0, 8)}`;
+    const cloudConfig = {
+      mode: "ai-deploy",
+      cloud,
+      region: region || defaults.region,
+      vmType: vmType || defaults.vmType,
+      vmName,
+      storageGB: storageGB || 30,
+      keyPairName: keyPairName || "",
+      l1Mode: l1Mode || "local",
+      l1RpcUrl, l1ChainId, l1Network,
+      includeProver,
+    };
+    db.prepare("UPDATE deployments SET config = ?, phase = 'ai-deploy' WHERE id = ?")
+      .run(JSON.stringify(cloudConfig), deployment.id);
 
     // Store as pending for Messenger to pick up
     pendingAIPrompt = {
