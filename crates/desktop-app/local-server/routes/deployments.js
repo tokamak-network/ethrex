@@ -224,6 +224,20 @@ router.post("/ai-deploy/monitor", async (req, res) => {
     }
     result.ec2 = parsed || { State: "not_found" };
     if (result.ec2.Name) result.vmName = result.ec2.Name;
+    // Save instance ID and IP to DB for reliable future lookups
+    if (deploymentId && result.ec2.Id) {
+      try {
+        const dep = db.prepare("SELECT config FROM deployments WHERE id = ?").get(deploymentId);
+        if (dep?.config) {
+          const cfg = JSON.parse(dep.config);
+          if (cfg.ec2InstanceId !== result.ec2.Id || cfg.ec2IP !== result.ec2.IP) {
+            cfg.ec2InstanceId = result.ec2.Id;
+            cfg.ec2IP = result.ec2.IP;
+            db.prepare("UPDATE deployments SET config = ? WHERE id = ?").run(JSON.stringify(cfg), deploymentId);
+          }
+        }
+      } catch {}
+    }
   } catch (e) {
     result.ec2 = { State: "not_found", error: (e.message || "").slice(0, 200) };
     return res.json(result);
