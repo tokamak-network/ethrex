@@ -578,7 +578,7 @@ function headerSection({ deployment, programSlug, profile, cloud, region, vmType
 > **AI에게**: 사용자가 확인하면 이 프롬프트의 모든 명령을 직접 실행하세요 (안내가 아니라 직접 배포).
 > 각 단계를 직접 실행하고, 진행 상황을 보고하세요 (예: "[Step 3/8] Compose 파일 작성 중... ✅ 완료").
 > 결과를 확인한 후 다음 단계로 자동 진행하세요.
-> ⚠️ SP1 Prover: 현재 Docker 이미지는 exec backend만 지원합니다. 체인 운영(블록 생성, 트랜잭션)은 정상 동작하지만 ZK 증명 생성은 이미지 업데이트가 필요합니다.
+> ⚠️ SP1 Prover: 현재 Docker 이미지(ghcr.io)는 exec backend만 포함되어 있어 ZK 증명 생성이 안 될 수 있습니다. 이미지가 업데이트되면 자동으로 SP1 증명이 동작합니다. 체인 운영(블록 생성, 트랜잭션)은 정상 동작합니다.
 
 ## Deployment Summary
 
