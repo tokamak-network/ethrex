@@ -869,12 +869,28 @@ The compose project name is \`${projectName}\`.
 이 파일은 사전 빌드된 Docker 이미지(\`ghcr.io/tokamak-network/tokamak-appchain\`)를 pull합니다.
 
 \`\`\`bash
+# 키 환경변수 파일 생성 (compose에서 참조)
+cat > ${dataDir}/.env << 'ENV_EOF'
+# Default built-in L1 keys (test-only, no real assets)
+ETHREX_DEPLOYER_L1_PRIVATE_KEY=0x385c546456b6a603a1cfcaa9ec9494ba4832da08dd6bcf4de9a71e4a01b74924
+ETHREX_ON_CHAIN_PROPOSER_OWNER=0x4417092b70a3e5f10dc504d0947dd256b965fc62
+ETHREX_BRIDGE_OWNER=0x4417092b70a3e5f10dc504d0947dd256b965fc62
+ETHREX_BRIDGE_OWNER_PK=0x941e103320615d394a55708be13e45994c7d93b932b064dbcb2b511fe3254e2e
+ETHREX_DEPLOYER_SEQUENCER_REGISTRY_OWNER=0x4417092b70a3e5f10dc504d0947dd256b965fc62
+ETHREX_COMMITTER_L1_PRIVATE_KEY=0x385c546456b6a603a1cfcaa9ec9494ba4832da08dd6bcf4de9a71e4a01b74924
+ETHREX_PROOF_COORDINATOR_L1_PRIVATE_KEY=0x39725efee3fb28614de3bacaffe4cc4bd8c436257e2c8bb887c4b5c4be45e76d
+ENV_EOF
+chmod 600 ${dataDir}/.env
+
 # Prover에 필요한 programs.toml 생성
 cat > ${dataDir}/programs.toml << 'TOML_EOF'
 default_program = "evm-l2"
 enabled_programs = ["evm-l2", "zk-dex", "tokamon"]
 TOML_EOF
-\`\`\``;
+\`\`\`
+
+> ⚠️ \`.env\` 파일에 프라이빗 키가 포함됩니다. 서버 접근 권한을 관리하세요.
+> 위 키는 내장 L1 테스트용입니다. 테스트넷/메인넷 배포 시 실제 키로 교체하세요.`;
 }
 
 function testnetEnvSection({ cloud, l1RpcUrl, l1ChainId, l1Network, dataDir, walletConfig }) {
