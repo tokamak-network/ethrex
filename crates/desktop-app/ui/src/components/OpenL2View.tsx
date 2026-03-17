@@ -125,6 +125,10 @@ export default function OpenL2View() {
       setRegisterError(ko ? '이름과 RPC URL은 필수입니다' : 'Name and RPC URL are required')
       return
     }
+    if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:|\/|$)/.test(registerForm.rpcUrl.trim())) {
+      setRegisterError(ko ? '외부에서 접근 가능한 RPC URL이 필요합니다 (localhost 불가)' : 'A publicly accessible RPC URL is required (localhost not allowed)')
+      return
+    }
     if (!platformAPI.isAuthenticated()) {
       setRegisterError(ko ? 'Platform 로그인이 필요합니다' : 'Platform login required')
       return
