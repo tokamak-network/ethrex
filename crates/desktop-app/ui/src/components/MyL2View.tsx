@@ -95,12 +95,19 @@ function deploymentToL2Config(d: DeploymentFromDB): L2Config {
   try { config = d.config ? JSON.parse(d.config as string) : {} } catch { /* ignore */ }
   const isTestnet = config.mode === 'testnet'
   const testnet = (config.testnet || {}) as Record<string, unknown>
-  // Determine networkMode: config.mode > host_id (remote) > l1_chain_id presence > fallback 'local'
+  // Determine networkMode:
+  // 1. config.mode explicitly set → use it
+  // 2. host_id set → AWS/remote deployment
+  // 3. l1_port set → local (has own L1 node bundled in Docker)
+  // 4. l1_chain_id set but no l1_port → testnet (external L1)
+  // 5. default → local
   const hasRemoteHost = !!d.host_id
+  const hasLocalL1 = !!d.l1_port
   const networkMode = config.mode === 'testnet' ? 'testnet'
     : config.mode === 'mainnet' ? 'mainnet'
-    : hasRemoteHost ? 'aws'      // deployed to remote host = AWS/cloud
-    : d.l1_chain_id ? 'testnet'  // has L1 chain ID but no explicit mode → assume testnet
+    : hasRemoteHost ? 'aws'
+    : hasLocalL1 ? 'local'
+    : d.l1_chain_id ? 'testnet'
     : 'local'
   // L1 chain ID: from DB field first, then config
   const l1ChainId = d.l1_chain_id ?? (isTestnet ? (testnet.l1ChainId as number ?? null) : null)
