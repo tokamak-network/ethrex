@@ -1259,21 +1259,35 @@ docker system df
 5. **이미지 pull 실패**: \`docker login ghcr.io\` 또는 네트워크 확인
 6. **Prover 크래시**: 메모리 부족일 수 있음. VM 사양 업그레이드 고려
 
-### 테스트 후 정리 (비용 절약)
+### 리소스 정리 (비용 절약)
 
+> ⚠️ terminate는 복구 불가합니다. 단계별로 확인하면서 진행하세요.
+
+**1단계: 현재 상태 확인**
 \`\`\`bash
-# 인스턴스 중지 (EBS 비용만 유지, 인스턴스 비용 없음)
-aws ec2 stop-instances --instance-ids INSTANCE_ID --region REGION
-
-# 인스턴스 완전 삭제 (모든 비용 중지)
-aws ec2 terminate-instances --instance-ids INSTANCE_ID --region REGION
-
-# Security Group 삭제 (인스턴스 terminate 후)
-aws ec2 delete-security-group --group-id $(aws ec2 describe-security-groups --filters "Name=group-name,Values=${sgName}" --query "SecurityGroups[0].GroupId" --output text --region ${region}) --region ${region}
+aws ec2 describe-instances --filters "Name=tag:Name,Values=${vmName}" \\
+  --query "Reservations[].Instances[].{Id:InstanceId,State:State.Name,IP:PublicIpAddress}" \\
+  --output table --region ${region}
 \`\`\`
 
-> terminate하면 EBS, Public IP 모두 삭제되어 과금이 즉시 중지됩니다.
-> stop은 인스턴스 비용만 중지, EBS($0.096/GB/월)와 IP($3.60/월)는 계속 과금됩니다.`;
+**2단계: 인스턴스 중지 (일시 정지 — 나중에 재시작 가능)**
+\`\`\`bash
+aws ec2 stop-instances --instance-ids INSTANCE_ID --region ${region}
+\`\`\`
+> stop: 인스턴스 비용 중지. EBS($0.096/GB/월)와 IP($3.60/월)는 계속 과금.
+
+**3단계: 인스턴스 완전 삭제 (복구 불가)**
+\`\`\`bash
+aws ec2 terminate-instances --instance-ids INSTANCE_ID --region ${region}
+\`\`\`
+> terminate: EBS, Public IP 모두 삭제. 과금 즉시 중지.
+
+**4단계: Security Group 삭제 (인스턴스 terminate 후)**
+\`\`\`bash
+aws ec2 delete-security-group --group-id $(aws ec2 describe-security-groups \\
+  --filters "Name=group-name,Values=${sgName}" \\
+  --query "SecurityGroups[0].GroupId" --output text --region ${region}) --region ${region}
+\`\`\``;
 }
 
 // ---------------------------------------------------------------------------
