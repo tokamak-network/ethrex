@@ -160,8 +160,8 @@ router.get("/ai-deploy/check-cli", async (req, res) => {
       } catch {}
       // List SSH key pairs
       try {
-        const region = req.query.region || "ap-northeast-2";
-        const kpJson = execSync(`aws ec2 describe-key-pairs --query "KeyPairs[*].[KeyName,KeyPairId]" --output json --region ${region} 2>/dev/null`, { timeout: 5000 }).toString();
+        const awsRegion = (req.query.region || "ap-northeast-2").replace(/[^a-z0-9-]/g, "");
+        const kpJson = execFileSync("aws", ["ec2", "describe-key-pairs", "--query", "KeyPairs[*].[KeyName,KeyPairId]", "--output", "json", "--region", awsRegion], { timeout: 5000, stdio: "pipe" }).toString();
         result.keyPairs = JSON.parse(kpJson).map(([name, id]) => ({ name, id }));
       } catch {
         result.keyPairs = [];
@@ -174,9 +174,14 @@ router.get("/ai-deploy/check-cli", async (req, res) => {
   res.json(result);
 });
 
+// Input sanitizer for shell-safe values
+const SAFE_NAME_RE = /^[a-zA-Z0-9._-]+$/;
+const SAFE_REGION_RE = /^[a-z]{2}-[a-z]+-\d+$/;
+
 // POST /api/deployments/ai-deploy/monitor — check EC2 + container status via AWS CLI + SSH
 router.post("/ai-deploy/monitor", async (req, res) => {
   let { vmName, region, keyPairName, deploymentId } = req.body;
+  const { execFileSync } = require("child_process");
 
   // If deploymentId provided, load config from DB
   if (deploymentId && !vmName) {
@@ -192,29 +197,35 @@ router.post("/ai-deploy/monitor", async (req, res) => {
   }
 
   if (!vmName) return res.status(400).json({ error: "vmName required" });
-  const awsRegion = region || "ap-northeast-2";
-  const { execSync } = require("child_process");
+  // Validate inputs to prevent injection
+  if (!SAFE_NAME_RE.test(vmName)) return res.status(400).json({ error: "Invalid vmName" });
+  const awsRegion = SAFE_REGION_RE.test(region) ? region : "ap-northeast-2";
+  if (keyPairName && !SAFE_NAME_RE.test(keyPairName)) return res.status(400).json({ error: "Invalid keyPairName" });
+
   const result = { vmName, ec2: null, containers: null, services: {} };
+  const jmesQuery = "Reservations[].Instances[] | sort_by(@, &LaunchTime) | [-1].{State:State.Name,IP:PublicIpAddress,Id:InstanceId,Type:InstanceType,LaunchTime:LaunchTime,Name:Tags[?Key=='Name'].Value|[0]}";
 
   try {
-    // 1. Get EC2 instance info — search exact name first, then wildcard tokamak-l2-*
-    let ec2Json = execSync(
-      `aws ec2 describe-instances --filters "Name=tag:Name,Values=${vmName}" "Name=instance-state-name,Values=pending,running,stopping,stopped" --query "Reservations[].Instances[] | sort_by(@, &LaunchTime) | [-1].{State:State.Name,IP:PublicIpAddress,Id:InstanceId,Type:InstanceType,LaunchTime:LaunchTime,Name:Tags[?Key=='Name'].Value|[0]}" --output json --region ${awsRegion} 2>/dev/null`,
-      { timeout: 10000 }
-    ).toString().trim();
+    // 1. Get EC2 instance info — search exact name first, then wildcard
+    let ec2Json = execFileSync("aws", [
+      "ec2", "describe-instances",
+      "--filters", `Name=tag:Name,Values=${vmName}`, "Name=instance-state-name,Values=pending,running,stopping,stopped",
+      "--query", jmesQuery, "--output", "json", "--region", awsRegion,
+    ], { timeout: 10000, stdio: "pipe" }).toString().trim();
     let parsed = JSON.parse(ec2Json);
     // Fallback: search all tokamak-l2-* instances
     if (!parsed) {
-      ec2Json = execSync(
-        `aws ec2 describe-instances --filters "Name=tag:Name,Values=tokamak-l2-*" "Name=instance-state-name,Values=pending,running,stopping,stopped" --query "Reservations[].Instances[] | sort_by(@, &LaunchTime) | [-1].{State:State.Name,IP:PublicIpAddress,Id:InstanceId,Type:InstanceType,LaunchTime:LaunchTime,Name:Tags[?Key=='Name'].Value|[0]}" --output json --region ${awsRegion} 2>/dev/null`,
-        { timeout: 10000 }
-      ).toString().trim();
+      ec2Json = execFileSync("aws", [
+        "ec2", "describe-instances",
+        "--filters", "Name=tag:Name,Values=tokamak-l2-*", "Name=instance-state-name,Values=pending,running,stopping,stopped",
+        "--query", jmesQuery, "--output", "json", "--region", awsRegion,
+      ], { timeout: 10000, stdio: "pipe" }).toString().trim();
       parsed = JSON.parse(ec2Json);
     }
     result.ec2 = parsed || { State: "not_found" };
     if (result.ec2.Name) result.vmName = result.ec2.Name;
   } catch (e) {
-    result.ec2 = { State: "not_found", error: e.message.slice(0, 200) };
+    result.ec2 = { State: "not_found", error: (e.message || "").slice(0, 200) };
     return res.json(result);
   }
 
@@ -223,52 +234,54 @@ router.post("/ai-deploy/monitor", async (req, res) => {
   }
 
   const ip = result.ec2.IP;
-  const keyPath = keyPairName ? `~/.ssh/${keyPairName}.pem` : "";
+  const os = require("os");
+  const path = require("path");
+  const keyPath = keyPairName ? path.join(os.homedir(), ".ssh", `${keyPairName}.pem`) : "";
 
-  // 2. Check containers via SSH
+  // 2. Check containers via SSH (execFileSync — no shell)
   if (keyPath) {
     try {
-      const sshCmd = `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ${keyPath} ubuntu@${ip}`;
-      const containers = execSync(
-        `${sshCmd} "docker ps --format '{{.Names}}|{{.Status}}|{{.Ports}}' 2>/dev/null" 2>/dev/null`,
-        { timeout: 15000 }
-      ).toString().trim();
+      const containers = execFileSync("ssh", [
+        "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+        "-i", keyPath, `ubuntu@${ip}`,
+        "docker ps --format '{{.Names}}|{{.Status}}|{{.Ports}}' 2>/dev/null",
+      ], { timeout: 15000, stdio: "pipe" }).toString().trim();
       result.containers = containers.split("\n").filter(Boolean).map(line => {
         const [name, status, ports] = line.split("|");
         return { name, status, ports };
       });
     } catch {
-      result.containers = null; // SSH failed
+      result.containers = null;
     }
   }
 
-  // 3. Check HTTP endpoints
+  // 3. Check HTTP endpoints (parallel)
   const endpoints = [
     { name: "L2 RPC", port: 1729, type: "rpc" },
     { name: "L1 RPC", port: 8545, type: "rpc" },
     { name: "L2 Explorer", port: 8082, type: "http" },
     { name: "Dashboard", port: 3000, type: "http" },
   ];
-  for (const ep of endpoints) {
+  const checks = endpoints.map(async (ep) => {
     try {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 3000);
+      const signal = AbortSignal.timeout(3000);
       if (ep.type === "rpc") {
         const r = await fetch(`http://${ip}:${ep.port}`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ jsonrpc: "2.0", method: "eth_blockNumber", params: [], id: 1 }),
-          signal: controller.signal,
+          signal,
         });
         const data = await r.json();
         result.services[ep.name] = { ok: true, block: parseInt(data.result, 16) };
       } else {
-        const r = await fetch(`http://${ip}:${ep.port}/`, { signal: controller.signal });
+        const r = await fetch(`http://${ip}:${ep.port}/`, { signal });
         result.services[ep.name] = { ok: r.ok, status: r.status };
       }
     } catch {
       result.services[ep.name] = { ok: false };
     }
-  }
+  });
+  await Promise.allSettled(checks);
 
   res.json(result);
 });
@@ -276,14 +289,14 @@ router.post("/ai-deploy/monitor", async (req, res) => {
 // POST /api/deployments/ai-deploy/create-key-pair — create AWS SSH key pair
 router.post("/ai-deploy/create-key-pair", (req, res) => {
   const { keyName, region } = req.body;
-  if (!keyName) return res.status(400).json({ error: "keyName required" });
-  const awsRegion = region || "ap-northeast-2";
-  const { execSync } = require("child_process");
+  if (!keyName || !SAFE_NAME_RE.test(keyName)) return res.status(400).json({ error: "Invalid keyName (alphanumeric, dash, underscore only)" });
+  const awsRegion = SAFE_REGION_RE.test(region) ? region : "ap-northeast-2";
+  const { execFileSync } = require("child_process");
   try {
-    const result = execSync(
-      `aws ec2 create-key-pair --key-name "${keyName}" --query "KeyMaterial" --output text --region ${awsRegion} 2>&1`,
-      { timeout: 10000 }
-    ).toString();
+    const result = execFileSync("aws", [
+      "ec2", "create-key-pair", "--key-name", keyName,
+      "--query", "KeyMaterial", "--output", "text", "--region", awsRegion,
+    ], { timeout: 10000, stdio: "pipe" }).toString();
     // Save the private key to ~/.ssh/
     const fs = require("fs");
     const path = require("path");
@@ -293,7 +306,7 @@ router.post("/ai-deploy/create-key-pair", (req, res) => {
     fs.writeFileSync(pemPath, result, { mode: 0o400 });
     res.json({ ok: true, keyName, pemPath });
   } catch (e) {
-    const msg = e.message || "";
+    const msg = (e.message || "") + (e.stderr ? e.stderr.toString() : "");
     if (msg.includes("InvalidKeyPair.Duplicate")) {
       res.status(409).json({ error: `Key pair "${keyName}" already exists` });
     } else {

@@ -3043,27 +3043,27 @@ const AWS_INSTANCE_PRICING = {
   't3.2xlarge': { hr: 0.416, vcpu: 8, ram: 32, note: 'Prover 여유' },
 };
 
+function calcAWSCost(instanceType, storageGB) {
+  const info = AWS_INSTANCE_PRICING[instanceType] || AWS_INSTANCE_PRICING['t3.xlarge'];
+  const instanceMo = info.hr * 24 * 30;
+  const storageMo = storageGB * 0.096;
+  const ipMo = 3.60;
+  return { info, instanceMo, storageMo, ipMo, monthCost: instanceMo + storageMo + ipMo, dayCost: (info.hr * 24) + (storageMo / 30) + (ipMo / 30) };
+}
+
 function onCloudOptionChange() {
   const el = document.getElementById('aws-cost-estimate');
   if (!el) return;
   const instanceType = document.getElementById('aws-instance-type')?.value || 't3.xlarge';
   const storageGB = parseInt(document.getElementById('aws-storage-gb')?.value) || 30;
   const includeProver = document.getElementById('ai-include-prover')?.checked;
-  const info = AWS_INSTANCE_PRICING[instanceType] || AWS_INSTANCE_PRICING['t3.xlarge'];
-
-  const hrCost = info.hr;
-  const storageMo = storageGB * 0.096;
-  const ipMo = 3.60;
-  const dayCost = (hrCost * 24) + (storageMo / 30) + (ipMo / 30);
-  const monthCost = (hrCost * 24 * 30) + storageMo + ipMo;
+  const { info, instanceMo, storageMo, ipMo, dayCost, monthCost } = calcAWSCost(instanceType, storageGB);
 
   // Prover compatibility check
   let proverWarning = '';
   if (includeProver && info.ram < 16) {
     proverWarning = `<div style="color:#f59e0b;margin-top:4px">⚠️ SP1 Prover에는 최소 16GB RAM이 필요합니다. ${instanceType}은 ${info.ram}GB입니다.</div>`;
   }
-
-  const instanceMo = hrCost * 24 * 30;
 
   el.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center">
@@ -3379,13 +3379,8 @@ function updateSpecRecommendation() {
   // Read user-selected values (AWS)
   const instanceType = document.getElementById('aws-instance-type')?.value || '';
   const storageGB = parseInt(document.getElementById('aws-storage-gb')?.value) || 30;
-  const pricing = AWS_INSTANCE_PRICING[instanceType];
-
-  if (cloud === 'aws' && pricing) {
-    const instanceMo = pricing.hr * 24 * 30;
-    const storageMo = storageGB * 0.096;
-    const ipMo = 3.60;
-    const totalMo = instanceMo + storageMo + ipMo;
+  if (cloud === 'aws' && AWS_INSTANCE_PRICING[instanceType]) {
+    const { info: pricing, instanceMo, storageMo, ipMo, monthCost: totalMo } = calcAWSCost(instanceType, storageGB);
 
     let proverNote = '';
     if (includeProver && pricing.ram < 16) {

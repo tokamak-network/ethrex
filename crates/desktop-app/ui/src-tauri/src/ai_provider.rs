@@ -222,13 +222,10 @@ impl AiProvider {
     }
 
     /// Write a secret to macOS Keychain via `security` CLI.
+    /// Uses -U (update) flag to create or update in a single command.
     fn keychain_set(account: &str, secret: &str) -> Result<(), String> {
-        // Delete existing entry first (ignore error if not found)
-        let _ = std::process::Command::new("security")
-            .args(["delete-generic-password", "-a", account, "-s", KEYRING_SERVICE])
-            .output();
         let output = std::process::Command::new("security")
-            .args(["add-generic-password", "-a", account, "-s", KEYRING_SERVICE, "-w", secret])
+            .args(["add-generic-password", "-a", account, "-s", KEYRING_SERVICE, "-w", secret, "-U"])
             .output()
             .map_err(|e| format!("Failed to run security: {e}"))?;
         if output.status.success() {
