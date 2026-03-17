@@ -1334,6 +1334,7 @@ router.post("/:id/ai-prompt", async (req, res) => {
       l1Mode: l1Mode || "local",
       l1RpcUrl, l1ChainId, l1Network,
       includeProver,
+      prompt,
     };
     db.prepare("UPDATE deployments SET config = ?, phase = 'ai-deploy' WHERE id = ?")
       .run(JSON.stringify(cloudConfig), deployment.id);

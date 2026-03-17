@@ -2107,40 +2107,58 @@ function renderAIDeployOverview(d) {
   const keyPairName = config.keyPairName || '';
   const cloud = config.cloud || 'aws';
   const storageGB = config.storageGB || 30;
+  const savedPrompt = config.prompt || '';
+
+  // Build config summary line
+  const configLines = [
+    `앱: ${d.program_slug || 'zk-dex'}`,
+    `L2 이름: ${d.name} (Chain ID: ${d.chain_id || ''})`,
+    `배포 대상: ${cloud.toUpperCase()}`,
+    `리전: ${region}`,
+    `인스턴스: ${vmType}`,
+    `스토리지: ${storageGB}GB gp3`,
+    keyPairName ? `SSH Key Pair: ${keyPairName}` : '',
+    `VM Name: ${vmName}`,
+  ].filter(Boolean).join('\n');
+
+  const tokenEstimate = savedPrompt ? Math.ceil(savedPrompt.length / 3.5) : 0;
+  const guideMsg = savedPrompt ? `📋 배포 프롬프트 (~${tokenEstimate.toLocaleString()} tokens)
+
+📌 배포 실행 방법:
+1. 아래 파란 메시지의 📋 아이콘 클릭 → 전체 프롬프트 복사
+2. Claude.ai(MAX) 또는 Claude Code에 붙여넣기
+3. AI가 AWS EC2 생성부터 배포 완료까지 실행합니다` : '';
+
+  // Restore chat state for this deployment
+  aiChatRawPrompt = savedPrompt;
+  aiChatUserMessage = `다음 구성으로 배포해줘.\n\n${configLines}`;
+  aiChatMessages = [];
+  if (guideMsg) aiChatMessages.push({ role: 'assistant', content: guideMsg });
+  aiChatMessages.push({ role: 'user', content: aiChatUserMessage });
 
   panel.innerHTML = `
-    <div style="display:flex;flex-direction:column;gap:12px">
-      <!-- Config Summary -->
-      <div style="padding:12px 16px;border-radius:8px;background:var(--bg-surface,#1a1a2e);border:1px solid var(--border,#333);font-size:12px;line-height:1.8">
-        <div style="font-weight:600;margin-bottom:6px;font-size:13px">☁️ 배포 설정</div>
-        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px">
-          <span style="color:var(--text-muted,#888)">Cloud</span><span>${cloud.toUpperCase()}</span>
-          <span style="color:var(--text-muted,#888)">Region</span><span>${region}</span>
-          <span style="color:var(--text-muted,#888)">Instance</span><span>${vmType}</span>
-          <span style="color:var(--text-muted,#888)">Storage</span><span>${storageGB}GB gp3</span>
-          ${keyPairName ? `<span style="color:var(--text-muted,#888)">SSH Key</span><span>${keyPairName}</span>` : ''}
-          <span style="color:var(--text-muted,#888)">VM Name</span><span>${vmName}</span>
-          <span style="color:var(--text-muted,#888)">L2 Chain ID</span><span>${d.chain_id || ''}</span>
-        </div>
+    <div style="display:flex;flex-direction:column;height:calc(100vh - 220px);min-height:400px">
+      <!-- Chat Messages -->
+      <div id="ai-chat-messages" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px"></div>
+
+      <!-- Monitor Bar -->
+      <div style="border-top:1px solid var(--border,#333);padding:6px 12px;display:flex;gap:8px;align-items:center;font-size:11px;flex-shrink:0">
+        <button onclick="monitorAIDeployment('${d.id}')" style="padding:4px 12px;font-size:11px;border:1px solid #22c55e;border-radius:4px;background:#22c55e;color:white;cursor:pointer;white-space:nowrap">🖥️ 배포 상태 확인</button>
+        <button onclick="confirmAIDeployComplete('${d.id}')" style="padding:4px 12px;font-size:11px;border:1px solid #3b82f6;border-radius:4px;background:#3b82f6;color:white;cursor:pointer;white-space:nowrap">✅ 배포 완료 확인</button>
+        <button onclick="cancelAIDeployment('${d.id}')" style="padding:4px 8px;font-size:11px;border:1px solid #ef4444;border-radius:4px;background:transparent;color:#ef4444;cursor:pointer;white-space:nowrap">취소</button>
+        <span id="ai-deploy-monitor-status" style="flex:1;font-size:11px;color:var(--text-muted,#888)"></span>
       </div>
 
-      <!-- Monitoring -->
-      <div style="display:flex;gap:8px;align-items:center">
-        <button onclick="monitorAIDeployment('${d.id}')" class="btn-primary" style="padding:6px 16px;font-size:12px">🖥️ 배포 상태 확인</button>
-        <span id="ai-deploy-monitor-status" style="font-size:11px;color:var(--text-muted,#888)"></span>
-      </div>
-      <div id="ai-deploy-monitor-result" style="padding:12px 16px;border-radius:8px;background:var(--bg-surface,#1a1a2e);border:1px solid var(--border,#333);font-size:12px;line-height:1.8;display:none"></div>
-
-      <!-- Complete Deployment Button -->
-      <div style="padding:12px 16px;border-radius:8px;background:#eff6ff;border:1px solid #93c5fd;font-size:12px;line-height:1.6">
-        <div style="font-weight:600;color:#1d4ed8;margin-bottom:6px">📋 배포 상태</div>
-        <p style="color:#374151;margin-bottom:8px">Claude.ai에서 배포가 완료되면 아래 버튼을 눌러 배포 완료를 확인하세요.</p>
-        <div style="display:flex;gap:8px">
-          <button onclick="confirmAIDeployComplete('${d.id}')" class="btn-primary" style="padding:8px 20px;font-size:13px;background:#22c55e;border-color:#22c55e">✅ 배포 완료 확인</button>
-          <button onclick="cancelAIDeployment('${d.id}')" style="padding:8px 16px;font-size:12px;border:1px solid #ef4444;border-radius:6px;background:transparent;color:#ef4444;cursor:pointer">취소</button>
-        </div>
+      <!-- Chat Input -->
+      <div style="border-top:1px solid var(--border,#333);padding:10px 12px;display:flex;gap:8px;align-items:flex-end">
+        <textarea id="ai-chat-input" placeholder="질문을 입력하세요..." rows="2"
+          style="flex:1;resize:none;padding:8px 12px;border:1px solid var(--border,#444);border-radius:8px;background:var(--bg-surface,#161622);color:#e0e0e0;font-size:13px;line-height:1.5;font-family:inherit"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendAIChatMessage()}"></textarea>
+        <button onclick="sendAIChatMessage()" class="btn-primary" style="padding:8px 16px;font-size:13px;white-space:nowrap">Send</button>
       </div>
     </div>`;
+
+  renderChatMessages();
 }
 
 async function monitorAIDeployment(deploymentId) {
@@ -2181,7 +2199,11 @@ async function monitorAIDeployment(deploymentId) {
         lines.push(svc.ok ? `  ✅ ${name}${svc.block !== undefined ? ` (block #${svc.block})` : ''}` : `  ❌ ${name}`);
       }
     }
-    if (resultEl) { resultEl.style.display = ''; resultEl.textContent = lines.join('\n'); }
+    // Show in chat messages if available
+    const statusMsg = `🖥️ 배포 상태 (${data.vmName || vmName})\n\n${lines.join('\n')}`;
+    aiChatMessages.push({ role: 'assistant', content: statusMsg });
+    if (document.getElementById('ai-chat-messages')) renderChatMessages();
+    // Also show in status bar
     const ec2Status = state === 'running' ? '🟢 Running' : state === 'not_found' ? '⚪ 미발견' : `🟡 ${state}`;
     if (statusEl) statusEl.textContent = `${ec2Status}${data.ec2?.IP ? ' · ' + data.ec2.IP : ''}`;
   } catch (e) {
