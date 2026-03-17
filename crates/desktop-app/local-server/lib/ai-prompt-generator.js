@@ -516,6 +516,7 @@ function generateCloudDeployPrompt(opts) {
     deployment, cloud, region, vmType,
     l1Mode = "local", l1RpcUrl, l1ChainId, l1Network,
     includeProver = true, walletConfig,
+    storageGB = 30, keyPairName = "",
   } = opts;
 
   const config = deployment.config ? JSON.parse(deployment.config) : {};
@@ -542,9 +543,9 @@ function generateCloudDeployPrompt(opts) {
 
   const sections = [];
 
-  sections.push(headerSection({ deployment, programSlug, profile, cloud, region, vmType, l2ChainId, isTestnet, l1RpcUrl, l1Network, l1ChainId }));
+  sections.push(headerSection({ deployment, programSlug, profile, cloud, region, vmType, l2ChainId, isTestnet, l1RpcUrl, l1Network, l1ChainId, storageGB, keyPairName, includeProver }));
   sections.push(prerequisitesSection(cloud));
-  sections.push(vmCreationSection({ cloud, region, vmType, vmName }));
+  sections.push(vmCreationSection({ cloud, region, vmType, vmName, storageGB, keyPairName }));
   sections.push(dockerInstallSection());
   sections.push(composeFileSection({ composeContent, dataDir, projectName }));
 
@@ -566,12 +567,15 @@ function generateCloudDeployPrompt(opts) {
 // Cloud section builders
 // ---------------------------------------------------------------------------
 
-function headerSection({ deployment, programSlug, profile, cloud, region, vmType, l2ChainId, isTestnet, l1RpcUrl, l1Network, l1ChainId }) {
+function headerSection({ deployment, programSlug, profile, cloud, region, vmType, l2ChainId, isTestnet, l1RpcUrl, l1Network, l1ChainId, storageGB = 30, keyPairName = "", includeProver = true }) {
   const cloudLabel = CLOUD_PRESETS[cloud]?.label || cloud;
+  const components = ["L2 Node", "Tools (Explorer, Dashboard, Bridge)"];
+  if (!isTestnet) components.unshift("L1 Node");
+  if (includeProver) components.push("SP1 Prover");
+
   return `# Tokamak L2 Appchain — Cloud Deployment
 
 > **AI에게**: 사용자가 확인하면 이 프롬프트의 모든 명령을 직접 실행하세요 (안내가 아니라 직접 배포).
-> 리전, VM 타입 등은 기본값이 설정되어 있지만, 사용자가 다른 값을 원하면 변경 가능합니다.
 > 각 단계를 직접 실행하고, 진행 상황을 보고하세요 (예: "[Step 3/8] Compose 파일 작성 중... ✅ 완료").
 > 결과를 확인한 후 다음 단계로 자동 진행하세요.
 
@@ -583,8 +587,10 @@ function headerSection({ deployment, programSlug, profile, cloud, region, vmType
 | **L2 Name** | ${deployment.name} |
 | **L2 Chain ID** | ${l2ChainId} |
 | **Cloud** | ${cloudLabel} |
-| **Region** | ${region} (변경 가능) |
-| **VM Type** | ${vmType} (변경 가능) |
+| **Region** | ${region} |
+| **Instance** | ${vmType} |
+| **Storage** | ${storageGB}GB gp3 |
+${keyPairName ? `| **SSH Key Pair** | ${keyPairName} |\n` : ""}| **Components** | ${components.join(" + ")} |
 | **L1 Mode** | ${isTestnet ? `Testnet (${l1Network || "external"})` : "Built-in (Docker L1)"} |
 | **L1 Chain ID** | ${l1ChainId || (isTestnet ? "from network" : 9)} |
 ${isTestnet ? `| **L1 RPC** | \`$L1_RPC_URL\` (set in .env) |\n` : ""}| **Docker Images** | \`ghcr.io/tokamak-network/tokamak-appchain:{l1,l2,sp1}\` |`;
@@ -670,7 +676,7 @@ aws sts get-caller-identity
 > 사용자에게 AWS Access Key를 확인하세요. EC2 권한이 필요합니다.`;
 }
 
-function vmCreationSection({ cloud, region, vmType, vmName }) {
+function vmCreationSection({ cloud, region, vmType, vmName, storageGB = 30, keyPairName = "" }) {
   if (cloud === "gcp") {
     return `## Step 1: Create VM
 
@@ -743,6 +749,8 @@ Save the server IP as \`VM_IP\` — you'll need it later.`;
   }
 
   // AWS
+  const keyName = keyPairName || "tokamak-key";
+  const diskSize = storageGB || 30;
   return `## Step 1: Create VM
 
 \`\`\`bash
@@ -757,9 +765,9 @@ aws ec2 run-instances \\
   --region ${region} \\
   --instance-type ${vmType} \\
   --image-id resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \\
-  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":100,"VolumeType":"gp3"}}]' \\
+  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":${diskSize},"VolumeType":"gp3"}}]' \\
   --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=${vmName}}]' \\
-  --key-name YOUR_KEY_NAME \\
+  --key-name ${keyName} \\
   --security-groups tokamak-l2-sg \\
   --count 1
 
@@ -771,11 +779,11 @@ aws ec2 describe-instances \\
   --region ${region}
 
 # SSH into the instance
-ssh -i YOUR_KEY.pem ubuntu@VM_IP
+ssh -i ~/.ssh/${keyName}.pem ubuntu@VM_IP
 \`\`\`
 
 Save the public IP as \`VM_IP\` — you'll need it later.
-Replace \`YOUR_KEY_NAME\` and \`YOUR_KEY.pem\` with your actual SSH key.`;
+SSH Key: \`~/.ssh/${keyName}.pem\``;
 }
 
 function dockerInstallSection() {
@@ -1014,7 +1022,7 @@ Tools 스택:
 cd ${dataDir}
 
 # Download the tools compose file from the repository
-curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/tokamak-dev/crates/l2/docker-compose-zk-dex-tools.yaml \\
+curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/feat/app-customized-framework/crates/l2/docker-compose-zk-dex-tools.yaml \\
   -o docker-compose-tools.yaml
 
 # Get the deployed contract addresses from the deployer
@@ -1035,6 +1043,13 @@ ${isTestnet ? `export L1_CHAIN_ID=${l1ChainId || 11155111}
 export IS_EXTERNAL_L1=true
 export L1_RPC_URL=${l1RpcUrl || "$L1_RPC_URL"}
 export L1_NETWORK_NAME=${l1Network || "sepolia"}` : `export L1_CHAIN_ID=9`}
+
+# Public URLs — VM IP 또는 도메인으로 설정 (나중에 도메인 연결 시 변경)
+VM_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "localhost")
+export PUBLIC_L1_EXPLORER_HOST=$VM_IP:${DEFAULT_PORTS.l1Explorer}
+export PUBLIC_L2_EXPLORER_HOST=$VM_IP:${DEFAULT_PORTS.l2Explorer}
+export PUBLIC_L1_EXPLORER_URL=http://$VM_IP:${DEFAULT_PORTS.l1Explorer}
+export PUBLIC_L2_EXPLORER_URL=http://$VM_IP:${DEFAULT_PORTS.l2Explorer}
 
 # Start tools (use external-l1 profile for testnet to skip L1 Blockscout)
 docker compose -f docker-compose-tools.yaml \\
