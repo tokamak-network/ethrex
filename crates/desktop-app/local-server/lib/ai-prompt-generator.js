@@ -1063,8 +1063,7 @@ Tools 스택:
 \`\`\`bash
 cd ${dataDir}
 
-# Download the tools compose file from the repository
-# Download tools compose (try tokamak-dev first, fallback to feature branch)
+# Download tools compose (tokamak-dev, fallback to feature branch)
 curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/tokamak-dev/crates/l2/docker-compose-zk-dex-tools.yaml \\
   -o docker-compose-tools.yaml 2>/dev/null || \\
 curl -fsSL https://raw.githubusercontent.com/tokamak-network/ethrex/feat/app-customized-framework/crates/l2/docker-compose-zk-dex-tools.yaml \\
