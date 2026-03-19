@@ -1713,7 +1713,6 @@ async fn initialize_contracts(
             )?
         };
 
-        let program_type_id = explicit_type_id.unwrap_or(0);
         let register_tx = build_generic_tx(
             eth_client,
             TxType::EIP1559,
@@ -1740,9 +1739,12 @@ async fn initialize_contracts(
         tx_hashes.push(register_tx_hash);
 
         // 2. Register VK for this program if SP1 is enabled.
-        // OnChainProposer.upgradeVerificationKey() is onlyOwner (owner = Timelock).
-        // We call Timelock.upgradeVerificationKey() which forwards to OnChainProposer.
-        // Requires SECURITY_COUNCIL role (= bridge_owner / on_chain_proposer_owner).
+        // Skip VK registration for community programs (typeId unknown at deploy time —
+        // auto-assigned by the contract). VK can be registered later via Timelock.
+        let Some(program_type_id) = explicit_type_id else {
+            info!(program_id = %program_id, "Community program registered, skipping VK (typeId auto-assigned)");
+            continue;
+        };
         if opts.sp1 {
             let vk = get_vk_for_program(&program_id, opts)?;
             if vk.is_empty() {
