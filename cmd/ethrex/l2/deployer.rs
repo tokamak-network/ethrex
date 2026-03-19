@@ -1506,6 +1506,7 @@ async fn initialize_contracts(
         let native_token_scale_factor = genesis
             .config
             .native_token_scale_factor()
+            .map_err(|e| eyre::eyre!("Invalid chain config: {e}"))?
             .unwrap_or(U256::one());
         let calldata_values = vec![
             Value::Address(initializer.address()),
