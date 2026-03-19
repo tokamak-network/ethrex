@@ -1677,7 +1677,8 @@ async fn initialize_contracts(
     //   - "my-app"      → unknown program, uses registerProgram (community, auto-assign typeId 10+)
     //   - "my-app:10"   → explicit typeId, uses registerOfficialProgram
     for program_spec in &opts.register_guest_programs {
-        let (program_id, explicit_type_id) = ethrex_l2_common::parse_program_spec(program_spec);
+        let (program_id, explicit_type_id) = ethrex_l2_common::parse_program_spec(program_spec)
+            .map_err(|e| eyre::eyre!("Invalid guest program spec {program_spec:?}: {e}"))?;
 
         if program_id == "evm-l2" {
             info!("Skipping evm-l2 (pre-registered as default)");
