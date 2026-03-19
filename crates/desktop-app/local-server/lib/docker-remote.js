@@ -27,7 +27,9 @@ function connect(host) {
     };
 
     if (host.auth_method === "key" && host.private_key) {
-      config.privateKey = host.private_key;
+      // private_key stores a file path; read the key contents for ssh2
+      const fs = require("fs");
+      config.privateKey = fs.readFileSync(host.private_key);
     }
 
     conn.on("ready", () => resolve(conn));
