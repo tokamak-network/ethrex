@@ -598,6 +598,8 @@ const ROUTER_REGISTER_SIGNATURE: &str = "register(uint256,address)";
 const GUEST_PROGRAM_REGISTRY_INITIALIZER_SIGNATURE: &str = "initialize(address)";
 const GUEST_PROGRAM_REGISTRY_REGISTER_OFFICIAL_SIGNATURE: &str =
     "registerOfficialProgram(string,string,address,uint8)";
+const GUEST_PROGRAM_REGISTRY_REGISTER_COMMUNITY_SIGNATURE: &str =
+    "registerProgram(string,string,address)";
 const UPGRADE_VERIFICATION_KEY_SIGNATURE: &str =
     "upgradeVerificationKey(bytes32,uint8,uint8,bytes32)";
 
@@ -1668,28 +1670,50 @@ async fn initialize_contracts(
     // GuestProgramRegistry is linked to OnChainProposer via the initialize() parameter,
     // so no separate setGuestProgramRegistry() call is needed.
 
-    // Register additional guest programs (e.g., zk-dex, tokamon) and their VKs.
-    for program_id in &opts.register_guest_programs {
-        let program_type_id = ethrex_l2_common::resolve_program_type_id(program_id);
-        if program_type_id <= 1 {
-            warn!(program_id, "Skipping unknown or default program");
+    // Register additional guest programs (e.g., zk-dex, tokamon, or custom community programs).
+    // Supports two formats:
+    //   - "zk-dex"      → known official program, uses registerOfficialProgram with fixed typeId
+    //   - "my-app"      → unknown program, uses registerProgram (community, auto-assign typeId 10+)
+    //   - "my-app:10"   → explicit typeId, uses registerOfficialProgram
+    for program_spec in &opts.register_guest_programs {
+        let (program_id, explicit_type_id) = ethrex_l2_common::parse_program_spec(program_spec);
+
+        if program_id == "evm-l2" {
+            info!("Skipping evm-l2 (pre-registered as default)");
             continue;
         }
 
-        // 1. Register official program in GuestProgramRegistry.
-        info!(program_id, program_type_id, "Registering guest program");
+        // 1. Register program in GuestProgramRegistry.
         let register_nonce = eth_client
             .get_nonce(deployer_address, BlockIdentifier::Tag(BlockTag::Pending))
             .await?;
-        let register_calldata = encode_calldata(
-            GUEST_PROGRAM_REGISTRY_REGISTER_OFFICIAL_SIGNATURE,
-            &[
-                Value::String(program_id.clone()),
-                Value::String(format!("{program_id} guest program")),
-                Value::Address(deployer_address),
-                Value::Uint(U256::from(program_type_id)),
-            ],
-        )?;
+
+        let register_calldata = if let Some(type_id) = explicit_type_id {
+            // Official program with known/explicit typeId (2-9)
+            info!(program_id = %program_id, program_type_id = type_id, "Registering official guest program");
+            encode_calldata(
+                GUEST_PROGRAM_REGISTRY_REGISTER_OFFICIAL_SIGNATURE,
+                &[
+                    Value::String(program_id.clone()),
+                    Value::String(format!("{program_id} guest program")),
+                    Value::Address(deployer_address),
+                    Value::Uint(U256::from(type_id)),
+                ],
+            )?
+        } else {
+            // Community program — auto-assign typeId (10+)
+            info!(program_id = %program_id, "Registering community guest program (auto-assign typeId)");
+            encode_calldata(
+                GUEST_PROGRAM_REGISTRY_REGISTER_COMMUNITY_SIGNATURE,
+                &[
+                    Value::String(program_id.clone()),
+                    Value::String(format!("{program_id} guest program")),
+                    Value::Address(deployer_address),
+                ],
+            )?
+        };
+
+        let program_type_id = explicit_type_id.unwrap_or(0);
         let register_tx = build_generic_tx(
             eth_client,
             TxType::EIP1559,
@@ -1720,7 +1744,7 @@ async fn initialize_contracts(
         // We call Timelock.upgradeVerificationKey() which forwards to OnChainProposer.
         // Requires SECURITY_COUNCIL role (= bridge_owner / on_chain_proposer_owner).
         if opts.sp1 {
-            let vk = get_vk_for_program(program_id, opts)?;
+            let vk = get_vk_for_program(&program_id, opts)?;
             if vk.is_empty() {
                 warn!(program_id, "No SP1 VK found, skipping VK registration");
                 continue;
