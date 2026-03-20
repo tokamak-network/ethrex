@@ -4688,12 +4688,15 @@ async function loadGuestBuilds_render() {
 }
 
 async function deleteGuestBuild(buildId) {
-  if (!confirm('Delete this build?')) return;
   try {
-    await fetch(`${API}/guest-builds/${buildId}`, { method: 'DELETE' });
+    const resp = await fetch(`${API}/guest-builds/${buildId}`, { method: 'DELETE' });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      console.error('[guest-builds] delete failed:', data);
+    }
     loadGuestBuilds();
   } catch (err) {
-    alert('Failed to delete: ' + err.message);
+    console.error('Failed to delete:', err.message);
   }
 }
 

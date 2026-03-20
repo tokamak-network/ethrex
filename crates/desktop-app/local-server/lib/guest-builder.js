@@ -151,7 +151,7 @@ function buildBaseImage(baseImageName, state, buildId, onEvent) {
     const tmpDir = path.join(BUILD_DIR, "_base-image");
     fs.mkdirSync(tmpDir, { recursive: true });
 
-    const baseDockerfile = `FROM rust:1.86-bookworm
+    const baseDockerfile = `FROM rust:latest
 
 # Install SP1 toolchain
 RUN curl -L https://sp1.succinct.xyz | bash && \\
@@ -161,21 +161,17 @@ ENV PATH="/root/.sp1/bin:$PATH"
 # Pre-cache guest program dependencies (so user builds work offline)
 WORKDIR /dep-cache
 RUN cargo init --name dep-cache && \\
-    echo '[dependencies]' >> Cargo.toml && \\
-    echo 'sp1-zkvm = "${SP1_VERSION}"' >> Cargo.toml && \\
-    echo 'serde = { version = "1", features = ["derive"] }' >> Cargo.toml && \\
+    sed -i '/\\[dependencies\\]/a sp1-zkvm = "${SP1_VERSION}"\\nserde = { version = "1", features = ["derive"] }' Cargo.toml && \\
     cargo prove build || true && \\
     rm -rf /dep-cache
 
 # Pre-build VK extraction helper (so user builds don't need network)
 WORKDIR /vk-helper
 RUN cargo init --name vk-helper && \\
-    echo '[dependencies]' >> Cargo.toml && \\
-    echo 'sp1-sdk = "${SP1_VERSION}"' >> Cargo.toml && \\
-    echo 'hex = "0.4"' >> Cargo.toml
+    sed -i '/\\[dependencies\\]/a sp1-sdk = "${SP1_VERSION}"\\nhex = "0.4"' Cargo.toml
 
 RUN cat > src/main.rs << 'VKEOF'
-use sp1_sdk::ProverClient;
+use sp1_sdk::{ProverClient, Prover, HashableKey};
 use std::fs;
 
 fn main() {
@@ -184,7 +180,7 @@ fn main() {
     let elf = fs::read(elf_path).expect("read elf");
     let client = ProverClient::builder().cpu().build();
     let (_, vk) = client.setup(&elf);
-    let vk_hex = format!("0x{}", hex::encode(vk.vk.hash_bytes()));
+    let vk_hex = vk.bytes32();
     let vk_path = format!("{}.vk", elf_path);
     fs::write(&vk_path, &vk_hex).expect("write vk");
     println!("VK: {}", vk_hex);
@@ -303,7 +299,6 @@ RUN cp /output/${programName} /vk-helper/target/elf-to-verify && \\
     "build",
     "-f", path.join(buildDir, "Dockerfile.guest"),
     "-t", imageName,
-    "--network=none",
     "--progress=plain",
     buildDir,
   ], {
