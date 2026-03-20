@@ -67,7 +67,8 @@ router.post("/", async (req, res) => {
     res.status(202).json({ buildId, programName: safeName });
   } catch (err) {
     console.error("[guest-builds] Build start error:", err);
-    res.status(409).json({ error: err.message || "Build failed to start" });
+    const status = err.code === "CONCURRENCY_LIMIT" ? 429 : 500;
+    res.status(status).json({ error: err.message || "Build failed to start" });
   }
 });
 
@@ -156,6 +157,7 @@ router.get("/:id/logs", (req, res) => {
 router.delete("/:id", (req, res) => {
   const build = getBuild(req.params.id);
   if (!build) return res.status(404).json({ error: "Build not found" });
+  if (build.status === "building") return res.status(409).json({ error: "Cannot delete a build that is in progress" });
   deleteBuild(req.params.id);
   res.json({ ok: true, deleted: req.params.id });
 });

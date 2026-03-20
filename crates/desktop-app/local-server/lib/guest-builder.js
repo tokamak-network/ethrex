@@ -55,7 +55,7 @@ try {
       });
     }
   }
-} catch (_) {}
+} catch (e) { console.warn("[guest-builder] Failed to restore build state:", e.message); }
 
 function persistBuilds() {
   try {
@@ -66,7 +66,7 @@ function persistBuilds() {
       logs: b.logs.slice(-100), // keep last 100 lines to limit file size
     }));
     fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2));
-  } catch (_) {}
+  } catch (e) { console.warn("[guest-builder] Failed to persist build state:", e.message); }
 }
 
 function pruneOldBuilds() {
@@ -74,6 +74,7 @@ function pruneOldBuilds() {
   let pruned = false;
   for (const [id, b] of builds) {
     if (b.status !== "building" && now - b.startedAt > BUILD_TTL) {
+      try { fs.rmSync(path.join(BUILD_DIR, id), { recursive: true, force: true }); } catch (_) {}
       builds.delete(id);
       pruned = true;
     }
@@ -142,8 +143,11 @@ async function ensureBaseImage(baseImageName, state, buildId, onEvent) {
   if (!baseImageReady) {
     baseImageReady = buildBaseImage(baseImageName, state, buildId, onEvent);
   }
-  await baseImageReady;
-  baseImageReady = null;
+  try {
+    await baseImageReady;
+  } finally {
+    baseImageReady = null;
+  }
 }
 
 function buildBaseImage(baseImageName, state, buildId, onEvent) {
@@ -227,7 +231,9 @@ async function buildGuestProgram(buildId, programName, sourceCode, onEvent) {
 
   // Concurrency guard
   if (activeBuildCount >= MAX_CONCURRENT_BUILDS) {
-    throw new Error(`Too many concurrent builds (max ${MAX_CONCURRENT_BUILDS}). Try again later.`);
+    const err = new Error(`Too many concurrent builds (max ${MAX_CONCURRENT_BUILDS}). Try again later.`);
+    err.code = "CONCURRENCY_LIMIT";
+    throw err;
   }
 
   const sourceHash = getSourceHash(sourceCode);
@@ -276,7 +282,17 @@ async function buildGuestProgram(buildId, programName, sourceCode, onEvent) {
   const baseImageName = `chainforge-guest-base:sp1-${SP1_VERSION}`;
 
   // Ensure base image exists (built once, cached)
-  await ensureBaseImage(baseImageName, state, buildId, onEvent);
+  try {
+    await ensureBaseImage(baseImageName, state, buildId, onEvent);
+  } catch (baseErr) {
+    state.status = "error";
+    state.result = { error: `Base image build failed: ${baseErr.message}` };
+    activeBuildCount = Math.max(0, activeBuildCount - 1);
+    builds.set(buildId, state);
+    persistBuilds();
+    onEvent({ type: "error", buildId, error: state.result.error });
+    return buildId;
+  }
 
   // Phase 2 Dockerfile: compile user code on top of cached base (no network)
   const dockerfile = `FROM ${baseImageName}
@@ -310,6 +326,7 @@ RUN cp /output/${programName} /vk-helper/target/elf-to-verify && \\
     const line = data.toString().trim();
     if (line) {
       state.logs.push(line);
+      if (state.logs.length > 500) state.logs.shift();
       onEvent({ type: "log", buildId, message: line });
     }
   });
@@ -318,6 +335,7 @@ RUN cp /output/${programName} /vk-helper/target/elf-to-verify && \\
     const line = data.toString().trim();
     if (line) {
       state.logs.push(line);
+      if (state.logs.length > 500) state.logs.shift();
       onEvent({ type: "log", buildId, message: line });
     }
   });
@@ -423,8 +441,8 @@ function execFilePromise(bin, args) {
 function cleanup(buildId, imageName) {
   try {
     const { execSync } = require("child_process");
-    execSync(`${DOCKER_BIN} rmi ${imageName} 2>/dev/null`, { stdio: "ignore" });
-  } catch (_) {}
+    execSync(`${DOCKER_BIN} rmi ${imageName}`, { stdio: "ignore" });
+  } catch (e) { console.warn(`[cleanup] Failed to remove image ${imageName}: ${e.message}`); }
 }
 
 function getBuild(buildId) {
@@ -454,8 +472,13 @@ function getElfBuffer(buildId) {
 
 function deleteBuild(buildId) {
   const build = builds.get(buildId);
+  const buildDir = path.join(BUILD_DIR, buildId);
+  try { fs.rmSync(buildDir, { recursive: true, force: true }); } catch (_) {}
   if (build && build.result?.elfPath) {
-    try { fs.rmSync(path.dirname(build.result.elfPath), { recursive: true, force: true }); } catch (_) {}
+    const artifactDir = path.dirname(build.result.elfPath);
+    if (artifactDir !== buildDir) {
+      try { fs.rmSync(artifactDir, { recursive: true, force: true }); } catch (_) {}
+    }
   }
   builds.delete(buildId);
   persistBuilds();

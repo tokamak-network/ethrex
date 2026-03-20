@@ -57,12 +57,12 @@ try {
   if (require("fs").existsSync(IMPORTED_PROGRAMS_FILE)) {
     importedPrograms = JSON.parse(require("fs").readFileSync(IMPORTED_PROGRAMS_FILE, "utf-8"));
   }
-} catch (_) {}
+} catch (e) { console.warn("[server] Failed to load imported programs:", e.message); }
 function saveImportedPrograms() {
   try {
     require("fs").mkdirSync(path.dirname(IMPORTED_PROGRAMS_FILE), { recursive: true });
     require("fs").writeFileSync(IMPORTED_PROGRAMS_FILE, JSON.stringify(importedPrograms, null, 2));
-  } catch (_) {}
+  } catch (e) { console.warn("[server] Failed to save imported programs:", e.message); }
 }
 
 // Store proxy — fetch programs from Platform API + imported custom programs
@@ -75,9 +75,10 @@ app.get("/api/store/programs", async (req, res) => {
     const resp = await fetch(`${PLATFORM_API}/api/store/programs`, { signal: controller.signal });
     clearTimeout(timeout);
     if (resp.ok) {
-      official = await resp.json();
+      const data = await resp.json();
+      official = Array.isArray(data) ? data : (Array.isArray(data.programs) ? data.programs : []);
     }
-  } catch (_) {}
+  } catch (e) { console.warn("[store] Failed to fetch programs from platform:", e.message); }
 
   if (official.length === 0) {
     official = [
@@ -98,6 +99,12 @@ app.post("/api/store/programs/import", (req, res) => {
   const { programId, programName, description, category, elfHash, vk, elfSize, backend } = req.body;
   if (!programId || !programName) {
     return res.status(400).json({ error: "programId and programName required" });
+  }
+  if (!/^[a-z0-9_-]{1,64}$/.test(programId)) {
+    return res.status(400).json({ error: "Invalid programId format" });
+  }
+  if (!/^[a-zA-Z0-9 _-]{1,64}$/.test(programName)) {
+    return res.status(400).json({ error: "Invalid programName format" });
   }
 
   // Remove existing if re-importing

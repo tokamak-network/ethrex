@@ -4578,11 +4578,13 @@ function copyAIPrompt() {
 let guestBuildPollInterval = null;
 let guestBuildDetailOpen = false; // prevent auto-refresh from overwriting detail view
 let guestBuildHasActive = false; // only poll when there are active builds
+let guestBuildEventSource = null; // track active SSE connection
 
 async function loadGuestBuilds() {
   const container = document.getElementById('guest-builds-list');
   if (!container) return;
   guestBuildDetailOpen = false;
+  if (guestBuildEventSource) { guestBuildEventSource.close(); guestBuildEventSource = null; }
 
   // Smart polling: only auto-refresh when there are active builds
   if (guestBuildPollInterval) clearInterval(guestBuildPollInterval);
@@ -4800,7 +4802,7 @@ async function showBuildDetail(buildId) {
                     : line.startsWith('[vk]') ? '#a78bfa'
                     : line.startsWith('[cache]') ? '#eab308'
                     : '#71717a';
-                  return `<div style="color:${color};white-space:pre-wrap;word-break:break-all;">${line.replace(/</g,'&lt;')}</div>`;
+                  return `<div style="color:${color};white-space:pre-wrap;word-break:break-all;">${esc(line)}</div>`;
                 }).join('')
             }
           </div>
@@ -4814,7 +4816,9 @@ async function showBuildDetail(buildId) {
 
     // Auto-refresh detail view via SSE when building
     if (b.status === 'building') {
+      if (guestBuildEventSource) { guestBuildEventSource.close(); guestBuildEventSource = null; }
       const evtSource = new EventSource(`${API}/guest-builds/${buildId}/logs`);
+      guestBuildEventSource = evtSource;
       evtSource.onmessage = (e) => {
         try {
           const evt = JSON.parse(e.data);
