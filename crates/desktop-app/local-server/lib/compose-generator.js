@@ -138,6 +138,7 @@ function generateComposeFile(opts) {
           if (progs) {
             const progNames = progs.map(p => p.replace(/"/g, ''));
             // Filter out evm-l2 (pre-registered), add typeId suffix for known programs
+            // Source of truth: crates/l2/common/src/lib.rs — keep in sync with ProgramTypeId
             const TYPE_IDS = { 'zk-dex': 2, 'tokamon': 3, 'bridge': 4 };
             const toRegister = progNames
               .filter(p => p !== 'evm-l2')
@@ -147,7 +148,7 @@ function generateComposeFile(opts) {
             }
           }
         }
-      } catch (e) { /* ignore parse errors */ }
+      } catch (e) { console.error(`Failed to parse ${bundleProgramsToml}:`, e.message); }
     }
   }
 
@@ -200,7 +201,7 @@ function generateComposeFile(opts) {
   // No extra deployer genesis volume needed — main mount line already uses genesisSource
   let deployerExtraVolumes = "";
   // Mount dynamic programs dir into deployer for VK access
-  const dynamicProgramsDir = bundleProgramsToml ? path.dirname(bundleProgramsToml) + '/programs' : null;
+  const dynamicProgramsDir = bundleProgramsToml ? path.join(path.dirname(bundleProgramsToml), 'programs') : null;
   const hasDynamicPrograms = dynamicProgramsDir && fs.existsSync(dynamicProgramsDir);
   if (hasDynamicPrograms) {
     deployerExtraVolumes += `      - ${dynamicProgramsDir}:/etc/ethrex/programs:ro\n`;
