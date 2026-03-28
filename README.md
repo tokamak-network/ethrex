@@ -19,6 +19,17 @@ This client supports running in two different modes:
 * **ethrex L1** - As a regular Ethereum execution client
 * **ethrex L2** - As a multi-prover ZK-Rollup (supporting SP1, RISC Zero and TEEs), where block execution is proven and the proof sent to an L1 network for verification, thus inheriting the L1's security. Support for based sequencing is currently in the works.
 
+## Tokamak Enhancements
+
+The [Tokamak Network](https://tokamak.network/) fork extends ethrex with advanced tooling for EVM execution analysis and security:
+
+- **Time-Travel Debugger** — GDB-style interactive replay of transactions with forward/backward stepping, breakpoints, and `debug_timeTravel` JSON-RPC endpoint
+- **Smart Contract Autopsy Lab** — Post-hack forensic analysis that replays transactions through LEVM, classifies attack patterns (reentrancy, flash loan, price manipulation), and traces fund flows
+- **Sentinel Real-Time Detection** — 2-stage pipeline (pre-filter + deep analysis) integrated into block processing, with adaptive ML pipeline, mempool monitoring, auto-pause circuit breaker, and live dashboard
+- **Continuous Benchmarking** — Cross-client comparison (ethrex vs Geth/Reth), public dashboard, and CI-integrated regression detection
+
+See [docs/tokamak/README.md](./docs/tokamak/README.md) for full details and [docs/tokamak/STATUS.md](./docs/tokamak/STATUS.md) for current status.
+
 ## Why ZK-Native?
 
 ethrex was built from the ground up with zero-knowledge proving in mind. This isn't a feature bolted onto an existing client—it's a core design principle that shapes how we structure execution, state management, and our entire architecture.

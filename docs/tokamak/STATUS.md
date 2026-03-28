@@ -1,0 +1,270 @@
+# Tokamak Client Status Report
+
+**Date**: 2026-03-01
+**Branch**: `feat/tokamak-autopsy`
+**Overall Completion**: ~99% (Phase H: 5/5 + H-6 expansion complete — H-1 ✅ H-2 ✅ H-3 ✅ H-4 ✅ H-5 ✅ H-6a ✅ H-6b ✅ H-6c ✅ H-6d ✅)
+
+---
+
+## Phase Completion
+
+| Phase | Description | Completion | Status |
+|-------|-------------|-----------|--------|
+| Phase 0 | Research & Decision | **100%** | ethrex fork confirmed (FINAL) |
+| Phase 1 | Foundation | **100%** | Hive 6/6 PASS, Hoodi sync PASS (1h48m), all P0 complete |
+| Phase 2 | JIT Foundation (revmc) | **100%** | LLVM backend integrated |
+| Phase 3 | JIT Execution Wiring | **100%** | LevmHost + execution bridge |
+| Phase 4 | Production JIT Hardening | **100%** | LRU cache, auto-compile, tracing bypass |
+| Phase 5 | Advanced JIT | **100%** | Multi-fork, async compile, validation mode |
+| Phase 6 | CALL/CREATE Resume | **100%** | Suspend/resume + LLVM memory mgmt |
+| Phase 7 | Dual-Execution Validation | **100%** | State-swap validation, Volkov R20 PROCEED |
+| Phase 8 | JIT Benchmarking | **100%** | Infrastructure + benchmark execution |
+| Phase 9 | Benchmark CI & Dashboard | **100%** | C-1 ✅ C-2 ✅ C-3 ✅ — All Phase C tasks complete. F-2 Dashboard ✅ DONE. |
+
+---
+
+## Tier S Features
+
+### Feature #9: JIT-Compiled EVM (~92%)
+
+**Completed:**
+- revmc/LLVM backend integration (Phases 2-8)
+- Tiered execution (counter threshold -> compile -> execute)
+- Multi-fork support (cache key includes Fork)
+- Background async compilation (CompilerThreadPool — multi-worker, G-5)
+- LRU cache eviction
+- CALL/CREATE suspend/resume
+- Dual-execution validation (JIT vs interpreter)
+- Benchmarking infrastructure + initial results
+- Bytecode size limit graceful fallback (D-2) — negative cache + early size gate + interpreter-only bench results
+- Constant folding optimizer (D-3 + G-7) — PUSH+PUSH+OP → single PUSH, 22 opcodes (6 original + 14 binary + 2 unary), 76 tests
+- 76 LEVM JIT tests + 27 tokamak-jit tests passing (104 total)
+- Arena-based LLVM memory lifecycle (G-1) — eliminates `mem::forget` memory leak, 178 tests pass
+- CALL/CREATE dual-execution validation (G-3) — removed `has_external_calls` guard, validation runs for all bytecodes, 5 tests
+- Parallel compilation thread pool (G-5) — crossbeam-channel multi-consumer, N workers (default num_cpus/2), deduplication guard, 4 new tests
+- Constant folding enhancement (G-7) — expanded to 22 opcodes (DIV/SDIV/MOD/SMOD/EXP/SIGNEXTEND/LT/GT/SLT/SGT/EQ/SHL/SHR/SAR + NOT/ISZERO unary), refactored eval helpers, 68 unit + 8 integration tests
+- JIT-to-JIT direct dispatch (G-4) — VM-layer fast dispatch for child CALL bytecodes, cache lookup + direct JIT execution, recursive suspend/resume, configurable + metrics, 10 tests
+- LRU cache eviction (G-6) — replaced FIFO with AtomicU64-based LRU timestamps, lock-free get() hot path, O(n) eviction scan on insert(), 9 cache unit + 5 integration tests
+- Precompile JIT acceleration (G-8) — `precompile_fast_dispatches` metric in JitMetrics, `enable_precompile_fast_dispatch` config toggle, metric tracking in `handle_jit_subcall()` precompile path, 9 tests (5 interpreter + 4 JIT differential)
+- Recursive CALL runtime optimization (D-1 v1.1) — 3-tier optimization: (1) bytecode zero-copy caching via `Arc<Bytes>` in CompiledCode, (2) thread-local resume state pool (16-entry cap), (3) TX-scoped bytecode cache in VM (`FxHashMap<H256, Code>`), 11 tests (69 total tokamak-jit)
+
+**Remaining:**
+- Tiered optimization (profile-guided optimization)
+- Production deployment
+
+### Feature #10: Continuous Benchmarking (~80%)
+
+**Completed:**
+- `tokamak-bench` crate with 12 scenarios
+- CLI: `run` / `compare` / `report` / `jit-compare` subcommands
+- Regression detection with thresholds (opcode + JIT speedup)
+- CI workflow (`pr-tokamak-bench.yaml`) with JIT benchmark jobs
+- JIT benchmark infrastructure
+- JSON output + markdown report generation
+- JIT speedup regression detection with PR comments
+- Public dashboard (F-2) — Astro + React islands + Recharts + Tailwind at `dashboard/`, 62 JS/TS + 9 Python tests, `publish-dashboard` CI job
+
+**Remaining:**
+- State root differential testing
+- Precompile timing export
+
+### Feature #21: Time-Travel Debugger & Autopsy Lab (~98%)
+
+**Completed:**
+- `tokamak-debugger` crate with replay engine (E-1)
+- LEVM `OpcodeRecorder` hook trait (feature-gated `tokamak-debugger`)
+- Per-opcode step recording: opcode, PC, gas, depth, stack top-N, memory size, code address
+- Forward/backward/goto navigation API (`ReplayEngine`)
+- Stack `peek()` for non-destructive stack inspection
+- GDB-style interactive CLI (E-2) — 13 commands: step, step-back, continue, reverse-continue, break, delete, goto, info, stack, list, breakpoints, help, quit
+- rustyline REPL with auto-history, `--bytecode <hex>` input mode
+- `debug_timeTravel` JSON-RPC endpoint (E-3) — full TX replay over RPC with step windowing
+- Serde serialization for all debugger types (StepRecord, ReplayTrace, ReplayConfig)
+- Smart Contract Autopsy Lab (E-4) — post-hoc attack analysis:
+  - `RemoteVmDatabase`: LEVM `Database` over archive RPC (`reqwest::blocking`), lazy caching
+  - `AttackClassifier`: reentrancy, flash loan (3 strategies), price manipulation, access control bypass
+  - `FundFlowTracer`: ETH transfers + ERC-20 Transfer events
+  - `AutopsyReport`: verdict-first Markdown/JSON, known contract labels (~20 mainnet addresses), storage interpretation, key step timeline, conclusion with storage impact
+  - CLI `autopsy` subcommand with `--tx-hash`, `--rpc-url`, `--format`, `--output`
+- Autopsy Production Readiness (4-phase hardening):
+  - Phase I: RPC timeout (30s) + retry with exponential backoff (3 retries), structured `RpcError` types (6 variants)
+  - Phase II: ERC-20 transfer amount decoding from LOG data, price delta estimation via SLOAD comparison, 80+ known contract labels, ABI-based storage slot decoding (keccak256 mappings)
+  - Phase III: Bounded caches with FIFO eviction (account 10k, storage 100k), observability metrics (RPC calls/hits/latency), 100k-step stress tests (<5s classification)
+  - Phase IV: Confidence scoring on all detected patterns (0.0–1.0 with evidence chains), 10-TX mainnet exploit validation scaffold
+- 145 passing tests + 10 ignored mainnet validation scaffolds
+- Live reentrancy E2E pipeline test — real bytecode execution through all 6 phases (LEVM → classifier → fund flow → sentinel → alert), executable demo example
+
+**Remaining:**
+- Web UI (optional)
+
+### Feature #22: Real-Time Attack Detection — Sentinel (~100%)
+
+**Purpose:** Transform the post-hoc Autopsy Lab into a real-time monitoring system. When the ethrex full node processes new blocks, suspicious transactions are automatically analyzed and alerts are generated.
+
+**Completed:**
+- H-1: Sentinel Pre-Filter Engine — receipt-based heuristic scanner with 7 heuristics (flash loan/revert/ERC-20/known contract/gas/self-destruct/oracle+swap), `sentinel` feature flag, 14 known mainnet addresses, configurable thresholds, 32 tests
+- H-2: Deep Analysis Engine — replay_tx_from_store (Store→StoreVmDatabase→Evm, preceding TX execution, OpcodeRecorder attachment), DeepAnalyzer (reuses AttackClassifier/FundFlowTracer/DetectedPattern from autopsy), SentinelAlert + SentinelError + AnalysisConfig types, load_block_header helper, 20 tests (14 sentinel-only + 6 autopsy-gated) (2026-02-28)
+- H-3: Block Processing Integration — BlockObserver trait in ethrex-blockchain, SentinelService (background worker thread with mpsc channel, two-stage PreFilter→DeepAnalyzer pipeline), non-blocking hooks in add_block/add_block_pipeline after store_block, AlertHandler trait + LogAlertHandler, 11 tests (2026-02-28)
+- H-4: Alert & Notification System — AlertDispatcher (composite fan-out), JsonlFileAlertHandler (append-only JSONL), StdoutAlertHandler (containerized), WebhookAlertHandler (HTTP POST + exponential backoff retry, autopsy-gated), AlertDeduplicator (block-window pattern+contract suppression), AlertRateLimiter (sliding-window max N/min), composable AlertHandler pipeline, 14 tests (2026-02-28)
+- H-5: Sentinel Dashboard — WsAlertBroadcaster (real-time WebSocket alert feed via tokio-tungstenite, subscriber management with disconnected cleanup), AlertHistory (JSONL-based historical query engine with pagination and filtering by block range/priority/pattern type), SentinelMetrics (Prometheus-compatible exporter with 8 atomic counters, MetricsSnapshot, to_prometheus_text() exposition format, integrated into SentinelService worker loop with Instant-based timing), Dashboard UI (Astro + React sentinel page with live feed, history table, metrics panel) (2026-02-28)
+- H-6a: CLI & Configuration — TOML-compatible SentinelFullConfig (6 sub-configs), load_config/merge_cli_overrides/validate, 6 `--sentinel.*` CLI flags, init_sentinel() in initializers.rs, SentinelComponents struct, 11 tests (2026-03-01)
+- H-6b: Mempool Monitoring — MempoolPreFilter with 5 calldata heuristics (flash loan selector, high value DeFi, high gas + known contract, suspicious contract creation, multicall), MempoolObserver trait + hooks in blockchain, MempoolAlert/MempoolSuspicionReason types, 20 tests (2026-03-01)
+- H-6c: Adaptive Analysis Pipeline — AnalysisStep trait with StepResult (Continue/Dismiss/AddSteps), FeatureVector (16 features from opcode trace), 6 pipeline steps (TraceAnalyzer/PatternMatcher/FundFlowAnalyzer/AnomalyDetector/ConfidenceScorer/ReportGenerator), StatisticalAnomalyDetector (z-score + sigmoid), PipelineMetrics, ~15 tests (2026-03-01)
+- H-6d: Auto Pause — PauseController (AtomicBool + Condvar + auto-resume timeout), AutoPauseHandler (circuit breaker on critical alerts), 2 pause checkpoints in block processing, sentinel_resume/sentinel_status JSON-RPC methods, 8 tests (2026-03-01)
+
+**Architecture:** All E-4 analysis components reused directly. Pre-filter runs on receipt data (no opcode recording needed for fast path). Only suspicious TXs trigger expensive deep analysis on a background thread. H-6 adds CLI wiring, mempool pre-execution detection, dynamic pipeline with ML anomaly scoring, and auto-pause circuit breaker.
+
+**Key constraint:** <1% overhead on block processing when sentinel is enabled but TX doesn't match pre-filter. Zero overhead when feature disabled (compile-time gate). PauseController fast path = single atomic load.
+
+---
+
+## JIT Benchmark Results
+
+Measured after Volkov R21-R23 fixes (corrected measurement order).
+10 runs each, `--profile jit-bench`, Fork::Cancun.
+
+| Scenario | Interpreter | JIT | Speedup |
+|----------|------------|-----|---------|
+| Fibonacci | 3.55ms | 1.40ms | **2.53x** |
+| BubbleSort | 357.69ms | 159.84ms | **2.24x** |
+| Factorial | 2.36ms | 1.41ms | **1.67x** |
+| ManyHashes | 2.26ms | 1.55ms | **1.46x** |
+
+**Interpreter-only**: Push/MstoreBench/SstoreBench (bytecode > 24KB, graceful fallback via D-2).
+**Skipped**: FibonacciRecursive/FactorialRecursive (deep recursive CALL). ERC20* scenarios now benefit from G-4 JIT-to-JIT dispatch.
+
+---
+
+## Tokamak-Specific Codebase
+
+| Component | Location | Lines |
+|-----------|----------|-------|
+| LEVM JIT infra | `crates/vm/levm/src/jit/` (9 files) | ~2,700 |
+| tokamak-jit crate | `crates/vm/tokamak-jit/src/` (14 files) | ~5,650 |
+| tokamak-bench crate | `crates/tokamak-bench/src/` (11 files) | ~1,700 |
+| tokamak-debugger | `crates/tokamak-debugger/src/` (50 files) | ~16,000 |
+| LEVM debugger hook | `crates/vm/levm/src/debugger_hook.rs` | ~27 |
+| **Total** | | **~26,080** |
+
+Base ethrex codebase: ~103K lines Rust.
+
+---
+
+## Volkov Review History
+
+Three PROCEED milestones achieved:
+
+| Review | Subject | Score | Verdict |
+|--------|---------|-------|---------|
+| R6 | DECISION.md | 7.5 | **PROCEED** |
+| R10 | Architecture docs | 8.25 | **PROCEED** |
+| R20 | Phase 7 dual-execution | 8.25 | **PROCEED** |
+| R24 | Phase 8B cumulative | 8.0 | **PROCEED** |
+
+Full review history: R1(3.0) -> R2(3.0) -> R3(5.25) -> R4(4.5) -> R5(4.0) ->
+R6(7.5) -> R8(5.5) -> R9(6.5) -> R10(8.25) -> R13(3.0) -> R14(4.0) ->
+R16(4.0) -> R17(4.0) -> R18(5.5) -> R19(7.0) -> R20(8.25) -> R22(3.5) ->
+R23(5.0) -> R24(8.0)
+
+---
+
+## Outstanding Items
+
+### Recently Completed (Infra)
+- Hive CI infra — 6 suites in `pr-tokamak.yaml`, Docker build, Hive Gate (fc720f46f)
+- Sync CI infra — `tokamak-sync.yaml` with Hoodi/Sepolia (fc720f46f)
+- Feature flag CI — Quality Gate checks all 4 feature flags (fc720f46f)
+
+### Recently Completed (Phase B/C)
+- LLVM 21 CI provisioning (C-2) — Reusable composite action `.github/actions/install-llvm/`, removed `continue-on-error`, Polly fix (5ea9c8376)
+- JIT benchmark CI (C-1) — `compare_jit()`, `JitCompare` CLI, 3 CI jobs, 10 tests, PR comment integration (d17a71c24)
+- JIT gas alignment (B-1) — Fixed negative SSTORE refund bug in `execution.rs`, added `gas_alignment.rs` with 11 tests (71f39d2d7)
+- Test quality improvements (B-2) — `test_helpers.rs`, `INTRINSIC_GAS` constant, 15+ test DRY refactors (224921e1f)
+- Benchmark statistics (C-3) — `stats.rs` module, warmup/stddev/95% CI support, `--warmup` CLI param (224921e1f)
+- EIP-7928 BAL recording (B-3) — BAL recording in host.rs sload/sstore JIT paths, 5 differential tests (2126e232b)
+- Bytecode size limit fallback (D-2) — oversized_hashes negative cache, early size gate, bench interpreter-only results, 4+3 tests (ff3396efe)
+
+### Recently Completed (Phase D)
+- Constant folding optimizer (D-3) — same-length PUSH+PUSH+OP → single PUSH, 6 opcodes (ADD/MUL/SUB/AND/OR/XOR), pipeline integration in backend.rs, 37 unit + 5 integration tests (fec956fef)
+
+### Recently Completed (Phase E)
+- TX Replay Engine (E-1) — LEVM OpcodeRecorder hook, DebugRecorder, ReplayEngine with forward/backward/goto navigation, 14 tests
+- Debugger CLI (E-2) — GDB-style REPL with 13 commands, rustyline, cli feature gate, 27 CLI tests (b6f304de1)
+- debug_timeTravel RPC (E-3) — JSON-RPC endpoint, prepare_state_for_tx refactor, Evm::setup_env_for_tx, serde derives, feature-gated tokamak-debugger in ethrex-rpc, 10 tests (6 RPC + 4 serde)
+
+### CI Verified (PR #6260, run 22379067904)
+- Hive 6/6 suites PASS (tokamak-jit build) — RPC, Devp2p, Auth, Cancun, Paris, Withdrawals
+- Quality Gate PASS — cargo check/clippy/test with all tokamak features
+- Docker Build (tokamak-jit) PASS
+- Feature flag safety confirmed — tokamak-jit Hive == upstream (both 6/6)
+
+### Hoodi Sync Verified (run 22404315946)
+- Hoodi snap sync PASS — 1h48m35s, `release-with-debug-assertions`, `--features tokamak-jit`
+- assertoor `synced-check`: EL + CL both synced
+- Ran on `ubuntu-latest` with Kurtosis + Lighthouse v8.0.1
+
+### Recently Completed (Phase F)
+- Cross-client benchmarking (F-1) — `cross-client` CLI subcommand, ethrex in-process + Geth/Reth via eth_call state overrides, comparison table with ethrex as 1.00x baseline, 18 tests
+- Security audit prep (F-4) — cargo-fuzz harnesses (analyzer, optimizer, differential), 4 proptest property tests, SAFETY_AUDIT.md cataloging all 9 unsafe blocks with risk assessment; enhanced: real differential fuzzing (JIT vs interpreter dual-path, random bytecode gen, gas/status/output comparison) (b2def75e8)
+- Public dashboard MVP (F-2) — Astro + React islands + Recharts + Tailwind at `dashboard/`, 16 TS interfaces + Zod schemas, TrendChart with CI bands, BenchTable, landing + trends pages, rebuild_index.py, publish-dashboard CI job, path traversal protection, 62 JS/TS + 9 Python tests (3294bdf97)
+
+### Recently Completed (Phase F continued)
+- L2 integration scaffolding (F-3) — `TokamakFeeConfig` + `JitPolicy` types, `VMType::TokamakL2` variant, `TokamakL2Hook` (wraps L2Hook via composition), hook dispatch + Evm constructors, `BlockchainType::TokamakL2` + 5 match arm updates, `--tokamak-l2` CLI flag, feature propagation across 6 Cargo.toml files, 7 tests
+- Mainnet full sync CI (F-5) — Added `mainnet` option to `tokamak-sync.yaml`, `ethrex-sync` self-hosted runner for 48h timeout, Docker cleanup step, conditional Kurtosis install
+
+### Recently Completed (Phase G)
+- LLVM Memory Lifecycle (G-1) — Arena allocator replacing `mem::forget`, ArenaManager + ArenaCompiler + thread_local ArenaState, 12+4 arena tests, all 178 tests pass (f8e9ba540) (2026-02-26)
+- Cache Eviction Effectiveness (G-2) — Auto-resolved by G-1 arena system: Free/FreeArena handlers, cache eviction returns FuncSlot for arena cleanup (2026-02-27)
+- CALL/CREATE Dual-Execution Validation (G-3) — Removed `has_external_calls` guard, validation runs for ALL bytecodes (CALL/STATICCALL/DELEGATECALL), shared MismatchBackend + helpers, 5 tests (8c05d3412) (2026-02-27)
+- Constant Folding Enhancement (G-7) — Expanded optimizer from 6 to 22 opcodes (14 new binary + 2 unary), signed arithmetic helpers, extracted eval helpers + write_folded_push, 68 unit + 8 integration tests (43026d7cf) (2026-02-27)
+- JIT-to-JIT Direct Dispatch (G-4) — VM-layer fast dispatch: child CALL bytecodes checked against JIT cache and executed directly via `execute_jit()`, recursive suspend/resume for nested JIT calls, `enable_jit_dispatch` config + `jit_to_jit_dispatches` metric, 10 tests (2026-02-27)
+- LRU Cache Eviction (G-6) — Replaced FIFO (VecDeque) with LRU eviction: per-entry AtomicU64 timestamps, monotonic access_counter outside RwLock, atomic-only get() hot path, O(n) min_by_key eviction on insert(), 9+5 tests (2026-02-27)
+- Precompile JIT Acceleration (G-8) — `precompile_fast_dispatches` metric in JitMetrics, `enable_precompile_fast_dispatch` config toggle in JitConfig, `is_precompile_fast_dispatch_enabled()` on JitState, metric tracking in `handle_jit_subcall()` precompile path, 9 tests (5 interpreter correctness + 4 JIT differential), 58 total tokamak-jit tests (2026-02-27)
+
+### Recently Completed (Phase D continued)
+- Recursive CALL runtime optimization (D-1 v1.1) — 3-tier optimization without revmc modifications: Tier 1 bytecode zero-copy (`CompiledCode.cached_bytecode: Option<Arc<Bytes>>`), Tier 2 resume state pool (thread-local 16-entry pool), Tier 3 TX-scoped bytecode cache (`VM.bytecode_cache`), `bytecode_cache_hits` metric, 11 tests (69 total tokamak-jit)
+
+### Recently Completed (Phase E continued)
+- Smart Contract Autopsy Lab (E-4) — RemoteVmDatabase (archive RPC + LEVM Database impl), StepRecord enrichment (CALL value/LOG topics/SSTORE capture), AttackClassifier (4 patterns, 3-strategy flash loan detection), FundFlowTracer (ETH + ERC-20), AutopsyReport (verdict-first MD/JSON, known labels, storage interpretation, key step timeline), CLI subcommand with file output, 42 autopsy tests (100 total debugger tests)
+
+### Recently Completed (Autopsy Production Readiness)
+- Phase I: Network resilience — RPC client timeout (30s default) + retry with exponential backoff (3 retries, 1s→2s→4s), rate limit awareness (HTTP 429), `RpcConfig` struct with CLI flags (`--rpc-timeout`, `--rpc-retries`), structured `RpcError` enum (6 variants: ConnectionFailed, Timeout, HttpError, JsonRpcError, ParseError, RetryExhausted), 12 new tests
+- Phase II: Data quality — ERC-20 transfer amount decoding from LOG3 data bytes, price delta estimation via SLOAD value comparison, 80+ known contract labels (stablecoins, DEX, lending, bridges, oracles, infrastructure, flash loan, MEV), ABI-based storage slot decoding (`abi_decoder.rs` with keccak256 mapping support), 21 new tests
+- Phase III: Robustness — Bounded caches with FIFO eviction in RemoteVmDatabase (account=10k, storage=100k, code=10k, block=1k entries), `AutopsyMetrics` observability (RPC calls/cache hits/latency), 100k-step stress tests (<5s classification, <1s report), 11 new tests
+- Phase IV: Validation & confidence — `DetectedPattern` wrapper with 0.0–1.0 confidence + evidence chains, per-pattern scoring methods, 10 curated mainnet exploit validation scaffolds (DAO, Euler, Curve, Harvest, Cream, bZx, Ronin, Wormhole, Mango, Parity), 16 new tests (6 scoring + 10 ignored mainnet)
+
+### Recently Completed (Phase H — Sentinel)
+- Pre-Filter Engine (H-1) — 7 receipt-based heuristics, `sentinel` feature flag, 14 known mainnet addresses, configurable thresholds, 32 tests (2026-02-28)
+- Deep Analysis Engine (H-2) — replay_tx_from_store, DeepAnalyzer (reuses AttackClassifier/FundFlowTracer), SentinelAlert/SentinelError/AnalysisConfig types, 20 tests (2026-02-28)
+- Block Processing Integration (H-3) — BlockObserver trait, SentinelService background worker, two-stage PreFilter→DeepAnalyzer pipeline, AlertHandler trait, 11 tests (2026-02-28)
+- Alert & Notification System (H-4) — AlertDispatcher, JsonlFileAlertHandler, StdoutAlertHandler, WebhookAlertHandler (autopsy-gated), AlertDeduplicator, AlertRateLimiter, 14 tests (2026-02-28)
+- Sentinel Dashboard (H-5) — WsAlertBroadcaster (real-time WebSocket feed, subscriber cleanup), AlertHistory (JSONL query engine with pagination/filtering), SentinelMetrics (8 atomic counters, Prometheus text exposition, integrated into worker loop with timing), Dashboard UI (Astro + React sentinel page with live feed, history table, metrics panel) (2026-02-28)
+- Live Reentrancy E2E Pipeline — full 6-phase test with real bytecode execution: LEVM deploy+execute → trace verification (depth>=3, SSTORE>=2) → AttackClassifier (reentrancy 70%+) → FundFlowTracer (ETH drain victim→attacker) → SentinelService (real receipt, prefilter_alert_mode) → alert+metrics validation. Executable demo at `examples/reentrancy_demo.rs`. 263 passing + 10 ignored tests (2026-03-01)
+
+### Recently Completed (H-6 Expansion)
+- CLI & Configuration (H-6a) — TOML config, 6 CLI flags, init_sentinel(), SentinelComponents, 11 tests (2026-03-01)
+- Mempool Monitoring (H-6b) — MempoolPreFilter (5 heuristics), MempoolObserver trait + blockchain hooks, 20 tests (2026-03-01)
+- Adaptive Pipeline (H-6c) — AnalysisStep trait, FeatureVector, 6-step pipeline, z-score anomaly detector, ~15 tests (2026-03-01)
+- Auto Pause (H-6d) — PauseController (AtomicBool + Condvar), AutoPauseHandler, RPC resume/status, 8 tests (2026-03-01)
+- **Total**: 310 passing + 10 ignored debugger tests + 5 PauseController tests = 325 tests (2026-03-01)
+
+### Not Started
+- EF grant application
+- External node operator adoption
+
+### In Progress
+- Mainnet full sync (F-5) — CI configured (`tokamak-sync.yaml` with mainnet option, `ethrex-sync` self-hosted runner, 48h timeout), awaiting manual dispatch
+- F-3 scaffolding done, Tokamak-specific fee logic awaits L2 spec
+
+---
+
+## Architecture Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Base client | ethrex (LambdaClass) | Rust, LEVM custom EVM, active development |
+| JIT backend | revmc (Paradigm) + LLVM 21 | Only functional backend (Cranelift lacks i256) |
+| Cache key | `(H256, Fork)` | Fork-specific compiled code |
+| Compilation | Background thread (mpsc) | Non-blocking hot path |
+| Validation | State-swap dual execution | JIT runs first, interpreter re-runs to verify |
+| Memory | Arena allocator (G-1) | Groups compiled fns into arenas; free LLVM resources when all evicted |

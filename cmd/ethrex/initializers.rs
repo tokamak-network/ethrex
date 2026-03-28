@@ -173,6 +173,132 @@ pub fn init_blockchain(store: Store, blockchain_opts: BlockchainOptions) -> Arc<
     Blockchain::new(store, blockchain_opts).into()
 }
 
+// ---------------------------------------------------------------------------
+// Sentinel integration (requires `sentinel` feature)
+// ---------------------------------------------------------------------------
+
+/// Components produced by sentinel initialization.
+///
+/// Each field is `None` when the corresponding feature is disabled or the
+/// operator has not enabled it via CLI / TOML config.
+#[cfg(feature = "sentinel")]
+#[derive(Default)]
+pub struct SentinelComponents {
+    pub block_observer: Option<Arc<dyn ethrex_blockchain::BlockObserver>>,
+    pub pause_controller: Option<Arc<ethrex_blockchain::PauseController>>,
+}
+
+/// Build the sentinel service from CLI options and an optional TOML config,
+/// returning the components to wire into the blockchain.
+#[cfg(feature = "sentinel")]
+pub fn init_sentinel(
+    opts: &crate::cli::Options,
+    store: Store,
+) -> SentinelComponents {
+    use tokamak_debugger::sentinel::config::{load_config, merge_cli_overrides};
+    use tokamak_debugger::sentinel::alert::{
+        AlertDeduplicator, AlertDispatcher, AlertRateLimiter, JsonlFileAlertHandler,
+    };
+    use tokamak_debugger::sentinel::service::{AlertHandler, LogAlertHandler, SentinelService};
+
+    // 1. Load TOML config (or defaults)
+    let base_config = match load_config(opts.sentinel_config.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to load sentinel config: {e}; using defaults");
+            tokamak_debugger::sentinel::config::SentinelFullConfig::default()
+        }
+    };
+
+    // 2. Merge CLI overrides
+    let config = merge_cli_overrides(
+        &base_config,
+        Some(opts.sentinel_enabled),
+        opts.sentinel_alert_file.as_ref(),
+        Some(opts.sentinel_auto_pause),
+        Some(opts.sentinel_mempool),
+        opts.sentinel_webhook_url.as_deref(),
+    );
+
+    if !config.enabled {
+        info!("Sentinel is disabled");
+        return SentinelComponents::default();
+    }
+
+    info!("Initializing sentinel hack detection system");
+
+    // 3. Build alert handler pipeline
+    let mut handlers: Vec<Box<dyn AlertHandler>> = vec![Box::new(LogAlertHandler)];
+
+    if let Some(ref path) = config.alert.jsonl_path {
+        info!("Sentinel alert file: {}", path.display());
+        handlers.push(Box::new(JsonlFileAlertHandler::new(path.clone())));
+    }
+
+    // 4. Create PauseController + AutoPauseHandler if auto-pause is enabled
+    let pause_controller = if config.auto_pause.enabled {
+        use tokamak_debugger::sentinel::auto_pause::AutoPauseHandler;
+
+        let pc = Arc::new(ethrex_blockchain::PauseController::default());
+        let auto_pause_handler =
+            AutoPauseHandler::new(Arc::clone(&pc), &config.auto_pause);
+        handlers.push(Box::new(auto_pause_handler));
+        info!(
+            "Sentinel auto-pause enabled (confidence={}, priority={})",
+            config.auto_pause.confidence_threshold, config.auto_pause.priority_threshold
+        );
+        Some(pc)
+    } else {
+        None
+    };
+
+    let dispatcher = AlertDispatcher::new(handlers);
+    let dedup = AlertDeduplicator::new(
+        Box::new(dispatcher),
+        config.alert.dedup_window_blocks,
+    );
+    let pipeline: Box<dyn AlertHandler> = Box::new(AlertRateLimiter::new(
+        Box::new(dedup),
+        config.alert.rate_limit_per_minute,
+    ));
+
+    // 5. Create sentinel service
+    let sentinel_config = config.to_sentinel_config();
+    let analysis_config = config.to_analysis_config();
+    let service = SentinelService::new(store, sentinel_config, analysis_config, pipeline);
+    let observer: Arc<dyn ethrex_blockchain::BlockObserver> = Arc::new(service);
+
+    info!("Sentinel initialized and ready");
+
+    SentinelComponents {
+        block_observer: Some(observer),
+        pause_controller,
+    }
+}
+
+/// Create a blockchain and optionally wire sentinel components.
+///
+/// When the `sentinel` feature is active, accepts `SentinelComponents` and
+/// attaches any observers before wrapping in `Arc`.
+#[cfg(feature = "sentinel")]
+pub fn init_blockchain_with_sentinel(
+    store: Store,
+    blockchain_opts: BlockchainOptions,
+    sentinel: SentinelComponents,
+) -> Arc<Blockchain> {
+    info!("Initiating blockchain with levm + sentinel");
+    let mut blockchain = Blockchain::new(store, blockchain_opts);
+    if let Some(observer) = sentinel.block_observer {
+        blockchain.set_block_observer(Some(observer));
+        info!("Sentinel block observer wired into blockchain");
+    }
+    if let Some(pc) = sentinel.pause_controller {
+        blockchain.set_pause_controller(Some(pc));
+        info!("Sentinel pause controller wired into blockchain");
+    }
+    Arc::new(blockchain)
+}
+
 #[expect(clippy::too_many_arguments)]
 pub async fn init_rpc_api(
     opts: &Options,
@@ -184,6 +310,7 @@ pub async fn init_rpc_api(
     cancel_token: CancellationToken,
     tracker: TaskTracker,
     log_filter_handler: Option<reload::Handle<EnvFilter, Registry>>,
+    pause_controller: Option<Arc<ethrex_blockchain::PauseController>>,
 ) {
     if !is_memory_datadir(&opts.datadir) {
         init_datadir(&opts.datadir);
@@ -227,6 +354,7 @@ pub async fn init_rpc_api(
         log_filter_handler,
         opts.gas_limit,
         opts.extra_data.clone(),
+        pause_controller,
     );
 
     tracker.spawn(rpc_api);
@@ -469,12 +597,14 @@ pub async fn init_l1(
     #[cfg(feature = "sync-test")]
     set_sync_block(&store).await;
 
+    let blockchain_type = BlockchainType::L1;
+
     let blockchain = init_blockchain(
         store.clone(),
         BlockchainOptions {
             max_mempool_size: opts.mempool_max_size,
             perf_logs_enabled: true,
-            r#type: BlockchainType::L1,
+            r#type: blockchain_type,
             max_blobs_per_block: opts.max_blobs_per_block,
             precompute_witnesses: opts.precompute_witnesses,
         },
@@ -523,6 +653,7 @@ pub async fn init_l1(
         cancel_token.clone(),
         tracker.clone(),
         log_filter_handler,
+        None, // pause_controller — wired via init_blockchain_with_sentinel in H-6
     )
     .await;
 
@@ -620,7 +751,7 @@ pub async fn regenerate_head_state(
             .await?
             .ok_or_else(|| eyre::eyre!("Block {i} not found"))?;
 
-        blockchain.add_block_pipeline(block)?;
+        blockchain.add_block_pipeline(block, None)?;
     }
 
     info!("Finished regenerating state");

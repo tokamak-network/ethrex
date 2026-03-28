@@ -173,11 +173,15 @@ impl Substate {
 
     /// Mark an address as selfdestructed and return whether is was already marked.
     pub fn add_selfdestruct(&mut self, address: Address) -> bool {
+        if self.selfdestruct_set.contains(&address) {
+            return true;
+        }
+
         let is_present = self
             .parent
             .as_ref()
             .map(|parent| parent.is_selfdestruct(&address))
-            .unwrap_or_default();
+            .unwrap_or(false);
 
         is_present || !self.selfdestruct_set.insert(address)
     }
@@ -222,11 +226,21 @@ impl Substate {
 
     /// Mark an address as accessed and return whether is was already marked.
     pub fn add_accessed_slot(&mut self, address: Address, key: H256) -> bool {
+        // Check self first — short-circuits for re-accessed (warm) slots
+        if self
+            .accessed_storage_slots
+            .get(&address)
+            .map(|set| set.contains(&key))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+
         let is_present = self
             .parent
             .as_ref()
             .map(|parent| parent.is_slot_accessed(&address, &key))
-            .unwrap_or_default();
+            .unwrap_or(false);
 
         is_present
             || !self
@@ -270,11 +284,16 @@ impl Substate {
 
     /// Mark an address as accessed and return whether is was already marked.
     pub fn add_accessed_address(&mut self, address: Address) -> bool {
+        // Check self first — short-circuits for re-accessed (warm) addresses
+        if self.accessed_addresses.contains(&address) {
+            return true;
+        }
+
         let is_present = self
             .parent
             .as_ref()
             .map(|parent| parent.is_address_accessed(&address))
-            .unwrap_or_default();
+            .unwrap_or(false);
 
         is_present || !self.accessed_addresses.insert(address)
     }
@@ -291,11 +310,15 @@ impl Substate {
 
     /// Mark an address as a new account and return whether is was already marked.
     pub fn add_created_account(&mut self, address: Address) -> bool {
+        if self.created_accounts.contains(&address) {
+            return true;
+        }
+
         let is_present = self
             .parent
             .as_ref()
             .map(|parent| parent.is_account_created(&address))
-            .unwrap_or_default();
+            .unwrap_or(false);
 
         is_present || !self.created_accounts.insert(address)
     }
@@ -348,6 +371,7 @@ impl Substate {
     pub fn add_log(&mut self, log: Log) {
         self.logs.push(log);
     }
+
 }
 
 /// The LEVM (Lambda EVM) execution engine.
@@ -412,6 +436,9 @@ pub struct VM<'a> {
     pub vm_type: VMType,
     /// Opcode dispatch table, built dynamically per fork.
     pub(crate) opcode_table: [OpCodeFn<'a>; 256],
+    /// Per-opcode recorder for time-travel debugging.
+    #[cfg(feature = "tokamak-debugger")]
+    pub opcode_recorder: Option<Rc<RefCell<dyn crate::debugger_hook::OpcodeRecorder>>>,
 }
 
 impl<'a> VM<'a> {
@@ -460,6 +487,8 @@ impl<'a> VM<'a> {
             ),
             env,
             opcode_table: VM::build_opcode_table(fork),
+            #[cfg(feature = "tokamak-debugger")]
+            opcode_recorder: None,
         };
 
         let call_type = if is_create {
@@ -541,6 +570,7 @@ impl<'a> VM<'a> {
                 call_frame.gas_limit,
                 &mut gas_remaining,
                 self.env.config.fork,
+                self.db.store.precompile_cache(),
             );
 
             call_frame.gas_remaining = gas_remaining as i64;
@@ -548,11 +578,40 @@ impl<'a> VM<'a> {
             return result;
         }
 
+        self.interpreter_loop(0)
+    }
+
+    /// Shared interpreter loop used by both `run_execution` (stop_depth=0) and
+    /// `run_subcall` (stop_depth=call_frames.len()). Executes opcodes until the
+    /// call stack depth returns to `stop_depth`, at which point the final result
+    /// is returned.
+    ///
+    /// When `stop_depth == 0`, this behaves like the original `run_execution` loop:
+    /// it terminates when the initial call frame completes (call_frames is empty).
+    ///
+    /// When `stop_depth > 0`, this is a bounded run for a JIT sub-call: it
+    /// terminates when the child frame (and any nested calls) have completed.
+    fn interpreter_loop(&mut self, stop_depth: usize) -> Result<ContextResult, VMError> {
         #[cfg(feature = "perf_opcode_timings")]
+        #[allow(clippy::expect_used)]
         let mut timings = crate::timings::OPCODE_TIMINGS.lock().expect("poison");
 
         loop {
             let opcode = self.current_call_frame.next_opcode();
+
+            #[cfg(feature = "tokamak-debugger")]
+            if let Some(recorder) = self.opcode_recorder.as_ref() {
+                recorder.borrow_mut().record_step(
+                    opcode,
+                    self.current_call_frame.pc,
+                    self.current_call_frame.gas_remaining,
+                    self.call_frames.len(),
+                    &self.current_call_frame.stack,
+                    &self.current_call_frame.memory,
+                    self.current_call_frame.code_address,
+                );
+            }
+
             self.advance_pc(1)?;
 
             #[cfg(feature = "perf_opcode_timings")]
@@ -626,12 +685,29 @@ impl<'a> VM<'a> {
                 0x9d => self.op_swap::<14>(),
                 0x9e => self.op_swap::<15>(),
                 0x9f => self.op_swap::<16>(),
+                0x00 => self.op_stop(),
                 0x01 => self.op_add(),
+                0x02 => self.op_mul(),
+                0x03 => self.op_sub(),
+                0x10 => self.op_lt(),
+                0x11 => self.op_gt(),
+                0x14 => self.op_eq(),
+                0x15 => self.op_iszero(),
+                0x16 => self.op_and(),
+                0x17 => self.op_or(),
+                0x1b if self.env.config.fork >= Fork::Constantinople => self.op_shl(),
+                0x1c if self.env.config.fork >= Fork::Constantinople => self.op_shr(),
+                0x35 => self.op_calldataload(),
                 0x39 => self.op_codecopy(),
+                0x50 => self.op_pop(),
                 0x51 => self.op_mload(),
+                0x52 => self.op_mstore(),
+                0x54 => self.op_sload(),
                 0x56 => self.op_jump(),
                 0x57 => self.op_jumpi(),
                 0x5b => self.op_jumpdest(),
+                0x5f if self.env.config.fork >= Fork::Shanghai => self.op_push0(),
+                0xf3 => self.op_return(),
                 _ => {
                     // Call the opcode, using the opcode function lookup table.
                     // Indexing will not panic as all the opcode values fit within the table.
@@ -651,9 +727,20 @@ impl<'a> VM<'a> {
                 Err(error) => self.handle_opcode_error(error)?,
             };
 
-            // Return the ExecutionReport if the executed callframe was the first one.
-            if self.is_initial_call_frame() {
+            // Check if we've reached the stop depth (initial frame or JIT sub-call boundary)
+            if self.call_frames.len() <= stop_depth {
                 self.handle_state_backup(&result)?;
+                // For JIT sub-calls (stop_depth > 0), pop the completed child frame
+                // and merge its backup into the parent so reverts work correctly.
+                if stop_depth > 0 {
+                    let child = self.pop_call_frame()?;
+                    if result.is_success() {
+                        self.merge_call_frame_backup_with_parent(&child.call_frame_backup)?;
+                    }
+                    let mut child_stack = child.stack;
+                    child_stack.clear();
+                    self.stack_pool.push(child_stack);
+                }
                 return Ok(result);
             }
 
@@ -669,11 +756,10 @@ impl<'a> VM<'a> {
         gas_limit: u64,
         gas_remaining: &mut u64,
         fork: Fork,
+        cache: Option<&precompiles::PrecompileCache>,
     ) -> Result<ContextResult, VMError> {
-        let execute_precompile = precompiles::execute_precompile;
-
         Self::handle_precompile_result(
-            execute_precompile(code_address, calldata, gas_remaining, fork),
+            precompiles::execute_precompile(code_address, calldata, gas_remaining, fork, cache),
             gas_limit,
             *gas_remaining,
         )
@@ -732,6 +818,7 @@ impl<'a> VM<'a> {
 
         Ok(report)
     }
+
 }
 
 impl Substate {

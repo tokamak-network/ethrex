@@ -94,7 +94,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::Sender;
 use std::sync::{
-    Arc, RwLock,
+    Arc, Condvar, Mutex, RwLock,
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{Receiver, channel},
 };
@@ -145,6 +145,193 @@ pub struct L2Config {
     pub fee_config: Arc<RwLock<FeeConfig>>,
 }
 
+/// Observer trait for receiving notifications when blocks are committed to storage.
+///
+/// Implementations must be non-blocking — heavy processing should be deferred
+/// to a background thread or channel. The `on_block_committed` method is called
+/// on the block processing hot path.
+pub trait BlockObserver: Send + Sync {
+    /// Called after a block has been successfully stored.
+    ///
+    /// The `block` and `receipts` are cloned copies; the originals have been
+    /// consumed by `store_block()`.
+    fn on_block_committed(&self, block: Block, receipts: Vec<Receipt>);
+}
+
+/// Observer trait for receiving notifications when transactions are added to the mempool.
+///
+/// Implementations must be non-blocking — heavy processing should be deferred
+/// to a background thread or channel. The `on_transaction_added` method is called
+/// on the mempool insertion hot path.
+pub trait MempoolObserver: Send + Sync {
+    /// Called after a transaction has been successfully added to the mempool.
+    fn on_transaction_added(&self, tx: &Transaction, sender: Address, tx_hash: H256);
+}
+
+/// Controller for pausing and resuming block processing.
+///
+/// Used by the sentinel system to temporarily halt block ingestion when a
+/// suspected attack is detected. The design prioritizes zero-overhead on the
+/// hot path: `wait_if_paused()` performs a single `AtomicBool::load` when the
+/// chain is not paused, adding less than 1 ns per block.
+///
+/// An optional auto-resume timer ensures the chain cannot remain paused
+/// indefinitely (default: 300 seconds). The timer is implemented via
+/// `Condvar::wait_timeout` — no background thread is required.
+pub struct PauseController {
+    paused: AtomicBool,
+    lock: Mutex<()>,
+    condvar: Condvar,
+    /// Maximum seconds to remain paused before auto-resuming.
+    /// `None` means pause indefinitely until manual `resume()`.
+    auto_resume_secs: Option<u64>,
+    paused_at: Mutex<Option<Instant>>,
+}
+
+impl PauseController {
+    /// Create a new `PauseController`.
+    ///
+    /// `auto_resume_secs` controls how long the chain may stay paused before
+    /// automatically resuming. Pass `None` to require explicit `resume()`.
+    pub fn new(auto_resume_secs: Option<u64>) -> Self {
+        Self {
+            paused: AtomicBool::new(false),
+            lock: Mutex::new(()),
+            condvar: Condvar::new(),
+            auto_resume_secs,
+            paused_at: Mutex::new(None),
+        }
+    }
+
+    /// Pause block processing. Records the current instant for duration tracking.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Release);
+        if let Ok(mut ts) = self.paused_at.lock() {
+            *ts = Some(Instant::now());
+        }
+    }
+
+    /// Resume block processing. Idempotent — safe to call multiple times.
+    pub fn resume(&self) {
+        if self
+            .paused
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            if let Ok(mut ts) = self.paused_at.lock() {
+                *ts = None;
+            }
+            self.condvar.notify_all();
+        }
+    }
+
+    /// Block the caller while paused.
+    ///
+    /// **Fast path** (not paused): single `AtomicBool::load(Acquire)` — less
+    /// than 1 ns overhead.
+    ///
+    /// **Slow path** (paused): waits on the internal `Condvar`. If
+    /// `auto_resume_secs` is set and the timeout elapses, the controller
+    /// auto-resumes and returns.
+    pub fn wait_if_paused(&self) {
+        // Fast path — zero overhead when not paused.
+        if !self.paused.load(Ordering::Acquire) {
+            return;
+        }
+
+        // Slow path — condvar wait. Fail-open on lock poisoning to avoid
+        // permanently halting block processing if another thread panicked.
+        let mut guard = match self.lock.lock() {
+            Ok(g) => g,
+            Err(_poisoned) => {
+                eprintln!("[SENTINEL] PauseController lock poisoned — treating as unpaused");
+                self.paused.store(false, Ordering::Release);
+                return;
+            }
+        };
+        while self.paused.load(Ordering::Acquire) {
+            if let Some(timeout_secs) = self.auto_resume_secs {
+                let remaining = self.auto_resume_remaining_inner();
+                let wait_dur = remaining.unwrap_or(Duration::from_secs(timeout_secs));
+                if wait_dur.is_zero() {
+                    // Timeout already elapsed — auto-resume.
+                    self.resume();
+                    return;
+                }
+                match self.condvar.wait_timeout(guard, wait_dur) {
+                    Ok((new_guard, result)) => {
+                        guard = new_guard;
+                        if result.timed_out() {
+                            self.resume();
+                            return;
+                        }
+                    }
+                    Err(_poisoned) => {
+                        eprintln!("[SENTINEL] PauseController condvar poisoned — treating as unpaused");
+                        self.paused.store(false, Ordering::Release);
+                        return;
+                    }
+                }
+            } else {
+                match self.condvar.wait(guard) {
+                    Ok(new_guard) => guard = new_guard,
+                    Err(_poisoned) => {
+                        eprintln!("[SENTINEL] PauseController condvar poisoned — treating as unpaused");
+                        self.paused.store(false, Ordering::Release);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Non-blocking check.
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
+    }
+
+    /// Seconds elapsed since the chain was paused, or `None` if not paused.
+    pub fn paused_for_secs(&self) -> Option<u64> {
+        let ts = self.paused_at.lock().ok()?;
+        ts.map(|t| t.elapsed().as_secs())
+    }
+
+    /// Seconds remaining before auto-resume, or `None` if not paused or
+    /// auto-resume is disabled.
+    pub fn auto_resume_remaining(&self) -> Option<u64> {
+        self.auto_resume_remaining_inner().map(|d| d.as_secs())
+    }
+
+    /// Internal helper returning remaining duration.
+    fn auto_resume_remaining_inner(&self) -> Option<Duration> {
+        let timeout = self.auto_resume_secs?;
+        let ts = self.paused_at.lock().ok()?;
+        let started = (*ts)?;
+        let elapsed = started.elapsed();
+        let total = Duration::from_secs(timeout);
+        if elapsed >= total {
+            Some(Duration::ZERO)
+        } else {
+            Some(total - elapsed)
+        }
+    }
+}
+
+impl Default for PauseController {
+    fn default() -> Self {
+        Self::new(Some(300))
+    }
+}
+
+impl core::fmt::Debug for PauseController {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PauseController")
+            .field("paused", &self.paused.load(Ordering::Acquire))
+            .field("auto_resume_secs", &self.auto_resume_secs)
+            .finish()
+    }
+}
+
 /// Core blockchain implementation for block validation and execution.
 ///
 /// The `Blockchain` struct is the main entry point for all blockchain operations:
@@ -171,7 +358,6 @@ pub struct L2Config {
 ///     // Process transactions from mempool
 /// }
 /// ```
-#[derive(Debug)]
 pub struct Blockchain {
     /// Underlying storage for blocks and state.
     storage: Store,
@@ -189,6 +375,47 @@ pub struct Blockchain {
     /// Maps payload IDs to either completed payloads or in-progress build tasks.
     /// Kept around in case consensus requests the same payload twice.
     pub payloads: Arc<TokioMutex<Vec<(u64, PayloadOrTask)>>>,
+    /// Optional observer for block commit events (e.g., sentinel hack detection).
+    ///
+    /// When set, the observer is notified after every successful `store_block()` call
+    /// with a clone of the block and its receipts. The observer must be non-blocking.
+    block_observer: Option<Arc<dyn BlockObserver>>,
+    /// Optional observer for mempool transaction events (e.g., sentinel pre-execution detection).
+    ///
+    /// When set, the observer is notified after every successful `mempool.add_transaction()` call.
+    mempool_observer: Option<Arc<dyn MempoolObserver>>,
+    /// Optional pause controller for temporarily halting block processing.
+    ///
+    /// When set, `add_block_pipeline()` and `add_blocks_in_batch()` call
+    /// `wait_if_paused()` before processing each block.
+    pause_controller: Option<Arc<PauseController>>,
+}
+
+impl core::fmt::Debug for Blockchain {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Blockchain")
+            .field("is_synced", &self.is_synced)
+            .field("options", &self.options)
+            .field(
+                "block_observer",
+                &self.block_observer.as_ref().map(|_| "Some(<observer>)"),
+            )
+            .field(
+                "mempool_observer",
+                &self
+                    .mempool_observer
+                    .as_ref()
+                    .map(|_| "Some(<observer>)"),
+            )
+            .field(
+                "pause_controller",
+                &self
+                    .pause_controller
+                    .as_ref()
+                    .map(|pc| format!("Some(paused={})", pc.is_paused())),
+            )
+            .finish()
+    }
 }
 
 /// Configuration options for the blockchain.
@@ -278,6 +505,15 @@ struct PreMerkelizedAccountState {
     nodes: Vec<TrieNode>,
 }
 
+/// Work item for BAL state trie shard workers.
+struct BalStateWorkItem {
+    hashed_address: H256,
+    info: Option<AccountInfo>,
+    removed: bool,
+    /// Pre-computed storage root from Stage B, or None to keep existing.
+    storage_root: Option<H256>,
+}
+
 impl Blockchain {
     pub fn new(store: Store, blockchain_opts: BlockchainOptions) -> Self {
         Self {
@@ -286,6 +522,9 @@ impl Blockchain {
             is_synced: AtomicBool::new(false),
             payloads: Arc::new(TokioMutex::new(Vec::new())),
             options: blockchain_opts,
+            block_observer: None,
+            mempool_observer: None,
+            pause_controller: None,
         }
     }
 
@@ -296,7 +535,43 @@ impl Blockchain {
             is_synced: AtomicBool::new(false),
             payloads: Arc::new(TokioMutex::new(Vec::new())),
             options: BlockchainOptions::default(),
+            block_observer: None,
+            mempool_observer: None,
+            pause_controller: None,
         }
+    }
+
+    /// Attach a block observer that will be notified after every successful `store_block()`.
+    pub fn with_block_observer(mut self, observer: Arc<dyn BlockObserver>) -> Self {
+        self.block_observer = Some(observer);
+        self
+    }
+
+    /// Set or replace the block observer at runtime.
+    pub fn set_block_observer(&mut self, observer: Option<Arc<dyn BlockObserver>>) {
+        self.block_observer = observer;
+    }
+
+    /// Attach a mempool observer that will be notified after every successful mempool insertion.
+    pub fn with_mempool_observer(mut self, observer: Arc<dyn MempoolObserver>) -> Self {
+        self.mempool_observer = Some(observer);
+        self
+    }
+
+    /// Set or replace the mempool observer at runtime.
+    pub fn set_mempool_observer(&mut self, observer: Option<Arc<dyn MempoolObserver>>) {
+        self.mempool_observer = observer;
+    }
+
+    /// Attach a pause controller that can halt block processing on demand.
+    pub fn with_pause_controller(mut self, controller: Arc<PauseController>) -> Self {
+        self.pause_controller = Some(controller);
+        self
+    }
+
+    /// Set or replace the pause controller at runtime.
+    pub fn set_pause_controller(&mut self, controller: Option<Arc<PauseController>>) {
+        self.pause_controller = controller;
     }
 
     /// Executes a block withing a new vm instance and state
@@ -376,6 +651,7 @@ impl Blockchain {
         block: &Block,
         parent_header: &BlockHeader,
         vm: &mut Evm,
+        bal: Option<&BlockAccessList>,
     ) -> Result<BlockExecutionPipelineResult, ChainError> {
         let start_instant = Instant::now();
 
@@ -405,9 +681,16 @@ impl Blockchain {
                 let warm_handle = std::thread::Builder::new()
                     .name("block_executor_warmer".to_string())
                     .spawn_scoped(s, move || {
-                        // Warming uses the same caching store, sharing cached state with execution
+                        // Warming uses the same caching store, sharing cached state with execution.
+                        // Precompile cache lives inside CachingDatabase, shared automatically.
                         let start = Instant::now();
-                        let _ = LEVM::warm_block(block, caching_store, vm_type);
+                        if let Some(bal) = bal {
+                            // Amsterdam+: BAL-based precise prefetching (no tx re-execution)
+                            let _ = LEVM::warm_block_from_bal(bal, caching_store);
+                        } else {
+                            // Pre-Amsterdam / P2P sync: speculative tx re-execution
+                            let _ = LEVM::warm_block(block, caching_store, vm_type);
+                        }
                         start.elapsed()
                     })
                     .map_err(|e| {
@@ -448,14 +731,22 @@ impl Blockchain {
                 let merkleize_handle = std::thread::Builder::new()
                     .name("block_executor_merkleizer".to_string())
                     .spawn_scoped(s, move || -> Result<_, StoreError> {
-                        let (account_updates_list, accumulated_updates) = self
-                            .handle_merkleization(
+                        let (account_updates_list, accumulated_updates) = if bal.is_some() {
+                            self.handle_merkleization_bal(
+                                rx,
+                                parent_header_ref,
+                                queue_length_ref,
+                                max_queue_length_ref,
+                            )?
+                        } else {
+                            self.handle_merkleization(
                                 s,
                                 rx,
                                 parent_header_ref,
                                 queue_length_ref,
                                 max_queue_length_ref,
-                            )?;
+                            )?
+                        };
                         let merkle_end_instant = Instant::now();
                         Ok((
                             account_updates_list,
@@ -691,6 +982,312 @@ impl Blockchain {
             };
 
         let accumulated_updates = accumulator.map(|acc| acc.into_values().collect());
+
+        Ok((
+            AccountUpdatesList {
+                state_trie_hash,
+                state_updates,
+                storage_updates,
+                code_updates,
+            },
+            accumulated_updates,
+        ))
+    }
+
+    /// BAL-specific merkleization handler.
+    ///
+    /// When the Block Access List is available (Amsterdam+), all dirty accounts
+    /// and storage slots are known upfront. This enables computing storage roots
+    /// in parallel across accounts before feeding final results into state trie
+    /// shards.
+    #[instrument(
+        level = "trace",
+        name = "Trie update (BAL)",
+        skip_all,
+        fields(namespace = "block_execution")
+    )]
+    fn handle_merkleization_bal(
+        &self,
+        rx: Receiver<Vec<AccountUpdate>>,
+        parent_header: &BlockHeader,
+        queue_length: &AtomicUsize,
+        max_queue_length: &mut usize,
+    ) -> Result<(AccountUpdatesList, Option<Vec<AccountUpdate>>), StoreError> {
+        const NUM_WORKERS: usize = 16;
+        let parent_state_root = parent_header.state_root;
+
+        // === Stage A: Drain + accumulate all AccountUpdates ===
+        // BAL guarantees completeness, so we block until execution finishes.
+        let mut all_updates: FxHashMap<Address, AccountUpdate> = FxHashMap::default();
+        for updates in rx {
+            let current_length = queue_length.fetch_sub(1, Ordering::Acquire);
+            *max_queue_length = current_length.max(*max_queue_length);
+            for update in updates {
+                match all_updates.entry(update.address) {
+                    Entry::Vacant(e) => {
+                        e.insert(update);
+                    }
+                    Entry::Occupied(mut e) => {
+                        e.get_mut().merge(update);
+                    }
+                }
+            }
+        }
+
+        // Extract witness accumulator before consuming updates
+        let accumulated_updates = if self.options.precompute_witnesses {
+            Some(all_updates.values().cloned().collect::<Vec<_>>())
+        } else {
+            None
+        };
+
+        // Extract code updates and build work items with pre-hashed addresses
+        let mut code_updates: Vec<(H256, Code)> = Vec::new();
+        let mut accounts: Vec<(H256, AccountUpdate)> = Vec::with_capacity(all_updates.len());
+        for (addr, update) in all_updates {
+            let hashed = keccak(addr);
+            if let Some(info) = &update.info
+                && let Some(code) = &update.code
+            {
+                code_updates.push((info.code_hash, code.clone()));
+            }
+            accounts.push((hashed, update));
+        }
+
+        // === Stage B: Parallel per-account storage root computation ===
+
+        // Sort by storage weight (descending) for greedy bin packing.
+        // Every item with real Stage B work MUST have weight >= 1: the greedy
+        // algorithm does `bin_weights[min] += weight`, so weight-0 items never
+        // change the bin weight and `min_by_key` keeps returning the same bin,
+        // piling ALL of them into a single worker. Removed accounts are cheap
+        // individually (just push EMPTY_TRIE_HASH) but must still be distributed.
+        let mut work_indices: Vec<(usize, usize)> = accounts
+            .iter()
+            .enumerate()
+            .map(|(i, (_, update))| {
+                let weight =
+                    if update.removed || update.removed_storage || !update.added_storage.is_empty()
+                    {
+                        1.max(update.added_storage.len())
+                    } else {
+                        0
+                    };
+                (i, weight)
+            })
+            .collect();
+        work_indices.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+
+        // Greedy bin packing into NUM_WORKERS bins
+        let mut bins: Vec<Vec<usize>> = (0..NUM_WORKERS).map(|_| Vec::new()).collect();
+        let mut bin_weights: Vec<usize> = vec![0; NUM_WORKERS];
+        for (idx, weight) in work_indices {
+            let min_bin = bin_weights
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, w)| **w)
+                .expect("bin_weights is non-empty")
+                .0;
+            bins[min_bin].push(idx);
+            bin_weights[min_bin] += weight;
+        }
+
+        // Compute storage roots in parallel
+        let mut storage_roots: Vec<Option<H256>> = vec![None; accounts.len()];
+        let mut storage_updates: Vec<(H256, Vec<TrieNode>)> = Vec::new();
+
+        std::thread::scope(|s| -> Result<(), StoreError> {
+            let accounts_ref = &accounts;
+            let handles: Vec<_> = bins
+                .into_iter()
+                .enumerate()
+                .filter_map(|(worker_id, bin)| {
+                    if bin.is_empty() {
+                        return None;
+                    }
+                    Some(
+                        std::thread::Builder::new()
+                            .name(format!("bal_storage_worker_{worker_id}"))
+                            .spawn_scoped(
+                                s,
+                                move || -> Result<Vec<(usize, H256, Vec<TrieNode>)>, StoreError> {
+                                    let mut results: Vec<(usize, H256, Vec<TrieNode>)> = Vec::new();
+                                    // Open one state trie per worker for storage root lookups
+                                    let state_trie =
+                                        self.storage.open_state_trie(parent_state_root)?;
+                                    for idx in bin {
+                                        let (hashed_address, update) = &accounts_ref[idx];
+                                        let has_storage_changes = update.removed
+                                            || update.removed_storage
+                                            || !update.added_storage.is_empty();
+                                        if !has_storage_changes {
+                                            continue;
+                                        }
+
+                                        if update.removed {
+                                            results.push((
+                                                idx,
+                                                *EMPTY_TRIE_HASH,
+                                                vec![(Nibbles::default(), vec![RLP_NULL])],
+                                            ));
+                                            continue;
+                                        }
+
+                                        let mut trie = if update.removed_storage {
+                                            Trie::new_temp()
+                                        } else {
+                                            let storage_root =
+                                                match state_trie.get(hashed_address.as_bytes())? {
+                                                    Some(rlp) => {
+                                                        AccountState::decode(&rlp)?.storage_root
+                                                    }
+                                                    None => *EMPTY_TRIE_HASH,
+                                                };
+                                            self.storage.open_storage_trie(
+                                                *hashed_address,
+                                                parent_state_root,
+                                                storage_root,
+                                            )?
+                                        };
+
+                                        for (key, value) in &update.added_storage {
+                                            let hashed_key = keccak(key);
+                                            if value.is_zero() {
+                                                trie.remove(hashed_key.as_bytes())?;
+                                            } else {
+                                                trie.insert(
+                                                    hashed_key.as_bytes().to_vec(),
+                                                    value.encode_to_vec(),
+                                                )?;
+                                            }
+                                        }
+
+                                        let (root_hash, nodes) =
+                                            trie.collect_changes_since_last_hash();
+                                        results.push((idx, root_hash, nodes));
+                                    }
+                                    Ok(results)
+                                },
+                            )
+                            .map_err(|e| StoreError::Custom(format!("spawn failed: {e}"))),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            for handle in handles {
+                let results = handle
+                    .join()
+                    .map_err(|_| StoreError::Custom("storage worker panicked".to_string()))??;
+                for (idx, root_hash, nodes) in results {
+                    storage_roots[idx] = Some(root_hash);
+                    storage_updates.push((accounts_ref[idx].0, nodes));
+                }
+            }
+            Ok(())
+        })?;
+
+        // === Stage C: State trie update via 16 shard workers ===
+
+        // Build per-shard work items
+        let mut shards: Vec<Vec<BalStateWorkItem>> = (0..NUM_WORKERS).map(|_| Vec::new()).collect();
+        for (idx, (hashed_address, update)) in accounts.iter().enumerate() {
+            let bucket = (hashed_address.as_fixed_bytes()[0] >> 4) as usize;
+            shards[bucket].push(BalStateWorkItem {
+                hashed_address: *hashed_address,
+                info: update.info.clone(),
+                removed: update.removed,
+                storage_root: storage_roots[idx],
+            });
+        }
+
+        let mut root = BranchNode::default();
+        let mut state_updates = Vec::new();
+
+        // All 16 shard threads must run, even for empty shards: each worker
+        // opens the parent state trie and returns its existing subtree so the
+        // root can be correctly assembled via `collect_trie`. Skipping unchanged
+        // shards (unlike Stage B's filter_map) would leave holes in the root.
+        std::thread::scope(|s| -> Result<(), StoreError> {
+            let handles: Vec<_> = shards
+                .into_iter()
+                .enumerate()
+                .map(|(index, shard_items)| {
+                    std::thread::Builder::new()
+                        .name(format!("bal_state_shard_{index}"))
+                        .spawn_scoped(
+                            s,
+                            move || -> Result<(Box<BranchNode>, Vec<TrieNode>), StoreError> {
+                                let mut state_trie =
+                                    self.storage.open_state_trie(parent_state_root)?;
+
+                                for item in &shard_items {
+                                    let path = item.hashed_address.as_bytes();
+
+                                    // Load existing account state
+                                    let mut account_state = match state_trie.get(path)? {
+                                        Some(rlp) => {
+                                            let state = AccountState::decode(&rlp)?;
+                                            // Re-insert to materialize the trie path so
+                                            // collect_changes_since_last_hash includes this
+                                            // node in the diff (needed for both updates and
+                                            // removals via collect_trie).
+                                            state_trie.insert(path.to_vec(), rlp)?;
+                                            state
+                                        }
+                                        None => AccountState::default(),
+                                    };
+
+                                    if item.removed {
+                                        account_state = AccountState::default();
+                                    } else {
+                                        if let Some(ref info) = item.info {
+                                            account_state.nonce = info.nonce;
+                                            account_state.balance = info.balance;
+                                            account_state.code_hash = info.code_hash;
+                                        }
+                                        if let Some(storage_root) = item.storage_root {
+                                            account_state.storage_root = storage_root;
+                                        }
+                                    }
+
+                                    // EIP-161: remove empty accounts (zero nonce, zero balance,
+                                    // empty code, empty storage) from the state trie.
+                                    if account_state != AccountState::default() {
+                                        state_trie
+                                            .insert(path.to_vec(), account_state.encode_to_vec())?;
+                                    } else {
+                                        state_trie.remove(path)?;
+                                    }
+                                }
+
+                                collect_trie(index as u8, state_trie)
+                                    .map_err(|e| StoreError::Custom(format!("{e}")))
+                            },
+                        )
+                        .map_err(|e| StoreError::Custom(format!("spawn failed: {e}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            for (i, handle) in handles.into_iter().enumerate() {
+                let (subroot, state_nodes) = handle
+                    .join()
+                    .map_err(|_| StoreError::Custom("state shard worker panicked".to_string()))??;
+                state_updates.extend(state_nodes);
+                root.choices[i] = subroot.choices[i].clone();
+            }
+            Ok(())
+        })?;
+
+        // === Stage D: Finalize root ===
+        let state_trie_hash =
+            if let Some(root) = self.collapse_root_node(parent_header, None, root)? {
+                let mut root = NodeRef::from(root);
+                let hash = root.commit(Nibbles::default(), &mut state_updates);
+                hash.finalize()
+            } else {
+                state_updates.push((Nibbles::default(), vec![RLP_NULL]));
+                *EMPTY_TRIE_HASH
+            };
 
         Ok((
             AccountUpdatesList {
@@ -1555,9 +2152,23 @@ impl Blockchain {
             block.body.transactions.len(),
         );
 
+        // Clone block + receipts for observer before store_block consumes them
+        let observer_data = self
+            .block_observer
+            .as_ref()
+            .map(|_| (block.clone(), res.receipts.clone()));
+
         let merkleized = Instant::now();
         let result = self.store_block(block, account_updates_list, res);
         let stored = Instant::now();
+
+        // Notify observer after successful store
+        if result.is_ok()
+            && let Some((block_clone, receipts)) = observer_data
+            && let Some(observer) = &self.block_observer
+        {
+            observer.on_block_committed(block_clone, receipts);
+        }
 
         if self.options.perf_logs_enabled {
             Self::print_add_block_logs(
@@ -1574,7 +2185,16 @@ impl Blockchain {
         result
     }
 
-    pub fn add_block_pipeline(&self, block: Block) -> Result<(), ChainError> {
+    pub fn add_block_pipeline(
+        &self,
+        block: Block,
+        bal: Option<&BlockAccessList>,
+    ) -> Result<(), ChainError> {
+        // Block if the chain is paused (e.g., sentinel detected an attack).
+        if let Some(ref pc) = self.pause_controller {
+            pc.wait_if_paused();
+        }
+
         // Validate if it can be the new head and find the parent
         let Ok(parent_header) = find_parent_header(&block.header, &self.storage) else {
             // If the parent is not present, we store it as pending.
@@ -1616,7 +2236,7 @@ impl Blockchain {
             merkle_queue_length,
             instants,
             warmer_duration,
-        ) = self.execute_block_pipeline(&block, &parent_header, &mut vm)?;
+        ) = self.execute_block_pipeline(&block, &parent_header, &mut vm, bal)?;
 
         let (gas_used, gas_limit, block_number, transactions_count) = (
             block.header.gas_used,
@@ -1639,9 +2259,23 @@ impl Blockchain {
                 .store_witness(block_hash, block_number, witness)?;
         };
 
+        // Clone block + receipts for observer before store_block consumes them
+        let observer_data = self
+            .block_observer
+            .as_ref()
+            .map(|_| (block.clone(), res.receipts.clone()));
+
         let result = self.store_block(block, account_updates_list, res);
 
         let stored = Instant::now();
+
+        // Notify observer after successful store
+        if result.is_ok()
+            && let Some((block_clone, receipts)) = observer_data
+            && let Some(observer) = &self.block_observer
+        {
+            observer.on_block_committed(block_clone, receipts);
+        }
 
         let instants = std::array::from_fn(move |i| {
             if i < instants.len() {
@@ -1931,6 +2565,10 @@ impl Blockchain {
                 info!("Received shutdown signal, aborting");
                 return Err((ChainError::Custom(String::from("shutdown signal")), None));
             }
+            // Block if the chain is paused (e.g., sentinel detected an attack).
+            if let Some(ref pc) = self.pause_controller {
+                pc.wait_if_paused();
+            }
             // for the first block, we need to query the store
             let parent_header = if i == 0 {
                 find_parent_header(&block.header, &self.storage).map_err(|err| {
@@ -2068,6 +2706,12 @@ impl Blockchain {
         // Add blobs bundle before the transaction so that when add_transaction
         // notifies payload builders the blob data is already available.
         self.mempool.add_blobs_bundle(hash, blobs_bundle)?;
+
+        // Notify mempool observer before add_transaction consumes the TX (non-blocking)
+        if let Some(ref observer) = self.mempool_observer {
+            observer.on_transaction_added(&transaction, sender, hash);
+        }
+
         self.mempool
             .add_transaction(hash, sender, MempoolTransaction::new(transaction, sender))?;
         Ok(hash)
@@ -2090,6 +2734,11 @@ impl Blockchain {
         // Validate transaction
         if let Some(tx_to_replace) = self.validate_transaction(&transaction, sender).await? {
             self.remove_transaction_from_pool(&tx_to_replace)?;
+        }
+
+        // Notify mempool observer before add_transaction consumes the TX (non-blocking)
+        if let Some(ref observer) = self.mempool_observer {
+            observer.on_transaction_added(&transaction, sender, hash);
         }
 
         // Add transaction to storage
@@ -2419,4 +3068,110 @@ fn collect_trie(index: u8, mut trie: Trie) -> Result<(Box<BranchNode>, Vec<TrieN
         return Err(TrieError::InvalidInput);
     };
     Ok((root, nodes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn pause_controller_fast_path() {
+        let pc = PauseController::new(Some(300));
+        // Not paused — wait_if_paused should return immediately.
+        let start = Instant::now();
+        pc.wait_if_paused();
+        let elapsed = start.elapsed();
+        assert!(!pc.is_paused());
+        // Should be sub-microsecond, but allow 10 ms for CI jitter.
+        assert!(elapsed < Duration::from_millis(10));
+    }
+
+    #[test]
+    fn pause_controller_pause_resume() {
+        let pc = PauseController::new(None);
+        assert!(!pc.is_paused());
+        assert!(pc.paused_for_secs().is_none());
+
+        pc.pause();
+        assert!(pc.is_paused());
+        // paused_for_secs should return Some(0) immediately after pause.
+        assert!(pc.paused_for_secs().is_some());
+
+        pc.resume();
+        assert!(!pc.is_paused());
+        assert!(pc.paused_for_secs().is_none());
+
+        // Double resume is safe (idempotent).
+        pc.resume();
+        assert!(!pc.is_paused());
+    }
+
+    #[test]
+    fn pause_controller_concurrent() {
+        let pc = Arc::new(PauseController::new(None));
+        pc.pause();
+
+        let num_waiters = 4;
+        let mut handles = Vec::with_capacity(num_waiters);
+        for _ in 0..num_waiters {
+            let pc_clone = Arc::clone(&pc);
+            handles.push(thread::spawn(move || {
+                pc_clone.wait_if_paused();
+            }));
+        }
+
+        // Give waiters time to block on the condvar.
+        thread::sleep(Duration::from_millis(50));
+        assert!(pc.is_paused());
+
+        // Resume — all waiters should unblock.
+        pc.resume();
+        for h in handles {
+            h.join().expect("waiter thread panicked");
+        }
+        assert!(!pc.is_paused());
+    }
+
+    #[test]
+    fn pause_controller_auto_resume_timeout() {
+        let pc = Arc::new(PauseController::new(Some(1))); // 1-second auto-resume
+        pc.pause();
+        assert!(pc.is_paused());
+
+        let pc_clone = Arc::clone(&pc);
+        let handle = thread::spawn(move || {
+            pc_clone.wait_if_paused();
+        });
+
+        // The waiter should auto-resume within ~1 second.
+        handle.join().expect("waiter thread panicked");
+        assert!(!pc.is_paused());
+    }
+
+    #[test]
+    fn pause_controller_manual_resume_before_timeout() {
+        let pc = Arc::new(PauseController::new(Some(5))); // 5-second auto-resume
+        pc.pause();
+        assert!(pc.is_paused());
+        assert!(pc.auto_resume_remaining().is_some());
+
+        let pc_clone = Arc::clone(&pc);
+        let handle = thread::spawn(move || {
+            let start = Instant::now();
+            pc_clone.wait_if_paused();
+            start.elapsed()
+        });
+
+        // Resume manually after 100 ms — well before the 5-second timeout.
+        thread::sleep(Duration::from_millis(100));
+        pc.resume();
+
+        let elapsed = handle.join().expect("waiter thread panicked");
+        assert!(!pc.is_paused());
+        // Should have waited much less than the 5-second timeout.
+        assert!(elapsed < Duration::from_secs(2));
+    }
 }

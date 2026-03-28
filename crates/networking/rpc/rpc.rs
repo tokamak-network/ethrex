@@ -60,6 +60,7 @@ use bytes::Bytes;
 use ethrex_blockchain::Blockchain;
 use ethrex_blockchain::error::ChainError;
 use ethrex_common::types::Block;
+use ethrex_common::types::block_access_list::BlockAccessList;
 use ethrex_metrics::rpc::{RpcOutcome, record_async_duration, record_rpc_outcome};
 use ethrex_p2p::peer_handler::PeerHandler;
 use ethrex_p2p::sync_manager::SyncManager;
@@ -173,8 +174,13 @@ pub enum RpcRequestWrapper {
     Multiple(Vec<RpcRequest>),
 }
 
-/// Shared context passed to all RPC request handlers.
-///
+/// Channel message type for the block executor worker thread.
+type BlockWorkerMessage = (
+    oneshot::Sender<Result<(), ChainError>>,
+    Block,
+    Option<BlockAccessList>,
+);
+
 /// This struct contains all the dependencies that RPC handlers need to process requests,
 /// including storage access, blockchain state, P2P networking, and configuration.
 ///
@@ -200,7 +206,9 @@ pub struct RpcApiContext {
     /// Maximum gas limit for blocks (used in payload building).
     pub gas_ceil: u64,
     /// Channel for sending blocks to the block executor worker thread.
-    pub block_worker_channel: UnboundedSender<(oneshot::Sender<Result<(), ChainError>>, Block)>,
+    pub block_worker_channel: UnboundedSender<BlockWorkerMessage>,
+    /// Optional pause controller for sentinel auto-pause functionality.
+    pub pause_controller: Option<Arc<ethrex_blockchain::PauseController>>,
 }
 
 /// Client version information used for identification in the Engine API and P2P.
@@ -396,17 +404,14 @@ pub const FILTER_DURATION: Duration = {
 /// # Panics
 ///
 /// Panics if the worker thread cannot be spawned.
-pub fn start_block_executor(
-    blockchain: Arc<Blockchain>,
-) -> UnboundedSender<(oneshot::Sender<Result<(), ChainError>>, Block)> {
-    let (block_worker_channel, mut block_receiver) =
-        unbounded_channel::<(oneshot::Sender<Result<(), ChainError>>, Block)>();
+pub fn start_block_executor(blockchain: Arc<Blockchain>) -> UnboundedSender<BlockWorkerMessage> {
+    let (block_worker_channel, mut block_receiver) = unbounded_channel::<BlockWorkerMessage>();
     std::thread::Builder::new()
         .name("block_executor".to_string())
         .spawn(move || {
-            while let Some((notify, block)) = block_receiver.blocking_recv() {
+            while let Some((notify, block, bal)) = block_receiver.blocking_recv() {
                 let _ = notify
-                    .send(blockchain.add_block_pipeline(block))
+                    .send(blockchain.add_block_pipeline(block, bal.as_ref()))
                     .inspect_err(|_| tracing::error!("failed to notify caller"));
             }
         })
@@ -451,7 +456,7 @@ pub fn start_block_executor(
 /// # Shutdown
 ///
 /// All servers shut down gracefully on SIGINT (Ctrl+C).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn start_api(
     http_addr: SocketAddr,
     ws_addr: Option<SocketAddr>,
@@ -467,6 +472,7 @@ pub async fn start_api(
     log_filter_handler: Option<reload::Handle<EnvFilter, Registry>>,
     gas_ceil: u64,
     extra_data: String,
+    pause_controller: Option<Arc<ethrex_blockchain::PauseController>>,
 ) -> Result<(), RpcErr> {
     // TODO: Refactor how filters are handled,
     // filters are used by the filters endpoints (eth_newFilter, eth_getFilterChanges, ...etc)
@@ -489,6 +495,7 @@ pub async fn start_api(
         log_filter_handler,
         gas_ceil,
         block_worker_channel,
+        pause_controller,
     };
 
     // Periodically clean up the active filters for the filters endpoints.
@@ -681,6 +688,7 @@ pub async fn map_http_requests(req: &RpcRequest, context: RpcApiContext) -> Resu
         Ok(RpcNamespace::Web3) => map_web3_requests(req, context),
         Ok(RpcNamespace::Net) => map_net_requests(req, context).await,
         Ok(RpcNamespace::Mempool) => map_mempool_requests(req, context),
+        Ok(RpcNamespace::Sentinel) => map_sentinel_requests_readonly(req, context),
         Ok(RpcNamespace::Engine) => Err(RpcErr::Internal(
             "Engine namespace not allowed in map_http_requests".to_owned(),
         )),
@@ -696,6 +704,7 @@ pub async fn map_authrpc_requests(
     match req.namespace() {
         Ok(RpcNamespace::Engine) => map_engine_requests(req, context).await,
         Ok(RpcNamespace::Eth) => map_eth_requests(req, context).await,
+        Ok(RpcNamespace::Sentinel) => map_sentinel_requests(req, context),
         _ => Err(RpcErr::MethodNotFound(req.method.clone())),
     }
 }
@@ -777,6 +786,10 @@ pub async fn map_debug_requests(req: &RpcRequest, context: RpcApiContext) -> Res
         "debug_getBlockAccessList" => BlockAccessListRequest::call(req, context).await,
         "debug_traceTransaction" => TraceTransactionRequest::call(req, context).await,
         "debug_traceBlockByNumber" => TraceBlockByNumberRequest::call(req, context).await,
+        #[cfg(feature = "tokamak-debugger")]
+        "debug_timeTravel" => {
+            crate::debug::time_travel::DebugTimeTravelRequest::call(req, context).await
+        }
         unknown_debug_method => Err(RpcErr::MethodNotFound(unknown_debug_method.to_owned())),
     }
 }
@@ -847,6 +860,56 @@ pub async fn map_admin_requests(
         "admin_setLogLevel" => admin::set_log_level(req, &context.log_filter_handler),
         "admin_addPeer" => admin::add_peer(&mut context, req).await,
         unknown_admin_method => Err(RpcErr::MethodNotFound(unknown_admin_method.to_owned())),
+    }
+}
+
+/// Routes read-only `sentinel_*` requests on the public HTTP endpoint.
+/// `sentinel_resume` requires authentication and is only available via authrpc.
+pub fn map_sentinel_requests_readonly(
+    req: &RpcRequest,
+    context: RpcApiContext,
+) -> Result<Value, RpcErr> {
+    let Some(ref pc) = context.pause_controller else {
+        return Err(RpcErr::Internal(
+            "Sentinel pause controller is not configured".to_owned(),
+        ));
+    };
+
+    match req.method.as_str() {
+        "sentinel_status" => Ok(serde_json::json!({
+            "paused": pc.is_paused(),
+            "paused_for_secs": pc.paused_for_secs(),
+            "auto_resume_in": pc.auto_resume_remaining(),
+        })),
+        "sentinel_resume" => Err(RpcErr::Internal(
+            "sentinel_resume requires authenticated RPC (authrpc)".to_owned(),
+        )),
+        unknown => Err(RpcErr::MethodNotFound(unknown.to_owned())),
+    }
+}
+
+/// Routes all `sentinel_*` namespace requests (authenticated via authrpc).
+pub fn map_sentinel_requests(req: &RpcRequest, context: RpcApiContext) -> Result<Value, RpcErr> {
+    let Some(ref pc) = context.pause_controller else {
+        return Err(RpcErr::Internal(
+            "Sentinel pause controller is not configured".to_owned(),
+        ));
+    };
+
+    match req.method.as_str() {
+        "sentinel_resume" => {
+            let was_paused = pc.is_paused();
+            pc.resume();
+            Ok(serde_json::json!(was_paused))
+        }
+        "sentinel_status" => {
+            Ok(serde_json::json!({
+                "paused": pc.is_paused(),
+                "paused_for_secs": pc.paused_for_secs(),
+                "auto_resume_in": pc.auto_resume_remaining(),
+            }))
+        }
+        unknown => Err(RpcErr::MethodNotFound(unknown.to_owned())),
     }
 }
 
